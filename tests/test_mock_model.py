@@ -1,0 +1,59 @@
+import pytest
+
+from studybot.core.exceptions import ModelError
+from studybot.core.messages import Message
+from studybot.models.mock import MockModel
+
+
+def test_mock_model_echoes_last_user_message():
+    model = MockModel()
+    response = model.generate([Message.user("hello")])
+
+    assert response.content == "[Mock] You said: hello"
+    assert response.model_name == "mock"
+
+
+def test_mock_model_uses_most_recent_user_message():
+    model = MockModel()
+    messages = [
+        Message.user("first"),
+        Message.assistant("[Mock] You said: first"),
+        Message.user("second"),
+    ]
+
+    response = model.generate(messages)
+
+    assert response.content == "[Mock] You said: second"
+
+
+def test_mock_model_ignores_system_message_when_responding():
+    model = MockModel()
+    messages = [Message.system("You are a bot."), Message.user("hi")]
+
+    response = model.generate(messages)
+
+    assert response.content == "[Mock] You said: hi"
+
+
+def test_mock_model_is_deterministic():
+    model = MockModel()
+    messages = [Message.user("repeat me")]
+
+    first = model.generate(messages)
+    second = model.generate(messages)
+
+    assert first.content == second.content
+
+
+def test_mock_model_raises_model_error_with_no_user_message():
+    model = MockModel()
+
+    with pytest.raises(ModelError):
+        model.generate([Message.system("You are a bot.")])
+
+
+def test_mock_model_raises_model_error_with_empty_messages():
+    model = MockModel()
+
+    with pytest.raises(ModelError):
+        model.generate([])
