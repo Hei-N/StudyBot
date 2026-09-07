@@ -8,10 +8,10 @@ its callers should know which concrete model backend is in use.
 from __future__ import annotations
 
 import logging
-from typing import Sequence
+from typing import Iterator, Sequence
 
 from studybot.core.messages import Message
-from studybot.models.base import ModelProvider
+from studybot.models.base import ModelProvider, ProviderStatus
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,38 @@ class ChatService:
         self._history.append(assistant_message)
         return assistant_message
 
+    def send_streaming(self, user_input: str) -> Iterator[str]:
+        """Like `send`, but yields response content incrementally.
+
+        The user message is recorded immediately. The assistant's reply is
+        accumulated from the yielded chunks and recorded as a single,
+        complete message in history only after the stream finishes
+        successfully — history never ends up holding a partial reply.
+
+        If the underlying model raises partway through, the exception
+        propagates to the caller and NO assistant message is added: the
+        conversation is left with the user's message but no (necessarily
+        incomplete or misleading) reply, rather than silently recording a
+        truncated response as if it were complete. Callers that need to
+        show the caller how much text arrived before the failure should
+        collect the chunks yielded before the exception themselves.
+        """
+        user_message = Message.user(user_input)
+        self._history.append(user_message)
+        logger.debug("Streaming conversation of length %d to model", len(self._history))
+
+        chunks: list[str] = []
+        for chunk in self._model.stream(self._history):
+            chunks.append(chunk)
+            yield chunk
+
+        self._history.append(Message.assistant("".join(chunks)))
+
     def clear(self) -> None:
         """Discard all conversation history for the current session."""
         self._history.clear()
         logger.debug("Chat history cleared")
+
+    def get_status(self) -> ProviderStatus:
+        """Check the underlying model provider's current health."""
+        return self._model.get_status()

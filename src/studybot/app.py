@@ -15,16 +15,14 @@ from studybot.models.factory import create_model
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = "You are Study Bot, a local study assistant."
-
 
 class StudyBotApp:
     """Owns the long-lived services for a single run of the application."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        model = create_model(settings.model_provider)
-        self.chat = ChatService(model=model, system_prompt=_SYSTEM_PROMPT)
+        model = create_model(settings)
+        self.chat = ChatService(model=model, system_prompt=settings.system_prompt)
         logger.debug("StudyBotApp initialized with model provider %r", model.name)
 
     @classmethod
