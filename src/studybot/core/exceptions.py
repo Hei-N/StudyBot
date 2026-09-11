@@ -18,3 +18,7 @@ class ConfigurationError(StudyBotError):
 
 class ModelError(StudyBotError):
     """Raised when a model provider fails to produce a response."""
+
+
+class SessionError(StudyBotError):
+    """Raised for invalid chat/session navigation (not found, ambiguous, etc.)."""

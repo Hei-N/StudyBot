@@ -110,6 +110,26 @@ def test_system_prompt_is_seeded_and_kept_first():
     assert chat.history[0].content == "You are a bot."
 
 
+def test_constructor_preloads_history_after_system_prompt():
+    prior = [Message.user("earlier question"), Message.assistant("earlier answer")]
+
+    chat = ChatService(model=MockModel(), system_prompt="You are a bot.", history=prior)
+
+    assert [m.role for m in chat.history] == [Role.SYSTEM, Role.USER, Role.ASSISTANT]
+    assert [m.content for m in chat.history] == ["You are a bot.", "earlier question", "earlier answer"]
+
+
+def test_constructor_preloaded_history_is_sent_on_next_send():
+    prior = [Message.user("earlier question"), Message.assistant("earlier answer")]
+    model = RecordingModel(reply="ack")
+    chat = ChatService(model=model, system_prompt="sys", history=prior)
+
+    chat.send("new question")
+
+    sent = model.received_calls[0]
+    assert [m.content for m in sent] == ["sys", "earlier question", "earlier answer", "new question"]
+
+
 def test_clear_empties_history():
     chat = ChatService(model=MockModel())
     chat.send("hello")

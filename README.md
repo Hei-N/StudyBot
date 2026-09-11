@@ -1,27 +1,28 @@
-# Study Bot (v0.1, Stage 2 — Real Local LLM Integration)
+# Study Bot (v0.1, Stage 3 — Persistent Chat Sessions)
 
-A local-first personal study assistant. **Stage 2** connects a real, fully
-local LLM (via [Ollama](https://ollama.com)) behind the same provider
-abstraction Stage 1 established, while keeping a mock backend available for
-offline development and tests.
+A local-first personal study assistant. **Stage 3** adds persistent, local
+SQLite-backed chat sessions on top of the real local LLM integration from
+Stage 2: conversations survive restarts, and you can keep multiple separate
+chats instead of one that resets every launch.
 
 The product name is provisional; the internal Python package is `studybot`.
 
 ## What this is (and isn't) right now
 
-- ✅ A working interactive CLI chat shell with streaming responses
-- ✅ A real local model backend (Ollama), swappable behind a
-  `ModelProvider` interface that knows nothing about Ollama specifically
-- ✅ A deterministic `MockModel` for offline development/tests — still
-  available via configuration, requires no server
-- ✅ Application-owned, in-memory multi-turn conversation history sent in
-  full on every request (no reliance on hidden server-side session state)
-- ✅ A minimal, centrally-defined system prompt shared by every backend
+- ✅ Multiple persisted chats, each with its own isolated history
+- ✅ Chats survive restarting the app — the most recently updated chat
+  resumes automatically
+- ✅ Deterministic, local chat titles generated from the first message
+  (no LLM call involved)
+- ✅ A real local model backend (Ollama) or a deterministic `MockModel`,
+  swappable behind a `ModelProvider` interface that knows nothing about
+  Ollama — and, symmetrically, nothing in the model path knows SQLite exists
+- ✅ Streaming responses; a completed stream is persisted as exactly one
+  assistant message, a failed or abandoned one persists none
 - ✅ `/status`: on-demand provider/server/model health check
-- ✅ Centralized configuration and privacy-safe logging (prompts/responses
-  are never written to logs)
+- ✅ Centralized configuration and privacy-safe logging (prompts, responses,
+  and chat titles are never written to logs)
 - ❌ No cloud AI provider (OpenAI, Anthropic, etc.) — local-only
-- ❌ No persistence — conversations are not saved to disk
 - ❌ No courses, RAG, embeddings, PDFs, OCR, screenshots, long-term memory,
   mastery tracking, quizzes, or agent/tool-use behavior — all later work
 - ❌ No automatic model downloading — you always run `ollama pull` yourself
@@ -52,6 +53,26 @@ ollama pull qwen3:4b       # download the default development model (~2.5GB)
 Study Bot never downloads a model on your behalf — if the configured model
 isn't present locally, it tells you the exact `ollama pull` command to run.
 
+### Development-environment note: iCloud Desktop sync
+
+If this project lives under `~/Desktop` (or anywhere else covered by
+iCloud's "Desktop & Documents" sync), macOS can intermittently evict and
+re-fetch small files in `.venv`, which occasionally makes the editable
+install briefly unreadable and `python -m studybot` fail with
+`ModuleNotFoundError: No module named 'studybot'` even though `pip show
+studybot` reports it as installed. This is an iCloud/filesystem quirk, not
+a Study Bot bug — Study Bot's code does nothing to detect or work around it.
+
+A reliable workaround for a shell session:
+
+```bash
+export PYTHONPATH="$PWD/src"
+```
+
+Run this once per new terminal (after `source .venv/bin/activate`) if you
+hit that error. The permanent fix is either excluding `.venv` from iCloud
+sync or moving the project outside `~/Desktop`.
+
 ## Running the chatbot
 
 ```bash
@@ -71,7 +92,7 @@ model via Ollama:
 STUDYBOT_MODEL_PROVIDER=ollama python -m studybot
 ```
 
-Example session (Ollama mode):
+Example session (Ollama mode, resuming a prior chat):
 
 ```
 Study Bot
@@ -79,6 +100,7 @@ Local study assistant
 
 Provider: Ollama
 Model: qwen3:4b
+Chat: Explain vectors please
 
 Type /help for commands.
 You > What's the difference between speed and velocity?
@@ -87,17 +109,32 @@ You > /quit
 Goodbye.
 ```
 
-Supported commands:
+If no chats exist yet, `Chat: Untitled` is shown, and nothing is written to
+the database until you actually send a message — launching and quitting
+without chatting leaves no empty chat behind.
 
-| Command    | Description                                          |
-|------------|-------------------------------------------------------|
-| `/help`    | List available commands                                |
-| `/history` | Show the current conversation                           |
-| `/status`  | Show provider/server connection and model availability |
-| `/clear`   | Clear the conversation history                          |
-| `/quit`    | Exit                                                     |
+### Commands
 
-`Ctrl+C` and `Ctrl+D` (EOF) both exit cleanly with no stack trace.
+| Command           | Description                                              |
+|--------------------|-----------------------------------------------------------|
+| `/help`            | List available commands                                    |
+| `/history`         | Show the active chat's conversation history                |
+| `/status`          | Show provider/server connection and model availability     |
+| `/new`             | Start a new chat and switch to it                           |
+| `/chats`           | List saved chats (`*` marks the active one)                 |
+| `/open <id>`       | Switch to an existing chat by id or unique id prefix         |
+| `/rename <title>`  | Rename the active chat                                       |
+| `/clear`           | Remove the active chat's messages — asks to confirm; keeps the chat itself |
+| `/delete`          | Delete the active chat entirely — asks to confirm            |
+| `/quit`            | Exit                                                          |
+
+`Ctrl+C` and `Ctrl+D` (EOF) both exit cleanly with no stack trace, and
+close the database connection on the way out.
+
+**`/clear` vs `/delete`:** `/clear` empties a chat's messages but keeps its
+title and id — use it to start a topic over without losing the chat slot.
+`/delete` removes the chat (and its messages) entirely. Both destroy data,
+so both ask `[y/N]` first, defaulting to No.
 
 ## Configuration
 
@@ -109,7 +146,7 @@ from environment variables (all optional, sensible defaults apply):
 | `STUDYBOT_ENV`                 | `development`                               | Environment name                          |
 | `STUDYBOT_LOG_LEVEL`           | `INFO`                                       | `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` |
 | `STUDYBOT_MODEL_PROVIDER`      | `mock`                                       | `mock` or `ollama`                        |
-| `STUDYBOT_DATA_DIR`            | `~/Library/Application Support/StudyBot`     | Future app data directory (chats, memory, indexes, logs) — not written to yet |
+| `STUDYBOT_DATA_DIR`            | `~/Library/Application Support/StudyBot`     | Where the chat database (and future data) lives |
 | `STUDYBOT_SYSTEM_PROMPT`       | *(see `core/prompts.py`)*                    | Overrides the baseline system prompt      |
 | `STUDYBOT_OLLAMA_HOST`         | `http://localhost:11434`                     | Ollama server URL                         |
 | `STUDYBOT_OLLAMA_MODEL`        | `qwen3:4b`                                   | Ollama model name/tag to use              |
@@ -128,6 +165,26 @@ The model name is entirely configuration-driven — swapping in `qwen3:8b`,
 Ollama is just an environment variable change; nothing in the code is tied
 to Qwen specifically.
 
+## Where chats are stored
+
+Conversations live in a local SQLite database at
+`STUDYBOT_DATA_DIR/studybot.db` (default:
+`~/Library/Application Support/StudyBot/studybot.db`). The schema
+(`chats`/`messages` tables, versioned via SQLite's `PRAGMA user_version`) is
+created automatically the first time it's needed — there's nothing to run
+by hand. You never need to open this file directly; use `/chats`, `/open`,
+`/rename`, `/clear`, and `/delete` to manage chats through the app.
+
+**Resetting local data:** to start over with a clean slate, quit Study Bot
+and delete the database file:
+
+```bash
+rm ~/Library/Application Support/StudyBot/studybot.db
+```
+
+This only removes chats — do it only if you actually want to lose your
+local chat history.
+
 ## Running tests
 
 ```bash
@@ -135,11 +192,11 @@ pip install -e ".[dev]"
 pytest
 ```
 
-All tests are deterministic and server-independent: they fake the `ollama`
+All tests are deterministic and self-contained: they fake the `ollama`
 client boundary (`tests/fake_ollama.py`) rather than requiring a running
-Ollama server or a downloaded model, and they build `Settings` explicitly
-(with an in-memory environment mapping and/or `tmp_path`) rather than
-touching the real macOS application-support directory or `~`.
+Ollama server or a downloaded model, and every persistence test opens its
+own SQLite database under pytest's `tmp_path` — no test reads or writes
+`~/Library/Application Support/StudyBot` or any other real user data.
 
 ## Troubleshooting
 
@@ -153,94 +210,106 @@ configured model hasn't been downloaded. Run the suggested `ollama pull`
 command yourself; Study Bot deliberately never downloads models
 automatically.
 
+**`ModuleNotFoundError: No module named 'studybot'`** — see the iCloud
+Desktop sync note above.
+
 ## Privacy
 
 This is a local-first project. There is no analytics, telemetry, cloud
-logging, or remote error reporting anywhere in the codebase, and inference
-runs entirely against your local Ollama server. Application logs record
-message *counts*, provider/model names, and structural error details for
-debugging — never the actual content of prompts or model responses. This
-matters more with each stage: eventually Study Bot will read your course
-materials, screenshots, and other personal files, so privacy-safe logging
-is the default from the start, not an afterthought.
+logging, cloud backup, or remote error reporting anywhere in the codebase,
+and inference runs entirely against your local Ollama server. Chat history
+lives only in your local SQLite database. Application logs record message
+*counts*, provider/model names, database *paths* (never contents), and
+structural error details for debugging — never the actual content of
+prompts, model responses, or chat titles. This matters more with each
+stage: eventually Study Bot will read your course materials, screenshots,
+and other personal files, so privacy-safe logging is the default from the
+start, not an afterthought.
 
 ## Architecture
 
 ```
 Interface (CLI today; desktop UI / macOS assistant later)
         ↓
-StudyBotApp (src/studybot/app.py)  — wires config, logging, chat service
+StudyBotApp (src/studybot/app.py) — wires config, logging, model, repository
         ↓
-ChatService (src/studybot/core/chat.py) — history, streaming, status
-        ↓
-ModelProvider (src/studybot/models/base.py) — backend-agnostic interface
-        ↓                                  ↓
-MockModel (src/studybot/models/mock.py)   OllamaModel (src/studybot/models/ollama.py)
-                                            ↓
-                                           Ollama local server → configured LLM
+SessionService (src/studybot/core/session_service.py)
+        ↓                                   ↓
+ChatService (history, streaming)     ChatRepository (persistence)
+        ↓                                   ↓
+ModelProvider (Mock / Ollama)        SQLiteChatRepository
 ```
+
+Model inference and persistence are separate concerns that meet only in
+`SessionService`: it calls `ChatService` for a response and, independently,
+mirrors whatever new messages appear in `ChatService.history` into the
+`ChatRepository`. Neither `ChatService`/`ModelProvider` knows persistence
+exists, and neither `ChatRepository`/`SQLiteChatRepository` knows Ollama
+exists.
 
 Key modules:
 
 - `src/studybot/__main__.py` — `python -m studybot` entry point
-- `src/studybot/cli.py` — interactive terminal shell; contains no core logic
-  and imports nothing Ollama-specific — only `ChatService`/`StudyBotApp`
-- `src/studybot/app.py` — builds settings, logging, and the chat service for
-  a run of the app; the thing every interface talks to
-- `src/studybot/config/settings.py` — typed, validated configuration
-  (mock and Ollama settings alike) with environment-variable overrides
-- `src/studybot/core/messages.py` — typed `Message`/`Role` representation
+- `src/studybot/cli.py` — interactive terminal shell; no core logic, no raw
+  SQL, no Ollama-specific code — only `StudyBotApp`/`SessionService`
+- `src/studybot/app.py` — builds settings, logging, the model, the SQLite
+  repository, and `SessionService` for a run of the app; closes the
+  database connection on shutdown
+- `src/studybot/config/settings.py` — typed, validated configuration,
+  including `database_path` (derived from `data_dir`)
+- `src/studybot/core/messages.py` — typed `Message`/`Role`
   (`system`/`user`/`assistant`)
-- `src/studybot/core/prompts.py` — the shared baseline system prompt, kept
-  out of any provider so every backend gets the same behavior
-- `src/studybot/core/chat.py` — `ChatService`: session history, `send`
-  (complete response) and `send_streaming` (incremental), `clear`,
-  `get_status`
-- `src/studybot/core/exceptions.py` — `StudyBotError` and subclasses for
-  expected, user-facing failures (e.g. `ModelError` for a down/misconfigured
-  backend)
-- `src/studybot/models/base.py` — `ModelProvider` protocol
-  (`generate`/`stream`/`get_status`), `ModelResponse`, `ProviderStatus`
-- `src/studybot/models/mock.py` — deterministic echo model
-- `src/studybot/models/ollama.py` — the **only** module allowed to import
-  `ollama`/`httpx` or know about Ollama's request/response shapes; converts
-  typed `Message`s to/from Ollama's format and translates connection/model
-  errors into `ModelError`
-- `src/studybot/models/factory.py` — maps `model_provider` from config to a
-  concrete `ModelProvider` (`mock` → `MockModel`, `ollama` → `OllamaModel`)
+- `src/studybot/core/prompts.py` — the shared baseline system prompt
+- `src/studybot/core/titles.py` — deterministic, local chat-title
+  generation from a chat's first message (no LLM call)
+- `src/studybot/core/chat.py` — `ChatService`: in-memory history for the
+  active chat, `send`/`send_streaming`, `clear`, `get_status`; can be
+  seeded with restored history via its `history=` constructor argument
+- `src/studybot/core/session_service.py` — `SessionService`: owns the
+  active chat, creates/lists/opens/renames/deletes chats, and persists
+  new messages after each successful `ChatService` call by diffing its
+  history before/after — `ChatService` itself never learns persistence
+  exists
+- `src/studybot/core/exceptions.py` — `StudyBotError` and subclasses,
+  including `SessionError` for chat-navigation problems (not found,
+  ambiguous id prefix, empty title, ...)
+- `src/studybot/models/` — unchanged from Stage 2 (`ModelProvider`,
+  `MockModel`, `OllamaModel`, the provider factory)
+- `src/studybot/storage/base.py` — `ChatRepository` protocol and the
+  `ChatSession` domain type; nothing outside `storage/` sees a raw SQLite
+  row
+- `src/studybot/storage/sqlite_repository.py` — the **only** module
+  allowed to contain SQL; `SQLiteChatRepository` implements the schema,
+  its `PRAGMA user_version`-based version (currently `1`), and CRUD for
+  chats/messages using parameterized queries only
 - `src/studybot/logging_config.py` — console logging setup; quiet by
   default, verbosity controlled via `STUDYBOT_LOG_LEVEL`
 
-The CLI only ever talks to `ChatService`, which only ever talks to the
-`ModelProvider` protocol — neither imports anything Ollama-specific. This is
-what lets a future backend (a different local model, hybrid routing, etc.)
-replace `OllamaModel` without touching `ChatService`, the CLI, or a future
-GUI at all, and it's why choosing `mock` still runs with no Ollama installed.
+A future backend — a different local model, hybrid routing, an encrypted
+store, sync — can replace `OllamaModel` or `SQLiteChatRepository`
+independently, without touching `SessionService`, the CLI, or a future GUI.
+Choosing `mock` still runs with no Ollama installed, exactly as in Stage 2.
 
-### Streaming design
+### Streaming + persistence
 
-`ModelProvider.stream()` yields response content incrementally;
-`ChatService.send_streaming()` consumes it, prints/forwards each chunk to
-the caller, and accumulates the full text itself. **History is only updated
-once, after the stream completes successfully** — never with partial
-content. If the underlying model fails partway through (or the caller stops
-consuming the generator early), no assistant message is recorded at all;
-the user's message stays in history but the reply does not, so a failed or
-abandoned generation can never be mistaken for a complete answer. The
-non-streaming `send()`/`generate()` path is preserved unchanged alongside
-streaming for tests and any future caller that just wants a complete
-response.
+`ModelProvider.stream()` yields content incrementally; `ChatService`
+accumulates it and adds exactly one complete assistant message to its
+in-memory history, but only once the stream finishes successfully — never
+on failure or early abandonment (unchanged from Stage 2). `SessionService`
+persists by comparing `ChatService.history` before and after each call, so
+this guarantee carries through to storage automatically: a successful
+exchange writes one user row and one assistant row; a failed or abandoned
+one writes only the user row. No database row is ever written per token.
 
-### Reasoning/thinking output
-
-Some models return a separate `thinking` field distinct from their answer
-`content`. `OllamaModel` only ever reads `content` — thinking traces are
-never surfaced in the chat UI, and there is no "show reasoning" feature in
-this stage.
+If the model fails after the user's message was already recorded, that
+user message is deliberately left in the database (so the user can retry)
+— Study Bot never inserts a synthetic assistant message like "Error:
+model unavailable" into the conversation itself; errors are surfaced by
+the CLI, not written into chat history.
 
 ## Next planned stage
 
-Stage 3 and beyond will add course-specific study spaces, persistent
+Stage 4+ will add course-specific study spaces, persistent long-term
 memory, RAG over PDFs/notes/slides, embeddings, image/screenshot
 understanding, mastery tracking, quizzes, and eventually device/tool
 access — none of which exists yet.

@@ -24,6 +24,8 @@ _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 # without touching data-directory logic elsewhere.
 _APP_DIR_NAME = "StudyBot"
 
+DATABASE_FILENAME = "studybot.db"
+
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "qwen3:4b"
 DEFAULT_OLLAMA_TIMEOUT = 120.0
@@ -128,3 +130,8 @@ class Settings:
         """Create the application data directory if it doesn't exist yet, and return it."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
         return self.data_dir
+
+    @property
+    def database_path(self) -> Path:
+        """Where the local chat-history database lives, inside `data_dir`."""
+        return self.data_dir / DATABASE_FILENAME

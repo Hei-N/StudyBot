@@ -19,11 +19,20 @@ logger = logging.getLogger(__name__)
 class ChatService:
     """Manages in-memory conversation history for a single session."""
 
-    def __init__(self, model: ModelProvider, system_prompt: str | None = None) -> None:
+    def __init__(
+        self,
+        model: ModelProvider,
+        system_prompt: str | None = None,
+        history: Sequence[Message] = (),
+    ) -> None:
+        """`history` preloads prior user/assistant turns (e.g. restored from
+        persistence) after the system prompt, without re-sending it to the
+        model until the next `send`/`send_streaming` call."""
         self._model = model
         self._history: list[Message] = []
         if system_prompt:
             self._history.append(Message.system(system_prompt))
+        self._history.extend(history)
 
     @property
     def history(self) -> Sequence[Message]:
