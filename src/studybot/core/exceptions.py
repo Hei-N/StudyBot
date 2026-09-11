@@ -21,4 +21,5 @@ class ModelError(StudyBotError):
 
 
 class SessionError(StudyBotError):
-    """Raised for invalid chat/session navigation (not found, ambiguous, etc.)."""
+    """Raised for invalid chat/course navigation or validation: not found,
+    an ambiguous id prefix, an empty/too-long name, and the like."""

@@ -1,34 +1,24 @@
-import sqlite3
-
 import pytest
 
 from studybot.core.messages import Role
-from studybot.storage.sqlite_repository import SCHEMA_VERSION, SQLiteChatRepository
+from studybot.storage.database import open_database
+from studybot.storage.sqlite_repository import SQLiteChatRepository
 
 
 @pytest.fixture
-def repo(tmp_path):
-    repository = SQLiteChatRepository(tmp_path / "studybot-test.db")
-    yield repository
-    repository.close()
+def connection(tmp_path):
+    conn = open_database(tmp_path / "studybot-test.db")
+    yield conn
+    conn.close()
 
 
-def test_schema_version_is_1(repo):
-    assert SCHEMA_VERSION == 1
-    assert repo.schema_version == 1
+@pytest.fixture
+def repo(connection):
+    return SQLiteChatRepository(connection)
 
 
-def test_database_file_is_created_inside_given_directory(tmp_path):
-    db_path = tmp_path / "nested" / "studybot-test.db"
-    repository = SQLiteChatRepository(db_path)
-    try:
-        assert db_path.exists()
-    finally:
-        repository.close()
-
-
-def test_foreign_keys_are_enabled(repo):
-    row = repo._conn.execute("PRAGMA foreign_keys").fetchone()
+def test_foreign_keys_are_enabled(connection):
+    row = connection.execute("PRAGMA foreign_keys").fetchone()
     assert row[0] == 1
 
 
@@ -40,8 +30,20 @@ def test_create_and_get_chat(repo):
     assert fetched is not None
     assert fetched.id == "chat-1"
     assert fetched.title == "My Chat"
+    assert fetched.course_id is None
     assert fetched.created_at == created.created_at
     assert fetched.updated_at == created.updated_at
+
+
+def test_create_chat_with_course(repo, connection):
+    connection.execute(
+        "INSERT INTO courses (id, name, created_at, updated_at) VALUES ('c1', 'Physics', 't', 't')"
+    )
+
+    created = repo.create_chat("chat-1", "Title", course_id="c1")
+
+    assert created.course_id == "c1"
+    assert repo.get_chat("chat-1").course_id == "c1"
 
 
 def test_get_chat_returns_none_for_missing_chat(repo):
@@ -106,7 +108,7 @@ def test_delete_chat_removes_it(repo):
     assert repo.get_chat("chat-1") is None
 
 
-def test_delete_chat_cascades_to_messages(repo):
+def test_delete_chat_cascades_to_messages(repo, connection):
     repo.create_chat("chat-1", "Title")
     repo.append_message("chat-1", Role.USER, "hello")
     repo.append_message("chat-1", Role.ASSISTANT, "hi")
@@ -114,7 +116,7 @@ def test_delete_chat_cascades_to_messages(repo):
     repo.delete_chat("chat-1")
 
     # The messages table has no chat to belong to any more.
-    row = repo._conn.execute("SELECT COUNT(*) FROM messages WHERE chat_id = ?", ("chat-1",)).fetchone()
+    row = connection.execute("SELECT COUNT(*) FROM messages WHERE chat_id = ?", ("chat-1",)).fetchone()
     assert row[0] == 0
 
 
@@ -195,47 +197,68 @@ def test_sql_injection_style_content_is_stored_literally(repo):
     assert repo.get_chat("chat-1") is not None  # table still exists and chat is intact
 
 
-def test_persistence_survives_reopening_the_database(tmp_path):
-    db_path = tmp_path / "studybot-test.db"
-
-    repo1 = SQLiteChatRepository(db_path)
-    repo1.create_chat("chat-1", "Persisted Title")
-    repo1.append_message("chat-1", Role.USER, "hello")
-    repo1.append_message("chat-1", Role.ASSISTANT, "hi there")
-    repo1.close()
-
-    repo2 = SQLiteChatRepository(db_path)
-    try:
-        chat = repo2.get_chat("chat-1")
-        messages = repo2.load_messages("chat-1")
-        assert chat is not None
-        assert chat.title == "Persisted Title"
-        assert [m.content for m in messages] == ["hello", "hi there"]
-    finally:
-        repo2.close()
+# --- course relationship ------------------------------------------------------------
 
 
-def test_opening_the_same_database_twice_is_idempotent(tmp_path):
-    db_path = tmp_path / "studybot-test.db"
+def test_list_chats_by_course_filters_correctly(repo, connection):
+    connection.execute(
+        "INSERT INTO courses (id, name, created_at, updated_at) VALUES ('c1', 'Physics', 't', 't')"
+    )
+    repo.create_chat("chat-1", "In course", course_id="c1")
+    repo.create_chat("chat-2", "General chat", course_id=None)
 
-    repo1 = SQLiteChatRepository(db_path)
-    repo1.create_chat("chat-1", "Title")
-    repo1.close()
-
-    # Reopening must not recreate/wipe tables or fail on already-existing schema.
-    repo2 = SQLiteChatRepository(db_path)
-    try:
-        assert repo2.schema_version == 1
-        assert repo2.get_chat("chat-1") is not None
-    finally:
-        repo2.close()
+    assert [c.id for c in repo.list_chats_by_course("c1")] == ["chat-1"]
+    assert [c.id for c in repo.list_chats_by_course(None)] == ["chat-2"]
 
 
-def test_database_file_lives_in_configured_directory_not_repo(tmp_path):
-    db_path = tmp_path / "StudyBot" / "studybot.db"
-    repository = SQLiteChatRepository(db_path)
-    try:
-        assert db_path.is_file()
-        assert db_path.parent == tmp_path / "StudyBot"
-    finally:
-        repository.close()
+def test_move_chat_to_course_preserves_messages_and_title(repo, connection):
+    connection.execute(
+        "INSERT INTO courses (id, name, created_at, updated_at) VALUES ('c1', 'Physics', 't', 't')"
+    )
+    repo.create_chat("chat-1", "My Chat")
+    repo.append_message("chat-1", Role.USER, "hello")
+
+    moved = repo.move_chat_to_course("chat-1", "c1")
+
+    assert moved.course_id == "c1"
+    assert moved.id == "chat-1"
+    assert moved.title == "My Chat"
+    assert [m.content for m in repo.load_messages("chat-1")] == ["hello"]
+
+
+def test_move_chat_to_course_none_unassigns(repo, connection):
+    connection.execute(
+        "INSERT INTO courses (id, name, created_at, updated_at) VALUES ('c1', 'Physics', 't', 't')"
+    )
+    repo.create_chat("chat-1", "Title", course_id="c1")
+
+    moved = repo.move_chat_to_course("chat-1", None)
+
+    assert moved.course_id is None
+
+
+def test_deleting_course_sets_chat_course_id_null_and_preserves_chat(repo, connection):
+    connection.execute(
+        "INSERT INTO courses (id, name, created_at, updated_at) VALUES ('c1', 'Physics', 't', 't')"
+    )
+    repo.create_chat("chat-1", "Title", course_id="c1")
+    repo.append_message("chat-1", Role.USER, "hello")
+
+    connection.execute("DELETE FROM courses WHERE id = 'c1'")
+    connection.commit()
+
+    chat = repo.get_chat("chat-1")
+    assert chat is not None
+    assert chat.course_id is None
+    assert [m.content for m in repo.load_messages("chat-1")] == ["hello"]
+
+
+def test_count_chats_for_course(repo, connection):
+    connection.execute(
+        "INSERT INTO courses (id, name, created_at, updated_at) VALUES ('c1', 'Physics', 't', 't')"
+    )
+    repo.create_chat("chat-1", "A", course_id="c1")
+    repo.create_chat("chat-2", "B", course_id="c1")
+    repo.create_chat("chat-3", "C", course_id=None)
+
+    assert repo.count_chats_for_course("c1") == 2

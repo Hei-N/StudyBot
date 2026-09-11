@@ -1,8 +1,8 @@
 """Application wiring: builds the core services from configuration.
 
 Any interface (CLI today; a desktop UI or macOS assistant later) constructs
-a `StudyBotApp` and talks only to `app.sessions`. Nothing here is
-CLI-specific.
+a `StudyBotApp` and talks only to `app.sessions` and `app.courses`. Nothing
+here is CLI-specific.
 """
 
 from __future__ import annotations
@@ -10,9 +10,12 @@ from __future__ import annotations
 import logging
 
 from studybot.config.settings import Settings
+from studybot.core.course_service import CourseService
 from studybot.core.session_service import SessionService
 from studybot.logging_config import configure_logging
 from studybot.models.factory import create_model
+from studybot.storage.database import open_database
+from studybot.storage.sqlite_course_repository import SQLiteCourseRepository
 from studybot.storage.sqlite_repository import SQLiteChatRepository
 
 logger = logging.getLogger(__name__)
@@ -25,9 +28,17 @@ class StudyBotApp:
         self.settings = settings
         model = create_model(settings)
         settings.ensure_data_dir()
-        self._repository = SQLiteChatRepository(settings.database_path)
+
+        self._connection = open_database(settings.database_path)
+        chat_repository = SQLiteChatRepository(self._connection)
+        course_repository = SQLiteCourseRepository(self._connection)
+
+        self.courses = CourseService(course_repository=course_repository, chat_repository=chat_repository)
         self.sessions = SessionService(
-            model=model, repository=self._repository, system_prompt=settings.system_prompt
+            model=model,
+            repository=chat_repository,
+            course_repository=course_repository,
+            system_prompt=settings.system_prompt,
         )
         logger.debug("StudyBotApp initialized with model provider %r", model.name)
 
@@ -39,4 +50,4 @@ class StudyBotApp:
 
     def close(self) -> None:
         """Release resources (the database connection) held for this run."""
-        self._repository.close()
+        self._connection.close()

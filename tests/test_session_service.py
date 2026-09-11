@@ -5,6 +5,8 @@ from studybot.core.messages import Role
 from studybot.core.session_service import SessionService
 from studybot.models.base import ModelResponse, ProviderStatus
 from studybot.models.mock import MockModel
+from studybot.storage.database import open_database
+from studybot.storage.sqlite_course_repository import SQLiteCourseRepository
 from studybot.storage.sqlite_repository import SQLiteChatRepository
 
 
@@ -69,14 +71,29 @@ class FailingStreamModel:
 
 
 @pytest.fixture
-def repository(tmp_path):
-    repo = SQLiteChatRepository(tmp_path / "studybot-test.db")
-    yield repo
-    repo.close()
+def connection(tmp_path):
+    conn = open_database(tmp_path / "studybot-test.db")
+    yield conn
+    conn.close()
 
 
-def make_service(repository, model=None, system_prompt="sys prompt"):
-    return SessionService(model=model or MockModel(), repository=repository, system_prompt=system_prompt)
+@pytest.fixture
+def repository(connection):
+    return SQLiteChatRepository(connection)
+
+
+@pytest.fixture
+def course_repository(connection):
+    return SQLiteCourseRepository(connection)
+
+
+def make_service(repository, course_repository, model=None, system_prompt="sys prompt"):
+    return SessionService(
+        model=model or MockModel(),
+        repository=repository,
+        course_repository=course_repository,
+        system_prompt=system_prompt,
+    )
 
 
 def content_only(history):
@@ -86,15 +103,16 @@ def content_only(history):
 # --- startup / lazy persistence -----------------------------------------------
 
 
-def test_starts_with_untitled_in_memory_chat_when_no_chats_exist(repository):
-    service = make_service(repository)
+def test_starts_with_untitled_in_memory_chat_when_no_chats_exist(repository, course_repository):
+    service = make_service(repository, course_repository)
 
     assert service.active_session.title is None
+    assert service.active_session.course_id is None
     assert repository.list_chats() == []  # launching alone writes nothing
 
 
-def test_sending_first_message_creates_persisted_chat_with_generated_title(repository):
-    service = make_service(repository)
+def test_sending_first_message_creates_persisted_chat_with_generated_title(repository, course_repository):
+    service = make_service(repository, course_repository)
 
     service.send("Explain vectors please")
 
@@ -107,8 +125,8 @@ def test_sending_first_message_creates_persisted_chat_with_generated_title(repos
 # --- multiple chats / isolation ------------------------------------------------
 
 
-def test_new_chat_starts_separate_empty_history(repository):
-    service = make_service(repository)
+def test_new_chat_starts_separate_empty_history(repository, course_repository):
+    service = make_service(repository, course_repository)
     service.send("first chat message")
 
     service.new_chat()
@@ -116,8 +134,8 @@ def test_new_chat_starts_separate_empty_history(repository):
     assert content_only(service.history) == []
 
 
-def test_switching_chats_does_not_mix_histories(repository):
-    service = make_service(repository)
+def test_switching_chats_does_not_mix_histories(repository, course_repository):
+    service = make_service(repository, course_repository)
     service.send("Remember Alpha = 17")
     chat1_id = service.active_session.id
 
@@ -138,8 +156,8 @@ def test_switching_chats_does_not_mix_histories(repository):
     ]
 
 
-def test_open_chat_by_unique_id_prefix(repository):
-    service = make_service(repository)
+def test_open_chat_by_unique_id_prefix(repository, course_repository):
+    service = make_service(repository, course_repository)
     service.send("chat one")
     chat_id = service.active_session.id
     service.new_chat()
@@ -150,17 +168,17 @@ def test_open_chat_by_unique_id_prefix(repository):
     assert opened.id == chat_id
 
 
-def test_open_chat_raises_for_unknown_id(repository):
-    service = make_service(repository)
+def test_open_chat_raises_for_unknown_id(repository, course_repository):
+    service = make_service(repository, course_repository)
 
     with pytest.raises(SessionError):
         service.open_chat("does-not-exist")
 
 
-def test_open_chat_raises_for_ambiguous_prefix(repository, monkeypatch):
+def test_open_chat_raises_for_ambiguous_prefix(repository, course_repository, monkeypatch):
     ids = iter(["abc111-one", "abc222-two"])
     monkeypatch.setattr("uuid.uuid4", lambda: next(ids))
-    service = make_service(repository)
+    service = make_service(repository, course_repository)
     service.send("first")
     service.new_chat()
     service.send("second")
@@ -172,37 +190,43 @@ def test_open_chat_raises_for_ambiguous_prefix(repository, monkeypatch):
 # --- restart / recreation -------------------------------------------------------
 
 
-def test_reopening_chat_restores_history_after_recreating_service(repository):
-    service1 = make_service(repository)
+def test_reopening_chat_restores_history_after_recreating_service(repository, course_repository):
+    service1 = make_service(repository, course_repository)
     service1.send("hello persisted")
     chat_id = service1.active_session.id
 
     # A brand-new SessionService simulates the app restarting.
-    service2 = make_service(repository)
+    service2 = make_service(repository, course_repository)
 
     assert service2.active_session.id == chat_id  # most recently updated, auto-resumed
     assert content_only(service2.history) == ["hello persisted", "[Mock] You said: hello persisted"]
 
 
-def test_most_recently_updated_chat_is_auto_resumed(repository):
-    service = make_service(repository)
+def test_most_recently_updated_chat_is_auto_resumed(repository, course_repository):
+    service = make_service(repository, course_repository)
     service.send("first chat")
     service.new_chat()
     service.send("second chat")
     second_id = service.active_session.id
 
-    resumed = make_service(repository)
+    resumed = make_service(repository, course_repository)
 
     assert resumed.active_session.id == second_id
 
 
-def test_restored_conversation_produces_correct_model_input_order(repository):
+def test_restored_conversation_produces_correct_model_input_order(repository, course_repository):
     model = RecordingModel(reply="ack")
-    service = SessionService(model=model, repository=repository, system_prompt="You are helpful.")
+    service = SessionService(
+        model=model, repository=repository, course_repository=course_repository,
+        system_prompt="You are helpful.",
+    )
     service.send("first turn")
     chat_id = service.active_session.id
 
-    service2 = SessionService(model=model, repository=repository, system_prompt="You are helpful.")
+    service2 = SessionService(
+        model=model, repository=repository, course_repository=course_repository,
+        system_prompt="You are helpful.",
+    )
     assert service2.active_session.id == chat_id
     service2.send("second turn")
 
@@ -215,8 +239,8 @@ def test_restored_conversation_produces_correct_model_input_order(repository):
 # --- titles ----------------------------------------------------------------------
 
 
-def test_explicit_rename_overrides_generated_title(repository):
-    service = make_service(repository)
+def test_explicit_rename_overrides_generated_title(repository, course_repository):
+    service = make_service(repository, course_repository)
     service.send("Explain vectors")
 
     service.rename_active_chat("My Custom Title")
@@ -225,8 +249,8 @@ def test_explicit_rename_overrides_generated_title(repository):
     assert repository.get_chat(service.active_session.id).title == "My Custom Title"
 
 
-def test_renaming_before_first_message_is_honored_once_persisted(repository):
-    service = make_service(repository)
+def test_renaming_before_first_message_is_honored_once_persisted(repository, course_repository):
+    service = make_service(repository, course_repository)
 
     service.rename_active_chat("Pre-named")
     assert repository.list_chats() == []  # still not persisted
@@ -238,8 +262,8 @@ def test_renaming_before_first_message_is_honored_once_persisted(repository):
     assert chats[0].title == "Pre-named"
 
 
-def test_rename_with_empty_title_raises(repository):
-    service = make_service(repository)
+def test_rename_with_empty_title_raises(repository, course_repository):
+    service = make_service(repository, course_repository)
 
     with pytest.raises(SessionError):
         service.rename_active_chat("   ")
@@ -248,9 +272,9 @@ def test_rename_with_empty_title_raises(repository):
 # --- streaming persistence --------------------------------------------------------
 
 
-def test_successful_stream_persists_one_complete_assistant_message(repository):
+def test_successful_stream_persists_one_complete_assistant_message(repository, course_repository):
     model = RecordingModel(chunks=["Hello", " ", "world"])
-    service = make_service(repository, model=model)
+    service = make_service(repository, course_repository, model=model)
 
     list(service.send_streaming("hi"))
 
@@ -261,8 +285,8 @@ def test_successful_stream_persists_one_complete_assistant_message(repository):
     ]
 
 
-def test_failed_stream_persists_only_the_user_message(repository):
-    service = make_service(repository, model=FailingStreamModel())
+def test_failed_stream_persists_only_the_user_message(repository, course_repository):
+    service = make_service(repository, course_repository, model=FailingStreamModel())
 
     with pytest.raises(ModelError):
         list(service.send_streaming("hi"))
@@ -271,9 +295,9 @@ def test_failed_stream_persists_only_the_user_message(repository):
     assert [(m.role, m.content) for m in messages] == [(Role.USER, "hi")]
 
 
-def test_abandoned_stream_persists_only_the_user_message(repository):
+def test_abandoned_stream_persists_only_the_user_message(repository, course_repository):
     model = RecordingModel(chunks=["a", "b", "c"])
-    service = make_service(repository, model=model)
+    service = make_service(repository, course_repository, model=model)
 
     generator = service.send_streaming("hi")
     next(generator)
@@ -283,8 +307,8 @@ def test_abandoned_stream_persists_only_the_user_message(repository):
     assert [(m.role, m.content) for m in messages] == [(Role.USER, "hi")]
 
 
-def test_model_failure_on_non_streaming_send_leaves_only_user_message(repository):
-    service = make_service(repository, model=FailingModel())
+def test_model_failure_on_non_streaming_send_leaves_only_user_message(repository, course_repository):
+    service = make_service(repository, course_repository, model=FailingModel())
 
     with pytest.raises(ModelError):
         service.send("Explain vectors")
@@ -296,8 +320,8 @@ def test_model_failure_on_non_streaming_send_leaves_only_user_message(repository
 # --- clear vs delete --------------------------------------------------------------
 
 
-def test_clear_active_chat_removes_messages_but_keeps_the_chat(repository):
-    service = make_service(repository)
+def test_clear_active_chat_removes_messages_but_keeps_the_chat(repository, course_repository):
+    service = make_service(repository, course_repository)
     service.send("hello")
     chat_id = service.active_session.id
 
@@ -308,9 +332,12 @@ def test_clear_active_chat_removes_messages_but_keeps_the_chat(repository):
     assert content_only(service.history) == []
 
 
-def test_clear_still_injects_system_prompt_on_next_send(repository):
+def test_clear_still_injects_system_prompt_on_next_send(repository, course_repository):
     model = RecordingModel(reply="ack")
-    service = SessionService(model=model, repository=repository, system_prompt="sys prompt")
+    service = SessionService(
+        model=model, repository=repository, course_repository=course_repository,
+        system_prompt="sys prompt",
+    )
     service.send("hello")
 
     service.clear_active_chat()
@@ -320,8 +347,8 @@ def test_clear_still_injects_system_prompt_on_next_send(repository):
     assert [m.content for m in last_call] == ["sys prompt", "hello again"]
 
 
-def test_delete_active_chat_removes_it_and_activates_another(repository):
-    service = make_service(repository)
+def test_delete_active_chat_removes_it_and_activates_another(repository, course_repository):
+    service = make_service(repository, course_repository)
     service.send("first")
     first_id = service.active_session.id
     service.new_chat()
@@ -335,8 +362,8 @@ def test_delete_active_chat_removes_it_and_activates_another(repository):
     assert service.active_session.id == first_id
 
 
-def test_deleting_the_only_chat_creates_a_fresh_untitled_chat(repository):
-    service = make_service(repository)
+def test_deleting_the_only_chat_creates_a_fresh_untitled_chat(repository, course_repository):
+    service = make_service(repository, course_repository)
     service.send("only chat")
     only_id = service.active_session.id
 
@@ -347,8 +374,8 @@ def test_deleting_the_only_chat_creates_a_fresh_untitled_chat(repository):
     assert service.active_session.title is None
 
 
-def test_deleting_an_unpersisted_chat_does_not_error(repository):
-    service = make_service(repository)  # brand new, never sent a message
+def test_deleting_an_unpersisted_chat_does_not_error(repository, course_repository):
+    service = make_service(repository, course_repository)  # brand new, never sent a message
 
     service.delete_active_chat()
 
@@ -358,16 +385,326 @@ def test_deleting_an_unpersisted_chat_does_not_error(repository):
 # --- misc passthroughs --------------------------------------------------------------
 
 
-def test_list_chats_reflects_repository_state(repository):
-    service = make_service(repository)
+def test_list_chats_reflects_repository_state(repository, course_repository):
+    service = make_service(repository, course_repository)
     service.send("a")
 
     assert [c.id for c in service.list_chats()] == [service.active_session.id]
 
 
-def test_get_status_delegates_to_model(repository):
-    service = make_service(repository, model=RecordingModel())
+def test_get_status_delegates_to_model(repository, course_repository):
+    service = make_service(repository, course_repository, model=RecordingModel())
 
     status = service.get_status()
 
     assert status.provider_name == "recording"
+
+
+# --- course context: new chats, isolation, system prompt ----------------------------
+
+
+def test_new_chat_inherits_active_course_by_default(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.open_course_context(course.id)
+
+    service.new_chat()
+
+    assert service.active_session.course_id == course.id
+
+
+def test_new_chat_can_target_a_different_course_explicitly(repository, course_repository):
+    physics = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+
+    service.new_chat(course_id=physics.id)
+
+    assert service.active_session.course_id == physics.id
+
+
+def test_open_course_context_resumes_most_recent_chat_in_that_course(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.new_chat(course_id=course.id)
+    service.send("physics chat one")
+    chat_id = service.active_session.id
+
+    service.new_chat(course_id=None)  # switch away to General
+    service.send("unrelated general chat")
+
+    service.open_course_context(course.id)
+
+    assert service.active_session.id == chat_id
+
+
+def test_open_course_context_with_no_chats_starts_empty_chat_scoped_to_course(
+    repository, course_repository
+):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+
+    session = service.open_course_context(course.id)
+
+    assert session.course_id == course.id
+    assert session.title is None
+    assert repository.list_chats() == []  # nothing persisted just from opening
+
+
+def test_leaving_course_via_none_context_goes_to_general(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.open_course_context(course.id)
+
+    session = service.open_course_context(None)
+
+    assert session.course_id is None
+
+
+def test_three_way_chat_isolation_across_two_courses_and_general(repository, course_repository):
+    """Physics/Chat A, Physics/Chat B, and Calculus/Chat C must never see
+    each other's history, even though two of them share a course."""
+    physics = course_repository.create_course("physics", "Physics", None, None, None)
+    calculus = course_repository.create_course("calc", "Calculus", None, None, None)
+    service = make_service(repository, course_repository)
+
+    service.new_chat(course_id=physics.id)
+    service.send("Remember PHYSICS_A = 1")
+    chat_a = service.active_session.id
+
+    service.new_chat(course_id=physics.id)
+    service.send("Remember PHYSICS_B = 2")
+    chat_b = service.active_session.id
+
+    service.new_chat(course_id=calculus.id)
+    service.send("Remember CALC_C = 3")
+    chat_c = service.active_session.id
+
+    service.open_chat(chat_a)
+    assert content_only(service.history) == ["Remember PHYSICS_A = 1", "[Mock] You said: Remember PHYSICS_A = 1"]
+
+    service.open_chat(chat_b)
+    assert content_only(service.history) == ["Remember PHYSICS_B = 2", "[Mock] You said: Remember PHYSICS_B = 2"]
+
+    service.open_chat(chat_c)
+    assert content_only(service.history) == ["Remember CALC_C = 3", "[Mock] You said: Remember CALC_C = 3"]
+
+
+def test_course_context_appears_in_model_input(repository, course_repository):
+    course_repository.create_course("c1", "University Physics I", "PHY 215", "Fall 2026", None)
+    model = RecordingModel(reply="ack")
+    service = SessionService(
+        model=model, repository=repository, course_repository=course_repository,
+        system_prompt="Baseline.",
+    )
+    service.new_chat(course_id="c1")
+
+    service.send("hello")
+
+    system_message = model.received_calls[-1][0]
+    assert system_message.role is Role.SYSTEM
+    assert "University Physics I" in system_message.content
+    assert "PHY 215" in system_message.content
+    assert "Baseline." in system_message.content
+
+
+def test_general_chat_has_no_course_context_in_model_input(repository, course_repository):
+    model = RecordingModel(reply="ack")
+    service = SessionService(
+        model=model, repository=repository, course_repository=course_repository,
+        system_prompt="Baseline.",
+    )
+
+    service.send("hello")
+
+    system_message = model.received_calls[-1][0]
+    assert system_message.content == "Baseline."
+
+
+def test_restart_reconstructs_active_course_from_resumed_chat(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", "PHY 100", None, None)
+    model = RecordingModel(reply="ack")
+    service1 = SessionService(
+        model=model, repository=repository, course_repository=course_repository,
+        system_prompt="Baseline.",
+    )
+    service1.new_chat(course_id=course.id)
+    service1.send("hello")
+
+    service2 = SessionService(
+        model=model, repository=repository, course_repository=course_repository,
+        system_prompt="Baseline.",
+    )
+    assert service2.active_session.course_id == course.id
+
+    service2.send("again")
+    system_message = model.received_calls[-1][0]
+    assert "Physics" in system_message.content
+    assert "PHY 100" in system_message.content
+
+
+# --- move / unassign chat -----------------------------------------------------------
+
+
+def test_move_active_chat_to_course_by_id(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.send("hello")
+
+    session = service.move_active_chat_to_course(course.id)
+
+    assert session.course_id == course.id
+    assert repository.get_chat(session.id).course_id == course.id
+
+
+def test_move_active_chat_to_course_by_prefix(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.send("hello")
+
+    session = service.move_active_chat_to_course(course.id[:1])
+
+    assert session.course_id == course.id
+
+
+def test_move_active_chat_preserves_messages_and_id(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    chat_id = service.active_session.id
+
+    service.move_active_chat_to_course(course.id)
+
+    assert service.active_session.id == chat_id
+    assert [m.content for m in repository.load_messages(chat_id)] == ["hello", "[Mock] You said: hello"]
+
+
+def test_move_active_chat_to_none_unassigns(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.new_chat(course_id=course.id)
+    service.send("hello")
+
+    session = service.move_active_chat_to_course(None)
+
+    assert session.course_id is None
+
+
+def test_move_unpersisted_chat_to_course(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)  # unpersisted
+
+    service.move_active_chat_to_course(course.id)
+    service.send("hello")  # first persist
+
+    assert repository.get_chat(service.active_session.id).course_id == course.id
+
+
+def test_move_active_chat_raises_for_unknown_course(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+
+    with pytest.raises(SessionError):
+        service.move_active_chat_to_course("does-not-exist")
+
+
+def test_moving_chat_updates_effective_system_prompt(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    model = RecordingModel(reply="ack")
+    service = SessionService(
+        model=model, repository=repository, course_repository=course_repository,
+        system_prompt="Baseline.",
+    )
+    service.send("hello")
+
+    service.move_active_chat_to_course(course.id)
+    service.send("again")
+
+    system_message = model.received_calls[-1][0]
+    assert "Physics" in system_message.content
+
+
+# --- delete chat/course interplay ----------------------------------------------------
+
+
+def test_deleting_active_chat_prefers_another_chat_in_the_same_course(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.new_chat(course_id=course.id)
+    service.send("first")
+    first_id = service.active_session.id
+    service.new_chat(course_id=course.id)
+    service.send("second")
+    second_id = service.active_session.id
+
+    service.delete_active_chat()
+
+    assert service.active_session.id == first_id
+    assert service.active_session.course_id == course.id
+
+
+def test_deleting_last_chat_in_course_starts_new_chat_still_scoped_to_course(
+    repository, course_repository
+):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.new_chat(course_id=course.id)
+    service.send("only chat in course")
+
+    service.delete_active_chat()
+
+    assert service.active_session.course_id == course.id
+    assert service.active_session.title is None
+
+
+def test_deleting_course_preserves_its_chats_and_messages(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.new_chat(course_id=course.id)
+    service.send("hello")
+    chat_id = service.active_session.id
+
+    course_repository.delete_course(course.id)
+
+    chat = repository.get_chat(chat_id)
+    assert chat is not None
+    assert chat.course_id is None  # unassigned, not deleted
+    assert [m.content for m in repository.load_messages(chat_id)] == ["hello", "[Mock] You said: hello"]
+
+
+def test_sync_active_chat_course_refreshes_without_switching_chats(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    model = RecordingModel(reply="ack")
+    service = SessionService(
+        model=model, repository=repository, course_repository=course_repository,
+        system_prompt="Baseline.",
+    )
+    service.new_chat(course_id=course.id)
+    service.send("hello")
+    chat_id = service.active_session.id
+
+    course_repository.delete_course(course.id)
+    service.sync_active_chat_course()
+
+    assert service.active_session.id == chat_id  # did not switch chats
+    assert service.active_session.course_id is None
+    service.send("again")
+    system_message = model.received_calls[-1][0]
+    assert system_message.content == "Baseline."  # course context dropped
+
+
+# --- listing chats by course ---------------------------------------------------------
+
+
+def test_list_chats_in_course_filters_correctly(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.new_chat(course_id=course.id)
+    service.send("in course")
+    service.new_chat(course_id=None)
+    service.send("general")
+
+    in_course = service.list_chats_in_course(course.id)
+    general = service.list_chats_in_course(None)
+
+    assert [c.title for c in in_course] == ["in course"]
+    assert [c.title for c in general] == ["general"]

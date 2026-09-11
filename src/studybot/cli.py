@@ -1,9 +1,9 @@
 """Interactive terminal chat shell.
 
-This is one interface on top of `StudyBotApp` / `SessionService`. It
-contains no core logic of its own — it only reads input, dispatches
-commands, and prints output. It does not know (and must not import)
-anything Ollama- or SQLite-specific.
+This is one interface on top of `StudyBotApp` / `SessionService` /
+`CourseService`. It contains no core logic of its own — it only reads
+input, dispatches commands, and prints output. It does not know (and must
+not import) anything Ollama- or SQLite-specific.
 """
 
 from __future__ import annotations
@@ -14,22 +14,31 @@ from studybot.app import StudyBotApp
 from studybot.core.exceptions import StudyBotError
 from studybot.core.messages import Role
 from studybot.models.base import ProviderStatus
-from studybot.storage.base import ChatSession
+from studybot.storage.base import ChatSession, Course
 
 logger = logging.getLogger(__name__)
 
 _HELP_TEXT = """\
 Available commands:
-  /help          Show this message
-  /history       Show the active chat's conversation history
-  /status        Show model provider connection/availability status
-  /new           Start a new chat
-  /chats         List saved chats
-  /open <id>     Switch to an existing chat (id or unique prefix)
-  /rename <name> Rename the active chat
-  /clear         Remove the active chat's messages (asks to confirm)
-  /delete        Delete the active chat entirely (asks to confirm)
-  /quit          Exit Study Bot"""
+  /help              Show this message
+  /history           Show the active chat's conversation history
+  /status            Show model provider connection/availability status
+  /new               Start a new chat (in the active course, if any)
+  /chats [all]       List chats in the active course/General, or all chats
+  /open <id>         Switch to an existing chat (id or unique prefix)
+  /rename <name>     Rename the active chat
+  /clear             Remove the active chat's messages (asks to confirm)
+  /delete            Delete the active chat entirely (asks to confirm)
+  /course new        Create a course and activate it
+  /course list       List courses
+  /course open <id>  Activate a course (id or unique prefix)
+  /course info       Show the active course's details
+  /course edit       Edit the active course's details
+  /course delete     Delete the active course (asks to confirm; chats survive)
+  /course leave      Leave the active course, back to General
+  /chat course <id>  Move the active chat into a course
+  /chat course none  Remove the active chat from its course (General)
+  /quit              Exit Study Bot"""
 
 _PROMPT = "You > "
 _SHORT_ID_LENGTH = 8
@@ -83,6 +92,8 @@ def _print_banner(app: StudyBotApp) -> None:
     print()
     print(f"Provider: {_display_provider_name(app)}")
     print(f"Model: {_display_model_name(app)}")
+    course = _active_course(app)
+    print(f"Course: {course.name if course else 'General'}")
     print(f"Chat: {_display_title(app.sessions.active_session)}")
     print()
     print("Type /help for commands.")
@@ -128,13 +139,17 @@ def _handle_command(command: str, app: StudyBotApp) -> bool:
         case "/new":
             _new_chat(app)
         case "/chats":
-            _print_chats(app)
+            _print_chats(app, argument)
         case "/open":
             _open_chat(app, argument)
         case "/rename":
             _rename_active_chat(app, argument)
         case "/delete":
             _delete_active_chat(app)
+        case "/course":
+            _handle_course_command(app, argument)
+        case "/chat":
+            _handle_chat_command(app, argument)
         case "/quit":
             print("Goodbye.")
             return True
@@ -180,14 +195,27 @@ def _new_chat(app: StudyBotApp) -> None:
     print(f"Started a new chat: {_display_title(session)}")
 
 
-def _print_chats(app: StudyBotApp) -> None:
-    chats = app.sessions.list_chats()
+def _print_chats(app: StudyBotApp, argument: str) -> None:
+    show_all = argument.strip().lower() == "all"
+    active_course_id = app.sessions.active_session.course_id
+
+    if show_all:
+        chats = app.sessions.list_chats()
+        header = "Chats (all)"
+    elif active_course_id is not None:
+        course = app.courses.get_course(active_course_id)
+        chats = app.sessions.list_chats_in_course(active_course_id)
+        header = f"{course.name if course else 'Course'} — Chats"
+    else:
+        chats = app.sessions.list_chats_in_course(None)
+        header = "General — Chats"
+
     if not chats:
-        print("No saved chats yet.")
+        print("No chats yet. Use /new to start one, or /chats all to see every chat.")
         return
 
     active_id = app.sessions.active_session.id
-    print("Chats")
+    print(header)
     print()
     for chat in chats:
         marker = "* " if chat.id == active_id else "  "
@@ -236,19 +264,250 @@ def _delete_active_chat(app: StudyBotApp) -> None:
     print(f"Deleted '{title}'. Active chat: {_display_title(app.sessions.active_session)}")
 
 
+# --- /course ---------------------------------------------------------------------
+
+
+def _handle_course_command(app: StudyBotApp, argument: str) -> None:
+    sub, _, rest = argument.partition(" ")
+    rest = rest.strip()
+
+    match sub:
+        case "new":
+            _course_new(app)
+        case "list":
+            _course_list(app)
+        case "open":
+            _course_open(app, rest)
+        case "info":
+            _course_info(app)
+        case "edit":
+            _course_edit(app)
+        case "delete":
+            _course_delete(app)
+        case "leave":
+            _course_leave(app)
+        case "":
+            print("Usage: /course <new|list|open|info|edit|delete|leave>")
+        case _:
+            print(f"Unknown /course subcommand: {sub}")
+
+
+def _course_new(app: StudyBotApp) -> None:
+    answers = _prompt_fields(
+        [
+            ("name", "Course name: "),
+            ("code", "Course code (optional): "),
+            ("term", "Term (optional): "),
+            ("description", "Description (optional): "),
+        ]
+    )
+    if answers is None:
+        print("Cancelled.")
+        return
+
+    try:
+        course = app.courses.create_course(
+            answers["name"],
+            answers["code"] or None,
+            answers["term"] or None,
+            answers["description"] or None,
+        )
+    except StudyBotError as exc:
+        print(f"Error: {exc}")
+        return
+
+    app.sessions.open_course_context(course.id)
+    print(f"Created and activated course: {course.name}")
+
+
+def _course_list(app: StudyBotApp) -> None:
+    courses = app.courses.list_courses()
+    if not courses:
+        print("No courses yet. Use /course new to create one.")
+        return
+
+    active_course_id = app.sessions.active_session.course_id
+    print("Courses")
+    print()
+    for course in courses:
+        marker = "* " if course.id == active_course_id else "  "
+        details = "   ".join(x for x in (course.code, course.term) if x)
+        line = f"{marker}{_short_id(course.id)}  {course.name}"
+        if details:
+            line += f"   {details}"
+        print(line)
+
+
+def _course_open(app: StudyBotApp, argument: str) -> None:
+    if not argument:
+        print("Usage: /course open <id>")
+        return
+    try:
+        course = app.courses.resolve_course(argument)
+    except StudyBotError as exc:
+        print(f"Error: {exc}")
+        return
+    session = app.sessions.open_course_context(course.id)
+    print(f"Activated course: {course.name}")
+    print(f"Chat: {_display_title(session)}")
+
+
+def _course_info(app: StudyBotApp) -> None:
+    course = _active_course(app)
+    if course is None:
+        print("No active course. (Course: General)")
+        return
+
+    print(course.name)
+    print()
+    if course.code:
+        print(f"Code: {course.code}")
+    if course.term:
+        print(f"Term: {course.term}")
+    if course.description:
+        print(f"Description: {course.description}")
+    print(f"Chats: {app.courses.count_chats(course.id)}")
+
+
+def _course_edit(app: StudyBotApp) -> None:
+    course = _active_course(app)
+    if course is None:
+        print("No active course to edit.")
+        return
+
+    print(f"Editing '{course.name}' (blank = keep current, - = clear optional field)")
+    answers = _prompt_fields(
+        [
+            ("name", f"Name [{course.name}]: "),
+            ("code", f"Code [{course.code or '(none)'}]: "),
+            ("term", f"Term [{course.term or '(none)'}]: "),
+            ("description", f"Description [{course.description or '(none)'}]: "),
+        ]
+    )
+    if answers is None:
+        print("Cancelled.")
+        return
+
+    new_name = answers["name"].strip() or course.name
+    new_code = _resolve_editable_field(answers["code"], course.code)
+    new_term = _resolve_editable_field(answers["term"], course.term)
+    new_description = _resolve_editable_field(answers["description"], course.description)
+
+    try:
+        updated = app.courses.edit_course(course.id, new_name, new_code, new_term, new_description)
+    except StudyBotError as exc:
+        print(f"Error: {exc}")
+        return
+
+    app.sessions.sync_active_chat_course()
+    print(f"Updated course: {updated.name}")
+
+
+def _course_delete(app: StudyBotApp) -> None:
+    course = _active_course(app)
+    if course is None:
+        print("No active course to delete.")
+        return
+
+    if not _confirm(
+        f"Delete course '{course.name}'? Its chats will NOT be deleted. They will become General/unassigned."
+    ):
+        print("Cancelled.")
+        return
+
+    app.courses.delete_course(course.id)
+    app.sessions.sync_active_chat_course()
+    print(f"Deleted course '{course.name}'. Its chats are now General.")
+
+
+def _course_leave(app: StudyBotApp) -> None:
+    session = app.sessions.open_course_context(None)
+    print(f"Left course. Chat: {_display_title(session)}")
+
+
+def _resolve_editable_field(raw_input: str, current: str | None) -> str | None:
+    stripped = raw_input.strip()
+    if stripped == "":
+        return current
+    if stripped == "-":
+        return None
+    return stripped
+
+
+# --- /chat -------------------------------------------------------------------------
+
+
+def _handle_chat_command(app: StudyBotApp, argument: str) -> None:
+    sub, _, rest = argument.partition(" ")
+    rest = rest.strip()
+
+    match sub:
+        case "course":
+            _chat_course(app, rest)
+        case _:
+            print("Usage: /chat course <course-id> | /chat course none")
+
+
+def _chat_course(app: StudyBotApp, argument: str) -> None:
+    if not argument:
+        print("Usage: /chat course <course-id> | /chat course none")
+        return
+
+    target = None if argument.lower() == "none" else argument
+    try:
+        session = app.sessions.move_active_chat_to_course(target)
+    except StudyBotError as exc:
+        print(f"Error: {exc}")
+        return
+
+    if session.course_id is None:
+        print("Current chat moved to General.")
+    else:
+        course = app.courses.get_course(session.course_id)
+        print(f"Current chat moved to {course.name if course else session.course_id}.")
+
+
+# --- shared helpers ------------------------------------------------------------------
+
+
+def _prompt(text: str) -> str | None:
+    """Read one line of input; returns None (instead of raising) on
+    EOF/Ctrl+C so a multi-step interactive flow can cancel cleanly."""
+    try:
+        return input(text)
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+
+
+def _prompt_fields(fields: list[tuple[str, str]]) -> dict[str, str] | None:
+    """Prompt for each (key, prompt_text) pair in order; returns None if
+    the user cancels (EOF/Ctrl+C) partway through."""
+    answers: dict[str, str] = {}
+    for key, prompt_text in fields:
+        value = _prompt(prompt_text)
+        if value is None:
+            return None
+        answers[key] = value.strip()
+    return answers
+
+
 def _confirm(prompt: str) -> bool:
     """Ask a yes/no question, defaulting to No on any non-'y' answer,
     including EOF/Ctrl+C (which cancel the action rather than exiting)."""
-    try:
-        answer = input(f"{prompt} [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print()
+    answer = _prompt(f"{prompt} [y/N] ")
+    if answer is None:
         return False
-    return answer in ("y", "yes")
+    return answer.strip().lower() in ("y", "yes")
 
 
-def _short_id(chat_id: str) -> str:
-    return chat_id[:_SHORT_ID_LENGTH]
+def _active_course(app: StudyBotApp) -> Course | None:
+    course_id = app.sessions.active_session.course_id
+    return app.courses.get_course(course_id) if course_id else None
+
+
+def _short_id(entity_id: str) -> str:
+    return entity_id[:_SHORT_ID_LENGTH]
 
 
 def _display_title(session: ChatSession) -> str:

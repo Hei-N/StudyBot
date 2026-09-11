@@ -13,6 +13,13 @@ existing Stage 2 guarantee ("exactly one assistant message is added to
 history, and only after a stream completes successfully; a failure or
 early abandonment leaves just the user message") is reused as-is — whatever
 new messages appear in `ChatService.history` are exactly what gets persisted.
+
+Course awareness (Stage 4) works the same way: `SessionService` reads
+`CourseRepository` (never writes to it — that's `CourseService`'s job) only
+to build the minimal `CourseContext` for whichever course the active chat
+belongs to, and feeds it through `core.context.build_system_prompt` whenever
+`ChatService` is (re)built. `ChatService`/`ModelProvider` never see a course
+or a `CourseContext` — only the resulting system-prompt text.
 """
 
 from __future__ import annotations
@@ -23,13 +30,16 @@ from datetime import datetime, timezone
 from typing import Iterator, Sequence
 
 from studybot.core.chat import ChatService
+from studybot.core.context import CourseContext, build_system_prompt
 from studybot.core.exceptions import SessionError
 from studybot.core.messages import Message, Role
 from studybot.core.titles import generate_title
 from studybot.models.base import ModelProvider, ProviderStatus
-from studybot.storage.base import ChatRepository, ChatSession
+from studybot.storage.base import ChatRepository, ChatSession, Course, CourseRepository
 
 logger = logging.getLogger(__name__)
+
+_KEEP_CURRENT_COURSE = object()
 
 
 def _now() -> str:
@@ -43,11 +53,13 @@ class SessionService:
         self,
         model: ModelProvider,
         repository: ChatRepository,
+        course_repository: CourseRepository,
         system_prompt: str | None = None,
     ) -> None:
         self._model = model
         self._repository = repository
-        self._system_prompt = system_prompt
+        self._course_repository = course_repository
+        self._baseline_system_prompt = system_prompt
         self._active_session: ChatSession
         self._active_persisted: bool
         self._chat: ChatService
@@ -68,40 +80,113 @@ class SessionService:
         if chats:
             self._load_chat(chats[0])
         else:
-            self._start_new_chat_in_memory()
+            self._start_new_chat_in_memory(None)
 
     def _load_chat(self, session: ChatSession) -> None:
         messages = self._repository.load_messages(session.id)
         self._active_session = session
         self._active_persisted = True
-        self._chat = ChatService(model=self._model, system_prompt=self._system_prompt, history=messages)
+        self._chat = ChatService(
+            model=self._model,
+            system_prompt=self._effective_system_prompt(session.course_id),
+            history=messages,
+        )
 
-    def _start_new_chat_in_memory(self) -> None:
+    def _start_new_chat_in_memory(self, course_id: str | None) -> None:
         """A chat that exists only in memory until its first message arrives.
 
         This avoids writing an empty "Untitled" row every time the app is
-        launched and quit without anyone actually chatting.
+        launched (or a course opened) and quit without anyone actually
+        chatting.
         """
         now = _now()
-        self._active_session = ChatSession(id=str(uuid.uuid4()), title=None, created_at=now, updated_at=now)
+        self._active_session = ChatSession(
+            id=str(uuid.uuid4()), title=None, course_id=course_id, created_at=now, updated_at=now
+        )
         self._active_persisted = False
-        self._chat = ChatService(model=self._model, system_prompt=self._system_prompt)
+        self._chat = ChatService(model=self._model, system_prompt=self._effective_system_prompt(course_id))
 
     # --- chat lifecycle ------------------------------------------------------
 
-    def new_chat(self) -> ChatSession:
-        """Create and switch to a fresh, empty chat."""
-        self._start_new_chat_in_memory()
+    def new_chat(self, course_id=_KEEP_CURRENT_COURSE) -> ChatSession:
+        """Create and switch to a fresh, empty chat.
+
+        With no argument, the new chat stays in whatever course context (or
+        General) was already active — this is what a bare `/new` uses. Pass
+        an explicit course id (or `None` for General) to target a specific
+        course regardless of what's currently active.
+        """
+        if course_id is _KEEP_CURRENT_COURSE:
+            course_id = self._active_session.course_id
+        self._start_new_chat_in_memory(course_id)
         return self._active_session
 
     def list_chats(self) -> list[ChatSession]:
         return self._repository.list_chats()
+
+    def list_chats_in_course(self, course_id: str | None) -> list[ChatSession]:
+        return self._repository.list_chats_by_course(course_id)
 
     def open_chat(self, id_or_prefix: str) -> ChatSession:
         """Switch to an existing chat by exact id or unambiguous id prefix."""
         session = self._resolve_chat(id_or_prefix)
         self._load_chat(session)
         return session
+
+    def open_course_context(self, course_id: str | None) -> ChatSession:
+        """Activate a course's context: resume its most recently updated
+        chat if it has one, otherwise start an empty chat scoped to it
+        without writing a meaningless row just for viewing the course.
+
+        `course_id=None` means "General" — used by `/course leave` too.
+        """
+        chats = self._repository.list_chats_by_course(course_id)
+        if chats:
+            self._load_chat(chats[0])
+        else:
+            self._start_new_chat_in_memory(course_id)
+        return self._active_session
+
+    def move_active_chat_to_course(self, id_or_prefix: str | None) -> ChatSession:
+        """Reassign the active chat to a course (`None` = unassign to
+        General), preserving its id, title, and messages."""
+        course_id = None
+        if id_or_prefix is not None:
+            course_id = self._resolve_course(id_or_prefix).id
+
+        if self._active_persisted:
+            self._active_session = self._repository.move_chat_to_course(
+                self._active_session.id, course_id
+            )
+        else:
+            self._active_session.course_id = course_id
+
+        self._rebuild_chat_service_preserving_history(course_id)
+        return self._active_session
+
+    def sync_active_chat_course(self) -> ChatSession:
+        """Re-read the active chat's course from storage and refresh the
+        in-memory system prompt to match, without switching chats.
+
+        Needed after a course is deleted out from under the active chat:
+        the database's ON DELETE SET NULL already cleared `course_id`
+        there, but the in-memory `ChatService` still has the old course's
+        context baked into its system prompt until this runs.
+        """
+        if self._active_persisted:
+            refreshed = self._repository.get_chat(self._active_session.id)
+            if refreshed is not None:
+                self._active_session = refreshed
+        self._rebuild_chat_service_preserving_history(self._active_session.course_id)
+        return self._active_session
+
+    def _rebuild_chat_service_preserving_history(self, course_id: str | None) -> None:
+        history = [m for m in self._chat.history if m.role is not Role.SYSTEM]
+        self._chat = ChatService(
+            model=self._model,
+            system_prompt=self._effective_system_prompt(course_id),
+            history=history,
+        )
 
     def _resolve_chat(self, id_or_prefix: str) -> ChatSession:
         chats = self._repository.list_chats()
@@ -119,6 +204,20 @@ class SessionService:
             )
         return matches[0]
 
+    def _resolve_course(self, id_or_prefix: str) -> Course:
+        courses = self._course_repository.list_courses()
+
+        exact = next((c for c in courses if c.id == id_or_prefix), None)
+        if exact is not None:
+            return exact
+
+        matches = [c for c in courses if c.id.startswith(id_or_prefix)]
+        if not matches:
+            raise SessionError(f"No course found matching '{id_or_prefix}'.")
+        if len(matches) > 1:
+            raise SessionError(f"'{id_or_prefix}' matches {len(matches)} courses; use a longer id.")
+        return matches[0]
+
     def rename_active_chat(self, title: str) -> ChatSession:
         title = " ".join(title.split())
         if not title:
@@ -131,22 +230,43 @@ class SessionService:
         return self._active_session
 
     def delete_active_chat(self) -> ChatSession:
-        """Delete the active chat, then activate another (or a fresh one)."""
+        """Delete the active chat, then activate another.
+
+        Prefers another chat within the same course if one remains; if the
+        chat was in a course that now has none left, starts a fresh empty
+        chat scoped to that same course rather than jumping to an unrelated
+        one. Only a General (course-less) chat falls back to the plain
+        most-recently-updated-overall behavior from Stage 3.
+        """
         deleted = self._active_session
+        course_id = deleted.course_id
         if self._active_persisted:
             self._repository.delete_chat(deleted.id)
-        self._activate_most_recent_or_new()
+
+        if course_id is not None:
+            remaining = self._repository.list_chats_by_course(course_id)
+            if remaining:
+                self._load_chat(remaining[0])
+            else:
+                self._start_new_chat_in_memory(course_id)
+        else:
+            self._activate_most_recent_or_new()
+
         return deleted
 
     def clear_active_chat(self) -> None:
         """Remove the active chat's messages; the chat itself is kept.
 
         The next model request still receives the configured system
-        prompt — only persisted user/assistant turns are removed.
+        prompt (and course context, if any) — only persisted user/assistant
+        turns are removed.
         """
         if self._active_persisted:
             self._repository.clear_messages(self._active_session.id)
-        self._chat = ChatService(model=self._model, system_prompt=self._system_prompt)
+        self._chat = ChatService(
+            model=self._model,
+            system_prompt=self._effective_system_prompt(self._active_session.course_id),
+        )
 
     # --- model interaction with write-through persistence ---------------------
 
@@ -169,13 +289,29 @@ class SessionService:
 
     # --- internal --------------------------------------------------------------
 
+    def _effective_system_prompt(self, course_id: str | None) -> str | None:
+        context = self._course_context(course_id)
+        prompt = build_system_prompt(self._baseline_system_prompt or "", context)
+        return prompt if prompt.strip() else None
+
+    def _course_context(self, course_id: str | None) -> CourseContext | None:
+        if course_id is None:
+            return None
+        course = self._course_repository.get_course(course_id)
+        if course is None:
+            # The course was deleted concurrently; treat as General rather
+            # than erroring — `sync_active_chat_course` is what normally
+            # catches this up explicitly.
+            return None
+        return CourseContext(name=course.name, code=course.code, term=course.term, description=course.description)
+
     def _persist_new_messages(self, messages: Sequence[Message]) -> None:
         if not messages:
             return
 
         if not self._active_persisted:
             self._active_session = self._repository.create_chat(
-                self._active_session.id, self._active_session.title
+                self._active_session.id, self._active_session.title, self._active_session.course_id
             )
             self._active_persisted = True
 
