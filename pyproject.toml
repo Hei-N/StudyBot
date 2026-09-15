@@ -12,15 +12,29 @@ license = { text = "Proprietary" }
 dependencies = [
     "ollama>=0.6.0",
     "httpx>=0.27",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.0",
+    # Pinned: the currently-published starlette (a FastAPI dependency) uses
+    # an anyio alias that newer anyio releases deprecate at import time,
+    # which turns into a hard failure under `pytest -W error`. Verified
+    # empirically (HTTP + WebSocket round-trips, error responses) against
+    # anyio 4.5.2 with no warnings; revisit this pin once starlette catches
+    # up with anyio's own deprecation.
+    "anyio==4.5.2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    # Only needed for FastAPI/Starlette's `TestClient` in tests — never
+    # imported by the served application itself.
+    "httpx2",
 ]
 
 [project.scripts]
 studybot = "studybot.__main__:main"
+studybot-server = "studybot.api.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

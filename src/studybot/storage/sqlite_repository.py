@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from studybot.core.messages import Message, Role
 from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
-from studybot.storage.base import ChatSession
+from studybot.storage.base import ChatSession, MessageRecord
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +146,16 @@ class SQLiteChatRepository:
             "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id ASC", (chat_id,)
         ).fetchall()
         return [Message(role=Role(row["role"]), content=row["content"]) for row in rows]
+
+    def load_message_records(self, chat_id: str) -> list[MessageRecord]:
+        rows = self._conn.execute(
+            "SELECT id, role, content, created_at FROM messages WHERE chat_id = ? ORDER BY id ASC",
+            (chat_id,),
+        ).fetchall()
+        return [
+            MessageRecord(id=row["id"], role=Role(row["role"]), content=row["content"], created_at=row["created_at"])
+            for row in rows
+        ]
 
     def clear_messages(self, chat_id: str) -> None:
         with self._conn:

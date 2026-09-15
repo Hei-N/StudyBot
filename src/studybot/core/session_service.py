@@ -42,7 +42,7 @@ from studybot.core.mode_prompts import get_mode_prompt
 from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
 from studybot.core.titles import generate_title
 from studybot.models.base import ModelProvider, ProviderStatus
-from studybot.storage.base import ChatRepository, ChatSession, Course, CourseRepository
+from studybot.storage.base import ChatRepository, ChatSession, Course, CourseRepository, MessageRecord
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +142,21 @@ class SessionService:
 
     def list_chats_in_course(self, course_id: str | None) -> list[ChatSession]:
         return self._repository.list_chats_by_course(course_id)
+
+    def get_chat(self, chat_id: str) -> ChatSession | None:
+        """Look up one chat's metadata without switching the active chat.
+
+        A stateless read, unlike `open_chat` — for callers (the API layer)
+        that need one chat's data by explicit id without disturbing
+        whatever chat is currently active in this process.
+        """
+        return self._repository.get_chat(chat_id)
+
+    def get_chat_history_records(self, chat_id: str) -> list[MessageRecord]:
+        """Like `get_chat`: a stateless read of one chat's persisted
+        messages (with stable ids/timestamps) by explicit id, without
+        switching the active chat."""
+        return self._repository.load_message_records(chat_id)
 
     def open_chat(self, id_or_prefix: str) -> ChatSession:
         """Switch to an existing chat by exact id or unambiguous id prefix."""

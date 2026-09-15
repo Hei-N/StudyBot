@@ -1,16 +1,30 @@
-# Study Bot (v0.2, Stage 5 — Teaching Modes)
+# Study Bot (v0.2, Stage 5.5 — Application API / Flutter Bridge Foundation)
 
-A local-first personal study assistant. **Stage 5** adds five explicit
-teaching modes — Teach, Homework, Quick Answer, Practice, and Exam — that
-change how the assistant behaves in a given chat, on top of the course
-organization and persistent chat foundation from earlier stages. This is a
-first generation of mode *behavior* (prompt-based, per chat); there is
-still no mastery tracking, scoring, or a real exam engine.
+A local-first personal study assistant. **Stage 5.5** adds a local HTTP +
+WebSocket API (`python -m studybot.api`) in front of the same engine the
+CLI uses, so a planned Flutter desktop/mobile UI can drive Study Bot
+without knowing anything about SQLite, Ollama, or Python internals. The
+CLI (`python -m studybot`) is unchanged and keeps working exactly as
+before — this is a second interface onto the same core, not a
+replacement. See **[API_CONTRACT.md](API_CONTRACT.md)** for the full API
+reference (endpoints, the WebSocket protocol, error codes, auth).
+
+Teaching modes (Teach, Homework, Quick Answer, Practice, Exam — one active
+per chat, prompt-based, added in Stage 5) and course organization (Stage 4)
+are unchanged from before; this stage is purely about exposing the
+existing engine over a second, UI-independent transport.
 
 The product name is provisional; the internal Python package is `studybot`.
 
 ## What this is (and isn't) right now
 
+- ✅ A local HTTP + WebSocket API (`python -m studybot.api` /
+  `studybot-server`) exposing the same `SessionService`/`CourseService`
+  the CLI uses — courses, chats, teaching modes, and streaming chat, all
+  under `/api/v1/...`. See [API_CONTRACT.md](API_CONTRACT.md).
+- ✅ Binds to `127.0.0.1` only (not configurable) and requires a
+  per-process `Authorization: Bearer <token>` on every request — never
+  persisted, never logged, generated fresh each time the server starts
 - ✅ Five teaching modes, one active per chat: **Teach** (step-by-step
   tutoring), **Homework** (guided help, full solution on request),
   **Quick Answer** (direct and concise), **Practice** (one question at a
@@ -55,6 +69,11 @@ The product name is provisional; the internal Python package is `studybot`.
   long-term learning memory
 - ❌ No desktop GUI, filesystem/browser/calendar agent access, or cloud sync
 - ❌ No automatic model downloading — you always run `ollama pull` yourself
+- ❌ No Flutter/Dart code yet — this stage only builds the API the future
+  Flutter client will call
+- ❌ No remote/network exposure, cloud deployment, or user accounts — the
+  API is a local bridge for one desktop app talking to its own engine
+  process, nothing else
 
 ## Prerequisites
 
@@ -145,6 +164,33 @@ If no chats exist yet, `Chat: Untitled`, `Course: General`, and `Mode:
 Teach` are shown, and nothing is written to the database until you
 actually send a message — launching and quitting without chatting (or
 just opening a course to look at it) leaves no empty row behind.
+
+## Running the API server
+
+For a future Flutter client (or any local tooling) instead of the terminal:
+
+```bash
+python -m studybot.api
+# or, if installed as a script:
+studybot-server
+```
+
+This prints one JSON line to stdout with the port and auth token to use:
+
+```json
+{"event": "studybot_api_ready", "host": "127.0.0.1", "port": 8765, "token": "..."}
+```
+
+Every request needs `Authorization: Bearer <token>` from that line. Full
+reference: **[API_CONTRACT.md](API_CONTRACT.md)**. Quick example:
+
+```bash
+curl http://127.0.0.1:8765/api/v1/health -H "Authorization: Bearer <token>"
+```
+
+The CLI and the API server can run at the same time against the same
+local database — try creating a course through one and listing it through
+the other.
 
 ### Commands
 
@@ -289,7 +335,11 @@ All tests are deterministic and self-contained: they fake the `ollama`
 client boundary (`tests/fake_ollama.py`) rather than requiring a running
 Ollama server or a downloaded model, and every persistence test opens its
 own SQLite database under pytest's `tmp_path` — no test reads or writes
-`~/Library/Application Support/StudyBot` or any other real user data.
+`~/Library/Application Support/StudyBot` or any other real user data. The
+API tests (`tests/test_api_*.py`) use FastAPI's `TestClient` (in-process,
+no real network/port) with a fake `ModelProvider` where streaming/failure
+behavior needs to be controlled deterministically — no test requires a
+running API server, Ollama, or internet.
 
 ## Troubleshooting
 
@@ -324,12 +374,18 @@ eventually Study Bot will read your course materials, screenshots, and
 other personal files, so privacy-safe logging is the default from the
 start, not an afterthought.
 
+The API server follows the same rules: it binds to `127.0.0.1` only, never
+logs request bodies (where message/course content lives) or the auth
+token, and its per-request access log is effectively disabled by default
+so there's no log surface to worry about. See
+[API_CONTRACT.md](API_CONTRACT.md#privacy) for specifics.
+
 ## Architecture
 
 ```
-Interface (CLI today; desktop UI / macOS assistant later)
-        ↓
-StudyBotApp (src/studybot/app.py)
+CLI (python -m studybot)     Flutter (future) → studybot.api (FastAPI, HTTP + WebSocket)
+        ↓                                              ↓
+        └──────────────────→ StudyBotApp (src/studybot/app.py) ←──────────────────┘
         ├── CourseService ─────────────┐
         └── SessionService             │
               ↓              ↓         │
@@ -343,6 +399,13 @@ StudyBotApp (src/studybot/app.py)
                               ↑
                        CourseRepository
 ```
+
+Both interfaces are equally thin: neither the CLI nor `studybot/api/`
+contains course/chat/mode business logic — both only translate their own
+transport (terminal I/O vs. HTTP/WebSocket JSON) into calls on
+`SessionService`/`CourseService` and translate results back. Everything
+below `StudyBotApp` is completely unaware that either interface, or FastAPI/
+Starlette/HTTP/WebSocket, exists.
 
 Model inference, persistence, course organization, and teaching mode are
 four separate concerns. `SessionService` calls `ChatService` for a
@@ -431,6 +494,13 @@ Key modules:
   stored value is ever unrecognized
 - `src/studybot/logging_config.py` — console logging setup; quiet by
   default, verbosity controlled via `STUDYBOT_LOG_LEVEL`
+- `src/studybot/api/` — the local HTTP + WebSocket bridge; see
+  [API_CONTRACT.md](API_CONTRACT.md) for the contract and
+  `api/engine.py`'s docstring for why every call is routed through one
+  dedicated worker thread (the shared SQLite connection is not safe to
+  touch from FastAPI's default worker pool — found and fixed via this
+  stage's own testing). Nothing under `core/`, `models/`, or `storage/`
+  imports anything from this package or knows it exists.
 
 A future backend — a different local model, hybrid routing, an encrypted
 store, sync — can replace `OllamaModel` or either SQLite repository
@@ -501,6 +571,8 @@ clears messages, creates a new chat, or alters the chat's course or title.
 
 ## Next planned stage
 
-Stage 6+ will add persistent long-term learning memory, mastery tracking,
-RAG over PDFs/notes/slides, embeddings, image/screenshot understanding,
-quizzes, and eventually device/tool access — none of which exists yet.
+A Flutter client will be built against the API this stage defines
+(see [API_CONTRACT.md](API_CONTRACT.md)). Beyond that, persistent
+long-term learning memory, mastery tracking, RAG over PDFs/notes/slides,
+embeddings, image/screenshot understanding, quizzes, and eventually
+device/tool access are all still future work — none of which exists yet.

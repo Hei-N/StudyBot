@@ -41,6 +41,21 @@ class ChatSession:
     updated_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class MessageRecord:
+    """A persisted message with its stable id and timestamp — distinct from
+    `Message` (the plain role/content pair `ChatService`/`ModelProvider`
+    exchange). Nothing about LLM context construction needs an id or a
+    timestamp, so `Message` stays exactly as it was; `MessageRecord` exists
+    purely for callers (the HTTP/WebSocket API) that need to display or
+    reference a specific persisted message."""
+
+    id: int
+    role: Role
+    content: str
+    created_at: str
+
+
 @dataclass(slots=True)
 class Course:
     """Metadata for one persisted course. Chats reference it by `id`, but a
@@ -126,6 +141,12 @@ class ChatRepository(Protocol):
         context) is application configuration, injected by `ChatService`,
         and is never persisted.
         """
+        ...
+
+    def load_message_records(self, chat_id: str) -> list[MessageRecord]:
+        """Like `load_messages`, but with each message's stable id and
+        timestamp — for callers (the API layer) that need to reference or
+        display a specific message, not feed it to a model."""
         ...
 
     def clear_messages(self, chat_id: str) -> None:
