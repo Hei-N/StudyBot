@@ -1,6 +1,8 @@
 import dataclasses
 
 from studybot.core.context import CourseContext, build_system_prompt
+from studybot.core.mode_prompts import get_mode_prompt
+from studybot.core.teaching_mode import TeachingMode
 
 
 def test_no_course_returns_baseline_unchanged():
@@ -64,3 +66,63 @@ def test_is_deterministic():
     second = build_system_prompt("Baseline.", context)
 
     assert first == second
+
+
+# --- teaching-mode composition -------------------------------------------------------
+
+
+def test_mode_instructions_appended_with_no_course():
+    homework_prompt = get_mode_prompt(TeachingMode.HOMEWORK)
+
+    prompt = build_system_prompt("Baseline.", None, homework_prompt)
+
+    assert prompt.startswith("Baseline.")
+    assert homework_prompt in prompt
+
+
+def test_course_and_mode_compose_without_overwriting_each_other():
+    course = CourseContext(name="University Physics I", code="PHY 215")
+    homework_prompt = get_mode_prompt(TeachingMode.HOMEWORK)
+
+    prompt = build_system_prompt("Baseline.", course, homework_prompt)
+
+    assert "Baseline." in prompt
+    assert "University Physics I" in prompt
+    assert "PHY 215" in prompt
+    assert homework_prompt in prompt
+
+
+def test_only_the_active_modes_instructions_are_present():
+    homework_prompt = get_mode_prompt(TeachingMode.HOMEWORK)
+    quick_prompt = get_mode_prompt(TeachingMode.QUICK)
+
+    prompt = build_system_prompt("Baseline.", None, homework_prompt)
+
+    assert homework_prompt in prompt
+    assert quick_prompt not in prompt
+
+
+def test_switching_mode_drops_the_previous_modes_text():
+    course = CourseContext(name="University Physics I", code="PHY 215")
+    homework = build_system_prompt("Baseline.", course, get_mode_prompt(TeachingMode.HOMEWORK))
+    quick = build_system_prompt("Baseline.", course, get_mode_prompt(TeachingMode.QUICK))
+
+    assert get_mode_prompt(TeachingMode.HOMEWORK) not in quick
+    assert get_mode_prompt(TeachingMode.QUICK) in quick
+    # Course context is unaffected by the mode switch.
+    assert "University Physics I" in homework
+    assert "University Physics I" in quick
+
+
+def test_no_mode_instructions_means_no_mode_section():
+    prompt = build_system_prompt("Baseline.", None, None)
+
+    assert prompt == "Baseline."
+    assert "Teaching mode" not in prompt
+
+
+def test_every_modes_prompt_is_distinct_and_non_empty():
+    prompts = [get_mode_prompt(mode) for mode in TeachingMode]
+
+    assert all(p.strip() for p in prompts)
+    assert len(set(prompts)) == len(prompts)

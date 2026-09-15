@@ -1,6 +1,7 @@
 import pytest
 
 from studybot.core.messages import Role
+from studybot.core.teaching_mode import TeachingMode
 from studybot.storage.database import open_database
 from studybot.storage.sqlite_repository import SQLiteChatRepository
 
@@ -31,6 +32,7 @@ def test_create_and_get_chat(repo):
     assert fetched.id == "chat-1"
     assert fetched.title == "My Chat"
     assert fetched.course_id is None
+    assert fetched.teaching_mode is TeachingMode.TEACH
     assert fetched.created_at == created.created_at
     assert fetched.updated_at == created.updated_at
 
@@ -262,3 +264,96 @@ def test_count_chats_for_course(repo, connection):
     repo.create_chat("chat-3", "C", course_id=None)
 
     assert repo.count_chats_for_course("c1") == 2
+
+
+# --- teaching mode -------------------------------------------------------------------
+
+
+def test_create_chat_with_explicit_teaching_mode(repo):
+    created = repo.create_chat("chat-1", "Title", teaching_mode=TeachingMode.EXAM)
+
+    assert created.teaching_mode is TeachingMode.EXAM
+    assert repo.get_chat("chat-1").teaching_mode is TeachingMode.EXAM
+
+
+def test_set_teaching_mode_updates_and_bumps_updated_at(repo):
+    created = repo.create_chat("chat-1", "Title")
+
+    updated = repo.set_teaching_mode("chat-1", TeachingMode.HOMEWORK)
+
+    assert updated.teaching_mode is TeachingMode.HOMEWORK
+    assert updated.updated_at >= created.updated_at
+    assert repo.get_chat("chat-1").teaching_mode is TeachingMode.HOMEWORK
+
+
+def test_set_teaching_mode_does_not_touch_title_or_course(repo, connection):
+    connection.execute(
+        "INSERT INTO courses (id, name, created_at, updated_at) VALUES ('c1', 'Physics', 't', 't')"
+    )
+    repo.create_chat("chat-1", "Keep Me", course_id="c1")
+
+    repo.set_teaching_mode("chat-1", TeachingMode.PRACTICE)
+
+    chat = repo.get_chat("chat-1")
+    assert chat.title == "Keep Me"
+    assert chat.course_id == "c1"
+
+
+def test_set_teaching_mode_does_not_touch_messages(repo):
+    repo.create_chat("chat-1", "Title")
+    repo.append_message("chat-1", Role.USER, "hello")
+
+    repo.set_teaching_mode("chat-1", TeachingMode.QUICK)
+
+    assert [m.content for m in repo.load_messages("chat-1")] == ["hello"]
+
+
+def test_moving_chat_between_courses_preserves_teaching_mode(repo, connection):
+    connection.execute(
+        "INSERT INTO courses (id, name, created_at, updated_at) VALUES ('c1', 'Physics', 't', 't')"
+    )
+    repo.create_chat("chat-1", "Title", teaching_mode=TeachingMode.EXAM)
+
+    repo.move_chat_to_course("chat-1", "c1")
+
+    assert repo.get_chat("chat-1").teaching_mode is TeachingMode.EXAM
+
+
+def test_deleting_course_preserves_chat_teaching_mode(repo, connection):
+    connection.execute(
+        "INSERT INTO courses (id, name, created_at, updated_at) VALUES ('c1', 'Physics', 't', 't')"
+    )
+    repo.create_chat("chat-1", "Title", course_id="c1", teaching_mode=TeachingMode.PRACTICE)
+
+    connection.execute("DELETE FROM courses WHERE id = 'c1'")
+    connection.commit()
+
+    assert repo.get_chat("chat-1").teaching_mode is TeachingMode.PRACTICE
+
+
+def test_renaming_chat_preserves_teaching_mode(repo):
+    repo.create_chat("chat-1", "Old Title", teaching_mode=TeachingMode.HOMEWORK)
+
+    repo.rename_chat("chat-1", "New Title")
+
+    assert repo.get_chat("chat-1").teaching_mode is TeachingMode.HOMEWORK
+
+
+def test_clearing_messages_preserves_teaching_mode(repo):
+    repo.create_chat("chat-1", "Title", teaching_mode=TeachingMode.EXAM)
+    repo.append_message("chat-1", Role.USER, "hello")
+
+    repo.clear_messages("chat-1")
+
+    assert repo.get_chat("chat-1").teaching_mode is TeachingMode.EXAM
+
+
+def test_invalid_stored_mode_falls_back_to_default(repo, connection):
+    repo.create_chat("chat-1", "Title")
+    # Simulate a corrupted/tampered value bypassing the repository API.
+    connection.execute("UPDATE chats SET teaching_mode = 'not-a-real-mode' WHERE id = 'chat-1'")
+    connection.commit()
+
+    chat = repo.get_chat("chat-1")
+
+    assert chat.teaching_mode is TeachingMode.TEACH  # deliberate, documented fallback

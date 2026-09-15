@@ -1,12 +1,12 @@
 """Composes the effective system prompt from Study Bot's baseline
-instructions plus optional course context.
+instructions plus optional course context and teaching-mode instructions.
 
-Kept separate from both the baseline prompt (`core/prompts.py`) and any
-model provider, so a future stage's teaching-mode prompts can extend this
-one composition point instead of scattering string concatenation across the
-codebase. `ModelProvider` implementations never see a `CourseContext` —
-they only ever receive the fully composed prompt as an ordinary system
-`Message`.
+Kept separate from the baseline prompt (`core/prompts.py`), the per-mode
+text (`core/mode_prompts.py`), and any model provider, so this stays the
+one place that assembles them — no scattered string concatenation
+elsewhere. `ModelProvider` implementations never see a `CourseContext` or a
+`TeachingMode`; they only ever receive the fully composed prompt as an
+ordinary system `Message`.
 """
 
 from __future__ import annotations
@@ -25,23 +25,36 @@ class CourseContext:
     description: str | None = None
 
 
-def build_system_prompt(baseline_prompt: str, course: CourseContext | None) -> str:
-    """Combine the baseline instructions with optional course context.
+def build_system_prompt(
+    baseline_prompt: str,
+    course: CourseContext | None,
+    mode_instructions: str | None = None,
+) -> str:
+    """Combine the baseline instructions with optional course context and
+    optional teaching-mode instructions.
 
     The effective model context ends up, in order:
-        1. baseline Study Bot instructions (this function's `baseline_prompt`)
-        2. minimal course context (this function's `course`, if any)
-        3. chat conversation history (added by `ChatService`, not here)
-        4. newest user message (added by `ChatService`, not here)
+        1. baseline Study Bot instructions (`baseline_prompt`)
+        2. minimal course context (`course`, if any)
+        3. teaching-mode instructions (`mode_instructions`, if any)
+        4. chat conversation history (added by `ChatService`, not here)
+        5. newest user message (added by `ChatService`, not here)
+    Course and mode are independent sections — neither overwrites the
+    other, and either may be omitted without affecting the other.
     """
-    if course is None:
-        return baseline_prompt
+    parts = [baseline_prompt]
 
-    lines = [baseline_prompt, "", "Current course:", course.name]
-    if course.code:
-        lines.append(f"Course code: {course.code}")
-    if course.term:
-        lines.append(f"Term: {course.term}")
-    if course.description:
-        lines.append(f"Description: {course.description}")
-    return "\n".join(lines)
+    if course is not None:
+        course_lines = ["Current course:", course.name]
+        if course.code:
+            course_lines.append(f"Course code: {course.code}")
+        if course.term:
+            course_lines.append(f"Term: {course.term}")
+        if course.description:
+            course_lines.append(f"Description: {course.description}")
+        parts.append("\n".join(course_lines))
+
+    if mode_instructions:
+        parts.append(mode_instructions)
+
+    return "\n\n".join(parts)

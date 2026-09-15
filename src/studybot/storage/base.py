@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from studybot.core.messages import Message, Role
+from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
 
 
 @dataclass(slots=True)
@@ -27,11 +28,15 @@ class ChatSession:
     `course_id` is `None` for a "General" chat not associated with any
     course. Course membership is purely organizational: it never merges or
     shares conversation history between chats.
+
+    `teaching_mode` is per-chat (see `core.teaching_mode`): switching a
+    chat's mode never affects any other chat, even one in the same course.
     """
 
     id: str
     title: str | None
     course_id: str | None
+    teaching_mode: TeachingMode
     created_at: str
     updated_at: str
 
@@ -59,7 +64,13 @@ class ChatRepository(Protocol):
     and preserve message insertion order exactly.
     """
 
-    def create_chat(self, chat_id: str, title: str | None, course_id: str | None = None) -> ChatSession:
+    def create_chat(
+        self,
+        chat_id: str,
+        title: str | None,
+        course_id: str | None = None,
+        teaching_mode: TeachingMode = DEFAULT_TEACHING_MODE,
+    ) -> ChatSession:
         """Insert a new chat row and return it (with server-assigned timestamps)."""
         ...
 
@@ -94,6 +105,14 @@ class ChatRepository(Protocol):
 
     def touch_chat(self, chat_id: str) -> ChatSession:
         """Bump a chat's `updated_at` to now, without changing its title."""
+        ...
+
+    def set_teaching_mode(self, chat_id: str, mode: TeachingMode) -> ChatSession:
+        """Set a chat's teaching mode and bump its `updated_at`.
+
+        Never touches messages, title, or course — mode is independent of
+        all three.
+        """
         ...
 
     def append_message(self, chat_id: str, role: Role, content: str) -> None:

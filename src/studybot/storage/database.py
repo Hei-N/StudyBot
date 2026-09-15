@@ -26,13 +26,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Individual statements rather than one `executescript()` call: `sqlite3`'s
 # `executescript()` forces an implicit COMMIT before it runs and does not
 # participate in an explicit transaction (verified empirically), which would
 # silently defeat the atomicity this module exists to guarantee.
-_FRESH_SCHEMA_V2_STATEMENTS = [
+_FRESH_SCHEMA_STATEMENTS = [
     """
     CREATE TABLE courses (
         id TEXT PRIMARY KEY,
@@ -49,6 +49,7 @@ _FRESH_SCHEMA_V2_STATEMENTS = [
         id TEXT PRIMARY KEY,
         title TEXT,
         course_id TEXT REFERENCES courses(id) ON DELETE SET NULL,
+        teaching_mode TEXT NOT NULL DEFAULT 'teach',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )
@@ -92,19 +93,24 @@ def _migrate(connection: sqlite3.Connection) -> None:
     version = get_schema_version(connection)
 
     if version == 0:
-        _create_fresh_v2(connection)
+        _create_fresh_schema(connection)
         return
 
     if version == 1:
         _migrate_v1_to_v2(connection)
+        version = 2
+
+    if version == 2:
+        _migrate_v2_to_v3(connection)
+        version = 3
 
 
-def _create_fresh_v2(connection: sqlite3.Connection) -> None:
+def _create_fresh_schema(connection: sqlite3.Connection) -> None:
     """A brand-new database: create the current schema directly, with no
     migration history to replay."""
     try:
         connection.execute("BEGIN")
-        for statement in _FRESH_SCHEMA_V2_STATEMENTS:
+        for statement in _FRESH_SCHEMA_STATEMENTS:
             connection.execute(statement)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.commit()
@@ -142,7 +148,31 @@ def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
             "ALTER TABLE chats ADD COLUMN course_id TEXT REFERENCES courses(id) ON DELETE SET NULL"
         )
         connection.execute("CREATE INDEX idx_chats_course_id ON chats(course_id)")
-        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        connection.execute("PRAGMA user_version = 2")
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+
+
+def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
+    """Add per-chat teaching modes to a schema-v2 (Stage 4) database.
+
+    All existing courses, chats, messages, and chat/course associations are
+    left completely untouched; every existing chat simply gains
+    `teaching_mode = 'teach'` (the deliberate default — see
+    `core.teaching_mode.DEFAULT_TEACHING_MODE`) via the new column's
+    default. Applied as one explicit transaction — if any statement fails,
+    `rollback()` leaves the database exactly as it was at schema v2, not
+    partially upgraded.
+    """
+    logger.debug("Migrating chat database schema from v2 to v3")
+    try:
+        connection.execute("BEGIN")
+        connection.execute(
+            "ALTER TABLE chats ADD COLUMN teaching_mode TEXT NOT NULL DEFAULT 'teach'"
+        )
+        connection.execute("PRAGMA user_version = 3")
         connection.commit()
     except BaseException:
         connection.rollback()

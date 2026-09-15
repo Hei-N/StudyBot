@@ -13,6 +13,7 @@ import logging
 from studybot.app import StudyBotApp
 from studybot.core.exceptions import StudyBotError
 from studybot.core.messages import Role
+from studybot.core.teaching_mode import all_modes, get_mode_info, parse_teaching_mode
 from studybot.models.base import ProviderStatus
 from studybot.storage.base import ChatSession, Course
 
@@ -29,6 +30,8 @@ Available commands:
   /rename <name>     Rename the active chat
   /clear             Remove the active chat's messages (asks to confirm)
   /delete            Delete the active chat entirely (asks to confirm)
+  /mode              Show the active chat's teaching mode and all modes
+  /mode <name>       Change the active chat's teaching mode
   /course new        Create a course and activate it
   /course list       List courses
   /course open <id>  Activate a course (id or unique prefix)
@@ -95,6 +98,7 @@ def _print_banner(app: StudyBotApp) -> None:
     course = _active_course(app)
     print(f"Course: {course.name if course else 'General'}")
     print(f"Chat: {_display_title(app.sessions.active_session)}")
+    print(f"Mode: {get_mode_info(app.sessions.get_teaching_mode()).display_name}")
     print()
     print("Type /help for commands.")
 
@@ -146,6 +150,8 @@ def _handle_command(command: str, app: StudyBotApp) -> bool:
             _rename_active_chat(app, argument)
         case "/delete":
             _delete_active_chat(app)
+        case "/mode":
+            _handle_mode_command(app, argument)
         case "/course":
             _handle_course_command(app, argument)
         case "/chat":
@@ -262,6 +268,33 @@ def _delete_active_chat(app: StudyBotApp) -> None:
         return
     app.sessions.delete_active_chat()
     print(f"Deleted '{title}'. Active chat: {_display_title(app.sessions.active_session)}")
+
+
+# --- /mode -------------------------------------------------------------------------
+
+
+def _handle_mode_command(app: StudyBotApp, argument: str) -> None:
+    if not argument:
+        _print_mode_status(app)
+        return
+
+    try:
+        mode = parse_teaching_mode(argument)
+    except ValueError:
+        print(f"Unknown mode: {argument!r}. Type /mode to see available modes.")
+        return
+
+    app.sessions.set_teaching_mode(mode)
+    print(f"Teaching mode changed to {get_mode_info(mode).display_name}.")
+
+
+def _print_mode_status(app: StudyBotApp) -> None:
+    current = get_mode_info(app.sessions.get_teaching_mode())
+    print(f"Teaching mode: {current.display_name}")
+    print()
+    print("Available:")
+    for info in all_modes():
+        print(f"  {info.mode.value:<10} {info.description}")
 
 
 # --- /course ---------------------------------------------------------------------

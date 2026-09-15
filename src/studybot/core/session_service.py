@@ -20,6 +20,11 @@ to build the minimal `CourseContext` for whichever course the active chat
 belongs to, and feeds it through `core.context.build_system_prompt` whenever
 `ChatService` is (re)built. `ChatService`/`ModelProvider` never see a course
 or a `CourseContext` — only the resulting system-prompt text.
+
+Teaching mode (Stage 5) is simpler still: it's a plain field on the active
+`ChatSession`, fed into the same `build_system_prompt` call as another
+independent section. Changing it never touches messages, title, or course,
+and — like course context — it's never persisted as a chat message.
 """
 
 from __future__ import annotations
@@ -33,6 +38,8 @@ from studybot.core.chat import ChatService
 from studybot.core.context import CourseContext, build_system_prompt
 from studybot.core.exceptions import SessionError
 from studybot.core.messages import Message, Role
+from studybot.core.mode_prompts import get_mode_prompt
+from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
 from studybot.core.titles import generate_title
 from studybot.models.base import ModelProvider, ProviderStatus
 from studybot.storage.base import ChatRepository, ChatSession, Course, CourseRepository
@@ -88,7 +95,7 @@ class SessionService:
         self._active_persisted = True
         self._chat = ChatService(
             model=self._model,
-            system_prompt=self._effective_system_prompt(session.course_id),
+            system_prompt=self._effective_system_prompt(session.course_id, session.teaching_mode),
             history=messages,
         )
 
@@ -97,14 +104,23 @@ class SessionService:
 
         This avoids writing an empty "Untitled" row every time the app is
         launched (or a course opened) and quit without anyone actually
-        chatting.
+        chatting. Always starts in the default teaching mode (Teach) —
+        a new chat never inherits whatever mode was active elsewhere.
         """
         now = _now()
         self._active_session = ChatSession(
-            id=str(uuid.uuid4()), title=None, course_id=course_id, created_at=now, updated_at=now
+            id=str(uuid.uuid4()),
+            title=None,
+            course_id=course_id,
+            teaching_mode=DEFAULT_TEACHING_MODE,
+            created_at=now,
+            updated_at=now,
         )
         self._active_persisted = False
-        self._chat = ChatService(model=self._model, system_prompt=self._effective_system_prompt(course_id))
+        self._chat = ChatService(
+            model=self._model,
+            system_prompt=self._effective_system_prompt(course_id, DEFAULT_TEACHING_MODE),
+        )
 
     # --- chat lifecycle ------------------------------------------------------
 
@@ -149,7 +165,7 @@ class SessionService:
 
     def move_active_chat_to_course(self, id_or_prefix: str | None) -> ChatSession:
         """Reassign the active chat to a course (`None` = unassign to
-        General), preserving its id, title, and messages."""
+        General), preserving its id, title, mode, and messages."""
         course_id = None
         if id_or_prefix is not None:
             course_id = self._resolve_course(id_or_prefix).id
@@ -161,7 +177,7 @@ class SessionService:
         else:
             self._active_session.course_id = course_id
 
-        self._rebuild_chat_service_preserving_history(course_id)
+        self._rebuild_chat_service_preserving_history()
         return self._active_session
 
     def sync_active_chat_course(self) -> ChatSession:
@@ -177,14 +193,16 @@ class SessionService:
             refreshed = self._repository.get_chat(self._active_session.id)
             if refreshed is not None:
                 self._active_session = refreshed
-        self._rebuild_chat_service_preserving_history(self._active_session.course_id)
+        self._rebuild_chat_service_preserving_history()
         return self._active_session
 
-    def _rebuild_chat_service_preserving_history(self, course_id: str | None) -> None:
+    def _rebuild_chat_service_preserving_history(self) -> None:
         history = [m for m in self._chat.history if m.role is not Role.SYSTEM]
         self._chat = ChatService(
             model=self._model,
-            system_prompt=self._effective_system_prompt(course_id),
+            system_prompt=self._effective_system_prompt(
+                self._active_session.course_id, self._active_session.teaching_mode
+            ),
             history=history,
         )
 
@@ -258,15 +276,36 @@ class SessionService:
         """Remove the active chat's messages; the chat itself is kept.
 
         The next model request still receives the configured system
-        prompt (and course context, if any) — only persisted user/assistant
-        turns are removed.
+        prompt (course context and teaching mode, if any) — only persisted
+        user/assistant turns are removed.
         """
         if self._active_persisted:
             self._repository.clear_messages(self._active_session.id)
         self._chat = ChatService(
             model=self._model,
-            system_prompt=self._effective_system_prompt(self._active_session.course_id),
+            system_prompt=self._effective_system_prompt(
+                self._active_session.course_id, self._active_session.teaching_mode
+            ),
         )
+
+    # --- teaching mode -------------------------------------------------------
+
+    def get_teaching_mode(self) -> TeachingMode:
+        return self._active_session.teaching_mode
+
+    def set_teaching_mode(self, mode: TeachingMode) -> ChatSession:
+        """Change the active chat's teaching mode.
+
+        Persists immediately, never touches messages/title/course, and
+        applies starting with the next model request — no confirmation
+        message is (or should be) added to conversation history for this.
+        """
+        if self._active_persisted:
+            self._active_session = self._repository.set_teaching_mode(self._active_session.id, mode)
+        else:
+            self._active_session.teaching_mode = mode
+        self._rebuild_chat_service_preserving_history()
+        return self._active_session
 
     # --- model interaction with write-through persistence ---------------------
 
@@ -289,9 +328,10 @@ class SessionService:
 
     # --- internal --------------------------------------------------------------
 
-    def _effective_system_prompt(self, course_id: str | None) -> str | None:
+    def _effective_system_prompt(self, course_id: str | None, teaching_mode: TeachingMode) -> str | None:
         context = self._course_context(course_id)
-        prompt = build_system_prompt(self._baseline_system_prompt or "", context)
+        mode_instructions = get_mode_prompt(teaching_mode)
+        prompt = build_system_prompt(self._baseline_system_prompt or "", context, mode_instructions)
         return prompt if prompt.strip() else None
 
     def _course_context(self, course_id: str | None) -> CourseContext | None:
@@ -311,7 +351,10 @@ class SessionService:
 
         if not self._active_persisted:
             self._active_session = self._repository.create_chat(
-                self._active_session.id, self._active_session.title, self._active_session.course_id
+                self._active_session.id,
+                self._active_session.title,
+                self._active_session.course_id,
+                self._active_session.teaching_mode,
             )
             self._active_persisted = True
 

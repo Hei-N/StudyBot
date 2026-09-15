@@ -10,15 +10,31 @@ the shared `sqlite3.Connection` this repository is given.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime, timezone
 
 from studybot.core.messages import Message, Role
+from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
 from studybot.storage.base import ChatSession
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_stored_mode(value: str) -> TeachingMode:
+    """Convert a stored mode string to `TeachingMode` at the repository
+    boundary. An unrecognized value (e.g. from manual DB tampering or a
+    future downgrade) never propagates as a raw string — it deliberately
+    falls back to the default mode, logged for visibility."""
+    try:
+        return TeachingMode(value)
+    except ValueError:
+        logger.warning("Unknown teaching_mode %r in database; falling back to default", value)
+        return DEFAULT_TEACHING_MODE
 
 
 def _row_to_session(row: sqlite3.Row) -> ChatSession:
@@ -26,6 +42,7 @@ def _row_to_session(row: sqlite3.Row) -> ChatSession:
         id=row["id"],
         title=row["title"],
         course_id=row["course_id"],
+        teaching_mode=_parse_stored_mode(row["teaching_mode"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -39,14 +56,24 @@ class SQLiteChatRepository:
 
     # --- chats -------------------------------------------------------------
 
-    def create_chat(self, chat_id: str, title: str | None, course_id: str | None = None) -> ChatSession:
+    def create_chat(
+        self,
+        chat_id: str,
+        title: str | None,
+        course_id: str | None = None,
+        teaching_mode: TeachingMode = DEFAULT_TEACHING_MODE,
+    ) -> ChatSession:
         now = _now()
         with self._conn:
             self._conn.execute(
-                "INSERT INTO chats (id, title, course_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (chat_id, title, course_id, now, now),
+                "INSERT INTO chats (id, title, course_id, teaching_mode, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (chat_id, title, course_id, teaching_mode.value, now, now),
             )
-        return ChatSession(id=chat_id, title=title, course_id=course_id, created_at=now, updated_at=now)
+        return ChatSession(
+            id=chat_id, title=title, course_id=course_id, teaching_mode=teaching_mode,
+            created_at=now, updated_at=now,
+        )
 
     def get_chat(self, chat_id: str) -> ChatSession | None:
         row = self._conn.execute("SELECT * FROM chats WHERE id = ?", (chat_id,)).fetchone()
@@ -90,6 +117,15 @@ class SQLiteChatRepository:
         now = _now()
         with self._conn:
             self._conn.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (now, chat_id))
+        return self.get_chat(chat_id)
+
+    def set_teaching_mode(self, chat_id: str, mode: TeachingMode) -> ChatSession:
+        now = _now()
+        with self._conn:
+            self._conn.execute(
+                "UPDATE chats SET teaching_mode = ?, updated_at = ? WHERE id = ?",
+                (mode.value, now, chat_id),
+            )
         return self.get_chat(chat_id)
 
     def delete_chat(self, chat_id: str) -> None:

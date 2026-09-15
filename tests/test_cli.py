@@ -3,6 +3,7 @@ import pytest
 from studybot import cli
 from studybot.app import StudyBotApp
 from studybot.config.settings import Settings
+from studybot.core.teaching_mode import TeachingMode
 from studybot.storage.base import ChatSession
 
 
@@ -39,12 +40,18 @@ def test_resolve_editable_field_new_value_overrides():
 
 
 def test_display_title_shows_untitled_for_none():
-    session = ChatSession(id="x", title=None, course_id=None, created_at="t", updated_at="t")
+    session = ChatSession(
+        id="x", title=None, course_id=None, teaching_mode=TeachingMode.TEACH,
+        created_at="t", updated_at="t",
+    )
     assert cli._display_title(session) == "Untitled"
 
 
 def test_display_title_shows_actual_title():
-    session = ChatSession(id="x", title="My Chat", course_id=None, created_at="t", updated_at="t")
+    session = ChatSession(
+        id="x", title="My Chat", course_id=None, teaching_mode=TeachingMode.TEACH,
+        created_at="t", updated_at="t",
+    )
     assert cli._display_title(session) == "My Chat"
 
 
@@ -210,3 +217,72 @@ def test_chat_course_unknown_course_shows_error(app, capsys):
     cli._chat_course(app, "does-not-exist")
 
     assert "Error:" in capsys.readouterr().out
+
+
+# --- /mode -------------------------------------------------------------------------
+
+
+def test_mode_status_shows_current_and_available_modes(app, capsys):
+    cli._handle_mode_command(app, "")
+
+    output = capsys.readouterr().out
+    assert "Teaching mode: Teach" in output
+    assert "teach" in output
+    assert "homework" in output
+    assert "quick" in output
+    assert "practice" in output
+    assert "exam" in output
+
+
+def test_mode_teach(app, capsys):
+    app.sessions.set_teaching_mode(TeachingMode.EXAM)
+
+    cli._handle_mode_command(app, "teach")
+
+    assert app.sessions.get_teaching_mode() is TeachingMode.TEACH
+    assert "Teaching mode changed to Teach." in capsys.readouterr().out
+
+
+def test_mode_homework(app, capsys):
+    cli._handle_mode_command(app, "homework")
+
+    assert app.sessions.get_teaching_mode() is TeachingMode.HOMEWORK
+    assert "Teaching mode changed to Homework." in capsys.readouterr().out
+
+
+def test_mode_quick(app, capsys):
+    cli._handle_mode_command(app, "quick")
+
+    assert app.sessions.get_teaching_mode() is TeachingMode.QUICK
+    assert "Teaching mode changed to Quick Answer." in capsys.readouterr().out
+
+
+def test_mode_practice(app, capsys):
+    cli._handle_mode_command(app, "practice")
+
+    assert app.sessions.get_teaching_mode() is TeachingMode.PRACTICE
+    assert "Teaching mode changed to Practice." in capsys.readouterr().out
+
+
+def test_mode_exam(app, capsys):
+    cli._handle_mode_command(app, "exam")
+
+    assert app.sessions.get_teaching_mode() is TeachingMode.EXAM
+    assert "Teaching mode changed to Exam." in capsys.readouterr().out
+
+
+def test_mode_invalid_shows_clean_error(app, capsys):
+    cli._handle_mode_command(app, "not-a-real-mode")
+
+    assert app.sessions.get_teaching_mode() is TeachingMode.TEACH  # unchanged
+    output = capsys.readouterr().out
+    assert "Unknown mode" in output
+
+
+def test_mode_change_does_not_add_history_message(app, capsys):
+    app.sessions.send("hello")
+    before = len(app.sessions.history)
+
+    cli._handle_mode_command(app, "homework")
+
+    assert len(app.sessions.history) == before

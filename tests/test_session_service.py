@@ -2,7 +2,9 @@ import pytest
 
 from studybot.core.exceptions import ModelError, SessionError
 from studybot.core.messages import Role
+from studybot.core.mode_prompts import get_mode_prompt
 from studybot.core.session_service import SessionService
+from studybot.core.teaching_mode import TeachingMode
 from studybot.models.base import ModelResponse, ProviderStatus
 from studybot.models.mock import MockModel
 from studybot.storage.database import open_database
@@ -231,8 +233,9 @@ def test_restored_conversation_produces_correct_model_input_order(repository, co
     service2.send("second turn")
 
     last_call = model.received_calls[-1]
+    expected_system = "You are helpful.\n\n" + get_mode_prompt(TeachingMode.TEACH)
     assert [m.role for m in last_call] == [Role.SYSTEM, Role.USER, Role.ASSISTANT, Role.USER]
-    assert [m.content for m in last_call] == ["You are helpful.", "first turn", "ack", "second turn"]
+    assert [m.content for m in last_call] == [expected_system, "first turn", "ack", "second turn"]
     assert sum(1 for m in last_call if m.role is Role.SYSTEM) == 1
 
 
@@ -344,7 +347,8 @@ def test_clear_still_injects_system_prompt_on_next_send(repository, course_repos
     service.send("hello again")
 
     last_call = model.received_calls[-1]
-    assert [m.content for m in last_call] == ["sys prompt", "hello again"]
+    expected_system = "sys prompt\n\n" + get_mode_prompt(TeachingMode.TEACH)
+    assert [m.content for m in last_call] == [expected_system, "hello again"]
 
 
 def test_delete_active_chat_removes_it_and_activates_another(repository, course_repository):
@@ -517,7 +521,8 @@ def test_general_chat_has_no_course_context_in_model_input(repository, course_re
     service.send("hello")
 
     system_message = model.received_calls[-1][0]
-    assert system_message.content == "Baseline."
+    assert system_message.content.startswith("Baseline.")
+    assert "Current course:" not in system_message.content
 
 
 def test_restart_reconstructs_active_course_from_resumed_chat(repository, course_repository):
@@ -689,7 +694,8 @@ def test_sync_active_chat_course_refreshes_without_switching_chats(repository, c
     assert service.active_session.course_id is None
     service.send("again")
     system_message = model.received_calls[-1][0]
-    assert system_message.content == "Baseline."  # course context dropped
+    assert system_message.content.startswith("Baseline.")
+    assert "Current course:" not in system_message.content  # course context dropped
 
 
 # --- listing chats by course ---------------------------------------------------------
@@ -708,3 +714,225 @@ def test_list_chats_in_course_filters_correctly(repository, course_repository):
 
     assert [c.title for c in in_course] == ["in course"]
     assert [c.title for c in general] == ["general"]
+
+
+# --- teaching mode ---------------------------------------------------------------------
+
+
+def test_new_chat_defaults_to_teach_mode(repository, course_repository):
+    service = make_service(repository, course_repository)
+
+    assert service.get_teaching_mode() is TeachingMode.TEACH
+    assert service.active_session.teaching_mode is TeachingMode.TEACH
+
+
+def test_new_chat_does_not_inherit_previous_chats_mode(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.set_teaching_mode(TeachingMode.EXAM)
+    service.send("hello")
+
+    service.new_chat()
+
+    assert service.get_teaching_mode() is TeachingMode.TEACH
+
+
+def test_set_teaching_mode_updates_active_session(repository, course_repository):
+    service = make_service(repository, course_repository)
+
+    session = service.set_teaching_mode(TeachingMode.HOMEWORK)
+
+    assert session.teaching_mode is TeachingMode.HOMEWORK
+    assert service.get_teaching_mode() is TeachingMode.HOMEWORK
+
+
+def test_set_teaching_mode_persists_immediately(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")  # persist the chat first
+
+    service.set_teaching_mode(TeachingMode.QUICK)
+
+    assert repository.get_chat(service.active_session.id).teaching_mode is TeachingMode.QUICK
+
+
+def test_set_teaching_mode_on_unpersisted_chat_is_honored_once_persisted(repository, course_repository):
+    service = make_service(repository, course_repository)
+
+    service.set_teaching_mode(TeachingMode.PRACTICE)
+    assert repository.list_chats() == []  # still not persisted
+
+    service.send("hello")
+
+    assert repository.get_chat(service.active_session.id).teaching_mode is TeachingMode.PRACTICE
+
+
+def test_set_teaching_mode_does_not_clear_messages(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+
+    service.set_teaching_mode(TeachingMode.EXAM)
+
+    assert content_only(service.history) == ["hello", "[Mock] You said: hello"]
+
+
+def test_set_teaching_mode_does_not_add_a_history_message(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    before = list(service.history)
+
+    service.set_teaching_mode(TeachingMode.EXAM)
+
+    after = [m for m in service.history if m.role is not Role.SYSTEM]
+    assert [m.content for m in after] == [m.content for m in before if m.role is not Role.SYSTEM]
+
+
+def test_set_teaching_mode_does_not_create_a_new_chat(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    chat_id = service.active_session.id
+
+    service.set_teaching_mode(TeachingMode.EXAM)
+
+    assert service.active_session.id == chat_id
+    assert len(repository.list_chats()) == 1
+
+
+def test_set_teaching_mode_does_not_alter_course(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.new_chat(course_id=course.id)
+    service.send("hello")
+
+    service.set_teaching_mode(TeachingMode.EXAM)
+
+    assert service.active_session.course_id == course.id
+
+
+def test_set_teaching_mode_does_not_alter_title(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    service.rename_active_chat("My Title")
+
+    service.set_teaching_mode(TeachingMode.EXAM)
+
+    assert service.active_session.title == "My Title"
+
+
+def test_mode_applies_to_next_inference(repository, course_repository):
+    model = RecordingModel(reply="ack")
+    service = SessionService(
+        model=model, repository=repository, course_repository=course_repository,
+        system_prompt="Baseline.",
+    )
+    service.send("hello")
+
+    service.set_teaching_mode(TeachingMode.EXAM)
+    service.send("next message")
+
+    system_message = model.received_calls[-1][0]
+    assert "Teaching mode: Exam" in system_message.content
+
+
+def test_rename_does_not_reset_teaching_mode(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    service.set_teaching_mode(TeachingMode.EXAM)
+
+    service.rename_active_chat("New Title")
+
+    assert service.active_session.teaching_mode is TeachingMode.EXAM
+    assert repository.get_chat(service.active_session.id).teaching_mode is TeachingMode.EXAM
+
+
+def test_clear_does_not_reset_teaching_mode(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    service.set_teaching_mode(TeachingMode.EXAM)
+
+    service.clear_active_chat()
+
+    assert service.active_session.teaching_mode is TeachingMode.EXAM
+
+
+def test_moving_chat_between_courses_does_not_change_mode(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    service.set_teaching_mode(TeachingMode.EXAM)
+
+    service.move_active_chat_to_course(course.id)
+
+    assert service.active_session.teaching_mode is TeachingMode.EXAM
+
+
+def test_deleting_course_does_not_change_chat_mode(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.new_chat(course_id=course.id)
+    service.send("hello")
+    service.set_teaching_mode(TeachingMode.EXAM)
+
+    course_repository.delete_course(course.id)
+    service.sync_active_chat_course()
+
+    assert service.active_session.teaching_mode is TeachingMode.EXAM
+
+
+def test_mode_persists_across_restart(repository, course_repository):
+    service1 = make_service(repository, course_repository)
+    service1.send("hello")
+    service1.set_teaching_mode(TeachingMode.EXAM)
+
+    service2 = make_service(repository, course_repository)
+
+    assert service2.get_teaching_mode() is TeachingMode.EXAM
+
+
+def test_different_chats_preserve_different_modes(repository, course_repository):
+    """Physics/Chat A -> Homework, Chat B -> Quick, Chat C -> Exam: changing
+    one must never change the others, and reopening each restores its own."""
+    service = make_service(repository, course_repository)
+
+    service.send("chat a")
+    service.set_teaching_mode(TeachingMode.HOMEWORK)
+    chat_a = service.active_session.id
+
+    service.new_chat()
+    service.send("chat b")
+    service.set_teaching_mode(TeachingMode.QUICK)
+    chat_b = service.active_session.id
+
+    service.new_chat()
+    service.send("chat c")
+    service.set_teaching_mode(TeachingMode.EXAM)
+    chat_c = service.active_session.id
+
+    service.open_chat(chat_a)
+    assert service.get_teaching_mode() is TeachingMode.HOMEWORK
+    service.open_chat(chat_b)
+    assert service.get_teaching_mode() is TeachingMode.QUICK
+    service.open_chat(chat_c)
+    assert service.get_teaching_mode() is TeachingMode.EXAM
+
+    # Changing chat A's mode does not affect B or C.
+    service.open_chat(chat_a)
+    service.set_teaching_mode(TeachingMode.PRACTICE)
+    service.open_chat(chat_b)
+    assert service.get_teaching_mode() is TeachingMode.QUICK
+    service.open_chat(chat_c)
+    assert service.get_teaching_mode() is TeachingMode.EXAM
+
+
+def test_different_chats_preserve_different_modes_across_restart(repository, course_repository):
+    service1 = make_service(repository, course_repository)
+    service1.send("chat a")
+    service1.set_teaching_mode(TeachingMode.HOMEWORK)
+    chat_a = service1.active_session.id
+
+    service1.new_chat()
+    service1.send("chat b")
+    service1.set_teaching_mode(TeachingMode.QUICK)
+    chat_b = service1.active_session.id
+
+    service2 = make_service(repository, course_repository)
+    assert service2.open_chat(chat_a).teaching_mode is TeachingMode.HOMEWORK
+    assert service2.open_chat(chat_b).teaching_mode is TeachingMode.QUICK
