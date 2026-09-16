@@ -1,13 +1,15 @@
-# Study Bot (v0.2, Stage 5.5 — Application API / Flutter Bridge Foundation)
+# Study Bot (v0.2, Stage 5.6 — Flutter Product UI Foundation)
 
-A local-first personal study assistant. **Stage 5.5** adds a local HTTP +
+A local-first personal study assistant. **Stage 5.5** added a local HTTP +
 WebSocket API (`python -m studybot.api`) in front of the same engine the
-CLI uses, so a planned Flutter desktop/mobile UI can drive Study Bot
-without knowing anything about SQLite, Ollama, or Python internals. The
-CLI (`python -m studybot`) is unchanged and keeps working exactly as
-before — this is a second interface onto the same core, not a
-replacement. See **[API_CONTRACT.md](API_CONTRACT.md)** for the full API
-reference (endpoints, the WebSocket protocol, error codes, auth).
+CLI uses; **Stage 5.6** adds the first real product UI on top of it — a
+Flutter desktop/mobile app at [`frontend/studybot_app/`](frontend/studybot_app/)
+(primary target macOS) that drives Study Bot entirely through that API,
+knowing nothing about SQLite, Ollama, or Python internals. The CLI
+(`python -m studybot`) is unchanged and keeps working exactly as before —
+these are two interfaces onto the same core, not a replacement. See
+**[API_CONTRACT.md](API_CONTRACT.md)** for the full API reference
+(endpoints, the WebSocket protocol, error codes, auth).
 
 Teaching modes (Teach, Homework, Quick Answer, Practice, Exam — one active
 per chat, prompt-based, added in Stage 5) and course organization (Stage 4)
@@ -69,8 +71,13 @@ The product name is provisional; the internal Python package is `studybot`.
   long-term learning memory
 - ❌ No desktop GUI, filesystem/browser/calendar agent access, or cloud sync
 - ❌ No automatic model downloading — you always run `ollama pull` yourself
-- ❌ No Flutter/Dart code yet — this stage only builds the API the future
-  Flutter client will call
+- ✅ A Flutter desktop/mobile app ([`frontend/studybot_app/`](frontend/studybot_app/)) —
+  courses, chats, teaching-mode picker, and streaming conversation, adaptive
+  from phone width up to a full four-pane desktop layout; see
+  [frontend/studybot_app/README.md](frontend/studybot_app/README.md) for how
+  to run it
+- ❌ No Materials, Notes, Progress, RAG, mastery, or PDFs in the Flutter app
+  — only what the API above actually exposes
 - ❌ No remote/network exposure, cloud deployment, or user accounts — the
   API is a local bridge for one desktop app talking to its own engine
   process, nothing else
@@ -191,6 +198,24 @@ curl http://127.0.0.1:8765/api/v1/health -H "Authorization: Bearer <token>"
 The CLI and the API server can run at the same time against the same
 local database — try creating a course through one and listing it through
 the other.
+
+## Running the Flutter app
+
+With the API server running (see above), and its printed port + token in
+hand:
+
+```bash
+cd frontend/studybot_app
+flutter pub get
+flutter run -d macos   # or: flutter analyze / flutter test
+```
+
+On first launch, enter the base URL (default `http://127.0.0.1:8765`) and
+the token printed by `studybot-server` into the connection screen — both
+are remembered locally for next time. The app never bundles or auto-starts
+the Python engine; start it yourself first. See
+[frontend/studybot_app/README.md](frontend/studybot_app/README.md) and the
+Flutter section of the architecture notes below for details.
 
 ### Commands
 
@@ -383,7 +408,7 @@ so there's no log surface to worry about. See
 ## Architecture
 
 ```
-CLI (python -m studybot)     Flutter (future) → studybot.api (FastAPI, HTTP + WebSocket)
+CLI (python -m studybot)     Flutter (frontend/studybot_app) → studybot.api (FastAPI, HTTP + WebSocket)
         ↓                                              ↓
         └──────────────────→ StudyBotApp (src/studybot/app.py) ←──────────────────┘
         ├── CourseService ─────────────┐
@@ -571,8 +596,9 @@ clears messages, creates a new chat, or alters the chat's course or title.
 
 ## Next planned stage
 
-A Flutter client will be built against the API this stage defines
-(see [API_CONTRACT.md](API_CONTRACT.md)). Beyond that, persistent
-long-term learning memory, mastery tracking, RAG over PDFs/notes/slides,
-embeddings, image/screenshot understanding, quizzes, and eventually
-device/tool access are all still future work — none of which exists yet.
+The Flutter app at [`frontend/studybot_app/`](frontend/studybot_app/) now
+covers courses, chats, teaching modes, and streaming conversation end to
+end. Persistent long-term learning memory, mastery tracking, RAG over
+PDFs/notes/slides, embeddings, image/screenshot understanding, quizzes,
+and eventually device/tool access are all still future work — none of
+which exists yet, in either the API or the Flutter app.
