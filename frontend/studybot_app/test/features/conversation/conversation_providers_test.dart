@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:studybot_app/core/api/api_exception.dart';
 import 'package:studybot_app/core/api/chat_stream_event.dart';
 import 'package:studybot_app/core/models/chat.dart';
@@ -22,6 +23,8 @@ Chat _chat(String id) =>
 Future<void> _flush() => Future<void>.delayed(Duration.zero);
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late FakeStudyBotApi api;
   late FakeChatWebSocketClient ws;
   late ProviderContainer container;
@@ -141,18 +144,27 @@ void main() {
     expect(state.messages.last.isPending, isFalse);
   });
 
-  test('a StreamError clears streaming state and surfaces via conversationErrorProvider', () async {
-    await container.read(conversationProvider.future);
-    await container.read(conversationProvider.notifier).send('hi');
+  test(
+    'a StreamError clears typing state without inserting a fake completed message',
+    () async {
+      await container.read(conversationProvider.future);
+      await container.read(conversationProvider.notifier).send('hi');
+      ws.emit(const StreamDelta('partial thinking...'));
+      await _flush();
 
-    ws.emit(const StreamError(code: 'MODEL_ERROR', message: 'The model crashed.'));
-    await _flush();
+      ws.emit(const StreamError(code: 'MODEL_ERROR', message: 'The model crashed.'));
+      await _flush();
 
-    final state = container.read(conversationProvider).value!;
-    expect(state.isStreaming, isFalse);
-    expect(state.isSending, isFalse);
-    expect(container.read(conversationErrorProvider)?.code, 'MODEL_ERROR');
-  });
+      final state = container.read(conversationProvider).value!;
+      expect(state.isStreaming, isFalse);
+      expect(state.isSending, isFalse);
+      expect(container.read(conversationErrorProvider)?.code, 'MODEL_ERROR');
+      // Only the optimistic user turn — no assistant message was fabricated
+      // from the partial streamed text.
+      expect(state.messages, hasLength(1));
+      expect(state.messages.single.role, MessageRole.user);
+    },
+  );
 
   test('a StreamDisconnected event clears streaming state and surfaces a disconnected error', () async {
     await container.read(conversationProvider.future);
@@ -189,4 +201,122 @@ void main() {
     final state = await container.read(conversationProvider.future);
     expect(state.messages.single.content, 'From chat 2');
   });
+
+  test('switching away mid-stream does not leak the in-flight reply into the new chat', () async {
+    api.chats.add(_chat('chat2'));
+    api.messagesByChat['chat2'] = [
+      ChatMessage.fromJson({'id': 9, 'role': 'user', 'content': 'From chat 2', 'createdAt': 'now'}),
+    ];
+
+    await container.read(conversationProvider.future);
+    await container.read(conversationProvider.notifier).send('question in chat1');
+    ws.emit(const StreamDelta('partial reply for chat1'));
+    await _flush();
+
+    // Switch away before chat1's stream completes.
+    container.read(activeChatIdProvider.notifier).select('chat2');
+    await container.read(conversationProvider.future);
+
+    // Now the (stale, chat1) completion event arrives — it must not touch
+    // chat2's now-active state at all.
+    ws.emit(
+      StreamCompleted(
+        ChatMessage.fromJson({'id': 10, 'role': 'assistant', 'content': 'chat1 reply', 'createdAt': 'now'}),
+      ),
+    );
+    await _flush();
+
+    final state = container.read(conversationProvider).value!;
+    expect(state.messages, hasLength(1));
+    expect(state.messages.single.content, 'From chat 2');
+    expect(state.isStreaming, isFalse);
+  });
+
+  test('a reply completed while its chat was inactive is there (exactly once) on return', () async {
+    // The completion event itself is dropped while inactive (see the test
+    // above) — but the backend persisted it regardless, so a plain refetch
+    // on return must show it, and only once.
+    api.chats.add(_chat('chat2'));
+
+    await container.read(conversationProvider.future);
+    await container.read(conversationProvider.notifier).send('question in chat1');
+
+    container.read(activeChatIdProvider.notifier).select('chat2');
+    await container.read(conversationProvider.future);
+
+    // The backend finished and persisted the exchange while chat1 wasn't
+    // active — simulate that directly in the fake's persisted store.
+    api.messagesByChat['chat1'] = [
+      ChatMessage.fromJson({'id': 20, 'role': 'user', 'content': 'question in chat1', 'createdAt': 'now'}),
+      ChatMessage.fromJson({'id': 21, 'role': 'assistant', 'content': 'chat1 answer', 'createdAt': 'now'}),
+    ];
+
+    container.read(activeChatIdProvider.notifier).select('chat1');
+    final state = await container.read(conversationProvider.future);
+
+    expect(state.messages, hasLength(2));
+    expect(state.messages.where((m) => m.role == MessageRole.assistant), hasLength(1));
+    expect(state.messages.last.content, 'chat1 answer');
+    expect(state.isSending, isFalse);
+    expect(state.isStreaming, isFalse);
+  });
+
+  test(
+    're-subscribes when chatWebSocketClientProvider produces a new client instance '
+    '(e.g. ConnectionConfigNotifier\'s async restore completing after the first subscription)',
+    () async {
+      // Regression test for Bug 1: chatWebSocketClientProvider rebuilds
+      // (a brand-new ChatWebSocketClient) whenever connectionConfigProvider
+      // changes — which it always does once, early, when
+      // ConnectionConfigNotifier's fire-and-forget _restore() resolves. If
+      // ConversationNotifier subscribed to the *old* client's event stream
+      // before that happened, every later delta/message_completed event
+      // arrives on a stream nobody is listening to, and the UI never
+      // updates until the chat is reloaded (e.g. by navigating away and
+      // back), which read history fresh over HTTP instead.
+      SharedPreferences.setMockInitialValues({});
+      final wsClients = <FakeChatWebSocketClient>[];
+      final localApi = FakeStudyBotApi(chats: [_chat('chatX')]);
+      final localContainer = ProviderContainer(
+        overrides: [
+          studyBotApiProvider.overrideWithValue(localApi),
+          chatWebSocketClientProvider.overrideWith((ref) {
+            ref.watch(connectionConfigProvider); // mirrors the real provider's dependency
+            final client = FakeChatWebSocketClient();
+            wsClients.add(client);
+            return client;
+          }),
+        ],
+        retry: kNoRetry,
+      );
+      addTearDown(localContainer.dispose);
+      // A real ConversationView/Composer keeps conversationProvider watched
+      // continuously for as long as a chat is open — without an active
+      // listener like this, Riverpod has no reason to eagerly recompute
+      // dependents when connectionConfigProvider changes underneath it.
+      localContainer.listen(conversationProvider, (_, _) {});
+      localContainer.read(activeChatIdProvider.notifier).select('chatX');
+
+      // Subscribes to wsClients[0].
+      await localContainer.read(conversationProvider.future);
+      expect(wsClients, hasLength(1));
+
+      // Simulate the connection config changing after that subscription —
+      // this must produce a second, distinct ChatWebSocketClient instance
+      // and the notifier must notice on its own (nothing here calls
+      // `read(chatWebSocketClientProvider)` again) and re-subscribe to it.
+      await localContainer.read(connectionConfigProvider.notifier).update(token: 'later-token');
+      await _flush();
+      expect(wsClients, hasLength(2));
+
+      await localContainer.read(conversationProvider.notifier).send('hello');
+      // Events only arrive on the *new* (second) client from here on, per
+      // API_CONTRACT.md — nothing further ever happens on the first.
+      wsClients.last.emit(const StreamDelta('hi there'));
+      await _flush();
+
+      final state = localContainer.read(conversationProvider).value!;
+      expect(state.streamingText, 'hi there');
+    },
+  );
 }

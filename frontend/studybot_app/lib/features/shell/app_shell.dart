@@ -122,7 +122,22 @@ class _CompactLayoutState extends State<_CompactLayout> {
           width: _sidebarOpen ? 280 : 0,
           clipBehavior: Clip.hardEdge,
           decoration: BoxDecoration(border: Border(right: BorderSide(color: theme.colorScheme.outlineVariant))),
-          child: const _CombinedSidebar(),
+          // The sidebar's own content (section headers with a trailing
+          // IconButton, list tiles, ...) is laid out at a fixed 280px width
+          // at all times via OverflowBox — the outer AnimatedContainer just
+          // clips it as it shrinks toward 0. A plain SizedBox does not
+          // achieve this: it still gets clamped down to whatever (shrinking)
+          // constraint AnimatedContainer passes through. Letting the content
+          // actually relayout at every intermediate width down to a few
+          // pixels produces a real RenderFlex overflow partway through the
+          // collapse animation, since a Row with a fixed-size trailing
+          // IconButton cannot shrink below that button's own minimum width.
+          child: const OverflowBox(
+            minWidth: 280,
+            maxWidth: 280,
+            alignment: Alignment.centerLeft,
+            child: _CombinedSidebar(),
+          ),
         ),
         Expanded(
           child: Column(

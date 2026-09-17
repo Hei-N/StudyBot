@@ -40,7 +40,7 @@ class CoursesListView extends ConsumerWidget {
           selected: activeCourseId == null,
           onTap: () => ref.read(activeCourseIdProvider.notifier).select(null),
         ),
-        Flexible(
+        Expanded(
           child: coursesAsync.when(
             loading: () => const LoadingView(),
             error: (error, _) => ErrorView(
@@ -55,8 +55,6 @@ class CoursesListView extends ConsumerWidget {
                 );
               }
               return ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
                 itemCount: courses.length,
                 itemBuilder: (context, index) {
                   final course = courses[index];

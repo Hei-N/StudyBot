@@ -1,10 +1,24 @@
+import 'dart:async';
+import 'dart:developer' as developer;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/api_exception.dart';
 import '../../core/api/chat_stream_event.dart';
+import '../../core/api/chat_websocket_client.dart';
 import '../../core/models/message.dart';
 import '../chats/chats_providers.dart';
 import '../connection/connection_providers.dart';
+
+/// Structural-only debug logging for the streaming pipeline (chat id, event
+/// type, message count, state transition — never message content). Compiled
+/// out of release builds via [kDebugMode]. Temporary instrumentation added
+/// while stabilizing Stage 5.6's streaming-update bug; safe to remove once
+/// that class of regression has stayed fixed for a while.
+void _debugLog(String message) {
+  if (kDebugMode) developer.log(message, name: 'conversation');
+}
 
 /// The active chat's message history plus whatever is currently streaming
 /// in. `streamingText` is the accumulated delta buffer for an in-flight
@@ -40,25 +54,48 @@ class ConversationState {
 
 /// Drives the message list for [activeChatIdProvider] and the WebSocket
 /// send/stream lifecycle. Rebuilds (refetching full history) whenever the
-/// active chat changes; the single WebSocket event subscription is set up
-/// once and lives for the notifier's lifetime.
+/// active chat changes.
+///
+/// The WebSocket event subscription is re-established (via `ref.listen`,
+/// not a one-time `ref.read`) every time [chatWebSocketClientProvider]
+/// produces a *new* [ChatWebSocketClient] instance — which it always does
+/// at least once per app session, whenever [connectionConfigProvider]
+/// changes (including the very first time, when `ConnectionConfigNotifier`'s
+/// fire-and-forget async restore resolves after this notifier's first
+/// build). A one-time `ref.read` subscription would silently go stale the
+/// moment that happens: `send()` always does a fresh `ref.read` and so
+/// reaches the *new* client, but a stale listener stays attached to the
+/// *old* client's now-orphaned stream and never sees another event again —
+/// this was Stage 5.6's "completed reply never appears" bug. `ref.listen`
+/// with `fireImmediately: true` keeps the subscription pointed at whichever
+/// client is current.
 class ConversationNotifier extends AsyncNotifier<ConversationState> {
-  bool _listening = false;
+  StreamSubscription<ChatStreamEvent>? _wsSubscription;
   String? _chatId;
 
   @override
   Future<ConversationState> build() async {
     final chatId = ref.watch(activeChatIdProvider);
     _chatId = chatId;
+    _debugLog('build: chatId=$chatId');
 
-    if (!_listening) {
-      _listening = true;
-      final subscription = ref.read(chatWebSocketClientProvider).events.listen(_handleEvent);
-      ref.onDispose(subscription.cancel);
-    }
+    ref.listen<ChatWebSocketClient>(
+      chatWebSocketClientProvider,
+      (previous, next) => _resubscribe(next),
+      fireImmediately: true,
+    );
+    ref.onDispose(() => _wsSubscription?.cancel());
 
     if (chatId == null) return const ConversationState(messages: []);
-    return ConversationState(messages: await _fetchMessages(chatId));
+    final messages = await _fetchMessages(chatId);
+    _debugLog('build: chatId=$chatId loaded messageCount=${messages.length}');
+    return ConversationState(messages: messages);
+  }
+
+  void _resubscribe(ChatWebSocketClient client) {
+    _debugLog('resubscribe: chatId=$_chatId client=${client.hashCode}');
+    _wsSubscription?.cancel();
+    _wsSubscription = client.events.listen(_handleEvent);
   }
 
   Future<void> refresh() async {
@@ -90,6 +127,7 @@ class ConversationNotifier extends AsyncNotifier<ConversationState> {
     final trimmed = content.trim();
     if (chatId == null || current == null || current.isSending || trimmed.isEmpty) return;
 
+    _debugLog('send: chatId=$chatId isSending->true');
     final optimisticUser = ChatMessage.pending(role: MessageRole.user, content: trimmed);
     state = AsyncValue.data(
       current.copyWith(messages: [...current.messages, optimisticUser], isSending: true, streamingText: ''),
@@ -107,20 +145,29 @@ class ConversationNotifier extends AsyncNotifier<ConversationState> {
     // Ignore events that arrive while this chat isn't the one sending —
     // e.g. the user switched chats mid-stream. The reply is still being
     // persisted server-side and will simply appear on the next full fetch.
-    if (current == null || !current.isSending) return;
+    if (current == null || !current.isSending) {
+      _debugLog('event ignored: chatId=$_chatId type=${event.runtimeType} (not currently sending)');
+      return;
+    }
 
     switch (event) {
       case StreamStarted():
-        break;
+        _debugLog('event: chatId=$_chatId type=StreamStarted');
       case StreamDelta(:final content):
         state = AsyncValue.data(current.copyWith(streamingText: (current.streamingText ?? '') + content));
       case StreamCompleted(:final message):
         final messages = [...current.messages];
         if (message != null) messages.add(message);
+        _debugLog(
+          'event: chatId=$_chatId type=StreamCompleted hasMessage=${message != null} '
+          'messageCount=${current.messages.length}->${messages.length} isSending->false',
+        );
         state = AsyncValue.data(ConversationState(messages: messages));
       case StreamError(:final code, :final message):
+        _debugLog('event: chatId=$_chatId type=StreamError code=$code isSending->false');
         _failStreaming(ApiException(code: code, message: message));
       case StreamDisconnected():
+        _debugLog('event: chatId=$_chatId type=StreamDisconnected isSending->false');
         _failStreaming(ApiException.disconnected());
     }
   }
