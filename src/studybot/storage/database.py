@@ -26,7 +26,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Individual statements rather than one `executescript()` call: `sqlite3`'s
 # `executescript()` forces an implicit COMMIT before it runs and does not
@@ -50,6 +50,7 @@ _FRESH_SCHEMA_STATEMENTS = [
         title TEXT,
         course_id TEXT REFERENCES courses(id) ON DELETE SET NULL,
         teaching_mode TEXT NOT NULL DEFAULT 'teach',
+        reasoning_mode TEXT NOT NULL DEFAULT 'fast',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )
@@ -103,6 +104,10 @@ def _migrate(connection: sqlite3.Connection) -> None:
     if version == 2:
         _migrate_v2_to_v3(connection)
         version = 3
+
+    if version == 3:
+        _migrate_v3_to_v4(connection)
+        version = 4
 
 
 def _create_fresh_schema(connection: sqlite3.Connection) -> None:
@@ -173,6 +178,30 @@ def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
             "ALTER TABLE chats ADD COLUMN teaching_mode TEXT NOT NULL DEFAULT 'teach'"
         )
         connection.execute("PRAGMA user_version = 3")
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+
+
+def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+    """Add per-chat reasoning modes to a schema-v3 (Stage 5.7) database.
+
+    All existing courses, chats, messages, chat/course associations, and
+    teaching modes are left completely untouched; every existing chat
+    simply gains `reasoning_mode = 'fast'` (the deliberate default — see
+    `core.reasoning_mode.DEFAULT_REASONING_MODE`) via the new column's
+    default. Applied as one explicit transaction — if any statement fails,
+    `rollback()` leaves the database exactly as it was at schema v3, not
+    partially upgraded.
+    """
+    logger.debug("Migrating chat database schema from v3 to v4")
+    try:
+        connection.execute("BEGIN")
+        connection.execute(
+            "ALTER TABLE chats ADD COLUMN reasoning_mode TEXT NOT NULL DEFAULT 'fast'"
+        )
+        connection.execute("PRAGMA user_version = 4")
         connection.commit()
     except BaseException:
         connection.rollback()

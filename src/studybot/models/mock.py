@@ -6,6 +6,7 @@ from typing import Iterator, Sequence
 
 from studybot.core.exceptions import ModelError
 from studybot.core.messages import Message, Role
+from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.models.base import ModelResponse, ProviderStatus
 
 
@@ -28,10 +29,21 @@ class MockModel:
 
         return f"[Mock] You said: {last_user_message.content}"
 
-    def generate(self, messages: Sequence[Message]) -> ModelResponse:
+    def generate(
+        self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
+    ) -> ModelResponse:
+        # The mock has no concept of "thinking" at all — a deliberate no-op
+        # rather than silently accepting and discarding a meaningful
+        # request, per ModelProvider's "handle unsupported capability
+        # deliberately" contract. Accepted (not rejected) so callers can
+        # treat every provider uniformly.
+        del reasoning_mode
         return ModelResponse(content=self._reply_to(messages), model_name=self._name)
 
-    def stream(self, messages: Sequence[Message]) -> Iterator[str]:
+    def stream(
+        self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
+    ) -> Iterator[str]:
+        del reasoning_mode
         # Deterministic single chunk: the mock has nothing to stream
         # progressively, but must still satisfy the streaming interface.
         yield self._reply_to(messages)

@@ -14,7 +14,7 @@ import '../../support/fake_studybot_api.dart';
 import '../../support/no_retry_container.dart';
 
 Chat _chat(String id) =>
-    Chat(id: id, title: null, courseId: null, teachingMode: 'teach', createdAt: 'now', updatedAt: 'now');
+    Chat(id: id, title: null, courseId: null, teachingMode: 'teach', reasoningMode: 'fast', createdAt: 'now', updatedAt: 'now');
 
 /// [FakeChatWebSocketClient.emit] delivers over a broadcast [StreamController],
 /// which dispatches to listeners on a microtask rather than synchronously —

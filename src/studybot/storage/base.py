@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from studybot.core.messages import Message, Role
+from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
 
 
@@ -31,12 +32,17 @@ class ChatSession:
 
     `teaching_mode` is per-chat (see `core.teaching_mode`): switching a
     chat's mode never affects any other chat, even one in the same course.
+
+    `reasoning_mode` is per-chat too (see `core.reasoning_mode`) and
+    entirely independent of `teaching_mode` — one controls instructional
+    behavior, the other controls inference depth/latency.
     """
 
     id: str
     title: str | None
     course_id: str | None
     teaching_mode: TeachingMode
+    reasoning_mode: ReasoningMode
     created_at: str
     updated_at: str
 
@@ -85,6 +91,7 @@ class ChatRepository(Protocol):
         title: str | None,
         course_id: str | None = None,
         teaching_mode: TeachingMode = DEFAULT_TEACHING_MODE,
+        reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE,
     ) -> ChatSession:
         """Insert a new chat row and return it (with server-assigned timestamps)."""
         ...
@@ -127,6 +134,14 @@ class ChatRepository(Protocol):
 
         Never touches messages, title, or course — mode is independent of
         all three.
+        """
+        ...
+
+    def set_reasoning_mode(self, chat_id: str, mode: ReasoningMode) -> ChatSession:
+        """Set a chat's reasoning mode and bump its `updated_at`.
+
+        Never touches messages, title, course, or teaching mode — reasoning
+        mode is independent of all of them.
         """
         ...
 

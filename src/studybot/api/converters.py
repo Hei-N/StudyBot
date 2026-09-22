@@ -8,6 +8,7 @@ handlers call these rather than constructing DTOs field-by-field inline.
 from __future__ import annotations
 
 from studybot.api.schemas import ChatOut, CourseOut, MessageOut, ModeInfoOut
+from studybot.core.reasoning_mode import ReasoningModeInfo
 from studybot.core.teaching_mode import TeachingModeInfo
 from studybot.storage.base import ChatSession, Course, MessageRecord
 
@@ -30,6 +31,7 @@ def chat_to_out(chat: ChatSession) -> ChatOut:
         title=chat.title,
         course_id=chat.course_id,
         teaching_mode=chat.teaching_mode.value,
+        reasoning_mode=chat.reasoning_mode.value,
         created_at=chat.created_at,
         updated_at=chat.updated_at,
     )
@@ -45,4 +47,8 @@ def message_record_to_out(record: MessageRecord) -> MessageOut:
 
 
 def mode_info_to_out(info: TeachingModeInfo) -> ModeInfoOut:
+    return ModeInfoOut(id=info.mode.value, display_name=info.display_name, description=info.description)
+
+
+def reasoning_mode_info_to_out(info: ReasoningModeInfo) -> ModeInfoOut:
     return ModeInfoOut(id=info.mode.value, display_name=info.display_name, description=info.description)

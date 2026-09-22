@@ -13,6 +13,9 @@ import logging
 from studybot.app import StudyBotApp
 from studybot.core.exceptions import StudyBotError
 from studybot.core.messages import Role
+from studybot.core.reasoning_mode import all_modes as all_reasoning_modes
+from studybot.core.reasoning_mode import get_mode_info as get_reasoning_mode_info
+from studybot.core.reasoning_mode import parse_reasoning_mode
 from studybot.core.teaching_mode import all_modes, get_mode_info, parse_teaching_mode
 from studybot.models.base import ProviderStatus
 from studybot.storage.base import ChatSession, Course
@@ -32,6 +35,8 @@ Available commands:
   /delete            Delete the active chat entirely (asks to confirm)
   /mode              Show the active chat's teaching mode and all modes
   /mode <name>       Change the active chat's teaching mode
+  /reasoning         Show the active chat's reasoning mode and all modes
+  /reasoning <name>  Change the active chat's reasoning mode (fast|deep)
   /course new        Create a course and activate it
   /course list       List courses
   /course open <id>  Activate a course (id or unique prefix)
@@ -99,6 +104,7 @@ def _print_banner(app: StudyBotApp) -> None:
     print(f"Course: {course.name if course else 'General'}")
     print(f"Chat: {_display_title(app.sessions.active_session)}")
     print(f"Mode: {get_mode_info(app.sessions.get_teaching_mode()).display_name}")
+    print(f"Reasoning: {get_reasoning_mode_info(app.sessions.get_reasoning_mode()).display_name}")
     print()
     print("Type /help for commands.")
 
@@ -152,6 +158,8 @@ def _handle_command(command: str, app: StudyBotApp) -> bool:
             _delete_active_chat(app)
         case "/mode":
             _handle_mode_command(app, argument)
+        case "/reasoning":
+            _handle_reasoning_command(app, argument)
         case "/course":
             _handle_course_command(app, argument)
         case "/chat":
@@ -294,6 +302,33 @@ def _print_mode_status(app: StudyBotApp) -> None:
     print()
     print("Available:")
     for info in all_modes():
+        print(f"  {info.mode.value:<10} {info.description}")
+
+
+# --- /reasoning --------------------------------------------------------------------
+
+
+def _handle_reasoning_command(app: StudyBotApp, argument: str) -> None:
+    if not argument:
+        _print_reasoning_status(app)
+        return
+
+    try:
+        mode = parse_reasoning_mode(argument)
+    except ValueError:
+        print(f"Unknown reasoning mode: {argument!r}. Type /reasoning to see available modes.")
+        return
+
+    app.sessions.set_reasoning_mode(mode)
+    print(f"Reasoning mode changed to {get_reasoning_mode_info(mode).display_name}.")
+
+
+def _print_reasoning_status(app: StudyBotApp) -> None:
+    current = get_reasoning_mode_info(app.sessions.get_reasoning_mode())
+    print(f"Reasoning mode: {current.display_name}")
+    print()
+    print("Available:")
+    for info in all_reasoning_modes():
         print(f"  {info.mode.value:<10} {info.description}")
 
 

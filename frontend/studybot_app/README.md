@@ -3,10 +3,15 @@
 The Study Bot product UI — a Flutter desktop/mobile client for the
 `studybot.api` server in the parent repository. Primary target is macOS;
 Windows, iOS, and iPad are future targets. This app contains **no business
-logic** of its own: courses, chats, teaching modes, and conversation
-history all live behind the HTTP + WebSocket API documented in
+logic** of its own: courses, chats, teaching modes, reasoning modes, and
+conversation history all live behind the HTTP + WebSocket API documented in
 [`../../API_CONTRACT.md`](../../API_CONTRACT.md), which this app treats as
 the single source of truth for every data shape and protocol detail.
+Teaching mode and reasoning mode are independent per-chat settings — the
+former (Teach/Homework/Quick/Practice/Exam) shapes instructional behavior,
+the latter (Fast/Deep Think) controls the model's inference-time
+"thinking" depth/latency, shown as two small pickers side by side in the
+composer.
 
 ## Running it
 

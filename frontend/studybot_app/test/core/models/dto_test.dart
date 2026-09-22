@@ -53,6 +53,7 @@ void main() {
       'title': title,
       'courseId': courseId,
       'teachingMode': 'teach',
+      'reasoningMode': 'fast',
       'createdAt': '2026-01-01T00:00:00Z',
       'updatedAt': '2026-01-01T00:00:00Z',
     };
@@ -63,6 +64,7 @@ void main() {
       expect(chat.title, 'My chat');
       expect(chat.courseId, 'c1');
       expect(chat.teachingMode, 'teach');
+      expect(chat.reasoningMode, 'fast');
     });
 
     test('displayTitle falls back to Untitled for null or blank title', () {

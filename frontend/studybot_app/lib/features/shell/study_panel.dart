@@ -7,12 +7,13 @@ import '../../core/widgets/status_dot.dart';
 import '../chats/chats_providers.dart';
 import '../courses/courses_providers.dart';
 import '../modes/modes_providers.dart';
+import '../modes/reasoning_providers.dart';
 import '../status/status_providers.dart';
 
 /// The contextual right-hand panel: only real, already-available data —
-/// current course, code/term, teaching mode, and engine status. No
-/// mastery, key concepts, notes, or progress — none of that exists in the
-/// backend yet (deliberately deferred past this stage).
+/// current course, code/term, teaching mode, reasoning mode, and engine
+/// status. No mastery, key concepts, notes, or progress — none of that
+/// exists in the backend yet (deliberately deferred past this stage).
 class StudyPanel extends ConsumerWidget {
   const StudyPanel({super.key});
 
@@ -22,6 +23,7 @@ class StudyPanel extends ConsumerWidget {
     final course = ref.watch(activeCourseProvider);
     final chat = ref.watch(activeChatProvider);
     final modesAsync = ref.watch(modeCatalogProvider);
+    final reasoningModesAsync = ref.watch(reasoningModeCatalogProvider);
     final healthAsync = ref.watch(engineHealthProvider);
 
     return Container(
@@ -55,6 +57,21 @@ class StudyPanel extends ConsumerWidget {
                     },
                     loading: () => const SizedBox(height: 16),
                     error: (_, _) => Text(chat.teachingMode, style: theme.textTheme.bodyMedium),
+                  ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          const SectionHeader('Reasoning mode'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+            child: chat == null
+                ? Text('No chat open', style: theme.textTheme.bodySmall)
+                : reasoningModesAsync.when(
+                    data: (modes) {
+                      final mode = modes.where((m) => m.id == chat.reasoningMode).firstOrNull;
+                      return Text(mode?.displayName ?? chat.reasoningMode, style: theme.textTheme.bodyMedium);
+                    },
+                    loading: () => const SizedBox(height: 16),
+                    error: (_, _) => Text(chat.reasoningMode, style: theme.textTheme.bodyMedium),
                   ),
           ),
           const SizedBox(height: AppSpacing.md),

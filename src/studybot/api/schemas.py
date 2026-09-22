@@ -70,6 +70,11 @@ class CourseUpdateIn(ApiModel):
 
 
 class ModeInfoOut(ApiModel):
+    """Shared shape for both catalogs: teaching modes (`GET /modes`) and
+    reasoning modes (`GET /reasoning-modes`) — both are just a stable id
+    plus display metadata, so one DTO serves both rather than duplicating
+    an identical schema under a second name."""
+
     id: str
     display_name: str
     description: str
@@ -77,6 +82,13 @@ class ModeInfoOut(ApiModel):
 
 class ChatModeIn(ApiModel):
     mode: str
+
+
+# --- reasoning modes -----------------------------------------------------------------
+
+
+class ChatReasoningModeIn(ApiModel):
+    reasoning_mode: str
 
 
 # --- chats ---------------------------------------------------------------------------
@@ -87,6 +99,7 @@ class ChatOut(ApiModel):
     title: str | None
     course_id: str | None
     teaching_mode: str
+    reasoning_mode: str
     created_at: str
     updated_at: str
 

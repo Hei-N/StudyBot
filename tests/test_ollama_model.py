@@ -4,6 +4,7 @@ import pytest
 
 from studybot.core.exceptions import ModelError
 from studybot.core.messages import Message
+from studybot.core.reasoning_mode import ReasoningMode
 from studybot.models.ollama import OllamaModel
 from tests.fake_ollama import FakeChatResponse, FakeListResponse, FakeOllamaClient
 
@@ -84,6 +85,70 @@ def test_generate_extracts_response_content():
     assert response.model_name == "qwen3:4b"
 
 
+def test_generate_never_returns_hidden_thinking_as_content():
+    fake = FakeOllamaClient(chat_response=FakeChatResponse("42", thinking="let me reason about this..."))
+    model = make_model(fake)
+
+    response = model.generate([Message.user("question")], reasoning_mode=ReasoningMode.DEEP)
+
+    assert response.content == "42"
+    assert "reason" not in response.content
+
+
+# --- reasoning mode -> think mapping ------------------------------------------
+
+
+def test_generate_defaults_to_think_false_fast_mode():
+    fake = FakeOllamaClient(chat_response=FakeChatResponse("hi"))
+    model = make_model(fake)
+
+    model.generate([Message.user("hi")])
+
+    assert fake.chat_calls[0]["think"] is False
+
+
+def test_generate_fast_reasoning_mode_maps_to_think_false():
+    fake = FakeOllamaClient(chat_response=FakeChatResponse("hi"))
+    model = make_model(fake)
+
+    model.generate([Message.user("hi")], reasoning_mode=ReasoningMode.FAST)
+
+    assert fake.chat_calls[0]["think"] is False
+
+
+def test_generate_deep_reasoning_mode_maps_to_think_true():
+    fake = FakeOllamaClient(chat_response=FakeChatResponse("hi"))
+    model = make_model(fake)
+
+    model.generate([Message.user("hi")], reasoning_mode=ReasoningMode.DEEP)
+
+    assert fake.chat_calls[0]["think"] is True
+
+
+def test_stream_fast_reasoning_mode_maps_to_think_false():
+    def stream_factory():
+        yield FakeChatResponse("hi")
+
+    fake = FakeOllamaClient(stream_factory=stream_factory)
+    model = make_model(fake)
+
+    list(model.stream([Message.user("hi")], reasoning_mode=ReasoningMode.FAST))
+
+    assert fake.chat_calls[0]["think"] is False
+
+
+def test_stream_deep_reasoning_mode_maps_to_think_true():
+    def stream_factory():
+        yield FakeChatResponse("hi")
+
+    fake = FakeOllamaClient(stream_factory=stream_factory)
+    model = make_model(fake)
+
+    list(model.stream([Message.user("hi")], reasoning_mode=ReasoningMode.DEEP))
+
+    assert fake.chat_calls[0]["think"] is True
+
+
 # --- streaming ---------------------------------------------------------------
 
 
@@ -113,6 +178,26 @@ def test_stream_skips_empty_or_none_content_chunks():
     chunks = list(model.stream([Message.user("hi")]))
 
     assert chunks == ["Hello", " world"]
+
+
+def test_stream_never_yields_hidden_thinking_chunks():
+    """Ollama's streaming chunks carry `thinking` and `content` as separate
+    fields on the same message — a chunk that's *only* thinking (as real
+    Qwen3 output looks like before the visible answer starts) must never
+    leak into what this provider yields."""
+
+    def stream_factory():
+        yield FakeChatResponse(content=None, thinking="reasoning step one...")
+        yield FakeChatResponse(content=None, thinking="reasoning step two...")
+        yield FakeChatResponse(content="The answer is 42.")
+
+    fake = FakeOllamaClient(stream_factory=stream_factory)
+    model = make_model(fake)
+
+    chunks = list(model.stream([Message.user("hi")], reasoning_mode=ReasoningMode.DEEP))
+
+    assert chunks == ["The answer is 42."]
+    assert not any("reasoning step" in c for c in chunks)
 
 
 def test_stream_raises_model_error_partway_through():

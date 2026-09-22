@@ -3,6 +3,7 @@ import pytest
 from studybot import cli
 from studybot.app import StudyBotApp
 from studybot.config.settings import Settings
+from studybot.core.reasoning_mode import ReasoningMode
 from studybot.core.teaching_mode import TeachingMode
 from studybot.storage.base import ChatSession
 
@@ -42,7 +43,7 @@ def test_resolve_editable_field_new_value_overrides():
 def test_display_title_shows_untitled_for_none():
     session = ChatSession(
         id="x", title=None, course_id=None, teaching_mode=TeachingMode.TEACH,
-        created_at="t", updated_at="t",
+        reasoning_mode=ReasoningMode.FAST, created_at="t", updated_at="t",
     )
     assert cli._display_title(session) == "Untitled"
 
@@ -50,7 +51,7 @@ def test_display_title_shows_untitled_for_none():
 def test_display_title_shows_actual_title():
     session = ChatSession(
         id="x", title="My Chat", course_id=None, teaching_mode=TeachingMode.TEACH,
-        created_at="t", updated_at="t",
+        reasoning_mode=ReasoningMode.FAST, created_at="t", updated_at="t",
     )
     assert cli._display_title(session) == "My Chat"
 
@@ -286,3 +287,65 @@ def test_mode_change_does_not_add_history_message(app, capsys):
     cli._handle_mode_command(app, "homework")
 
     assert len(app.sessions.history) == before
+
+
+# --- /reasoning --------------------------------------------------------------------
+
+
+def test_reasoning_status_shows_current_and_available_modes(app, capsys):
+    cli._handle_reasoning_command(app, "")
+
+    output = capsys.readouterr().out
+    assert "Reasoning mode: Fast" in output
+    assert "fast" in output
+    assert "deep" in output
+
+
+def test_reasoning_deep(app, capsys):
+    cli._handle_reasoning_command(app, "deep")
+
+    assert app.sessions.get_reasoning_mode() is ReasoningMode.DEEP
+    assert "Reasoning mode changed to Deep Think." in capsys.readouterr().out
+
+
+def test_reasoning_fast(app, capsys):
+    app.sessions.set_reasoning_mode(ReasoningMode.DEEP)
+
+    cli._handle_reasoning_command(app, "fast")
+
+    assert app.sessions.get_reasoning_mode() is ReasoningMode.FAST
+    assert "Reasoning mode changed to Fast." in capsys.readouterr().out
+
+
+def test_reasoning_invalid_shows_clean_error(app, capsys):
+    cli._handle_reasoning_command(app, "not-a-real-mode")
+
+    assert app.sessions.get_reasoning_mode() is ReasoningMode.FAST  # unchanged
+    output = capsys.readouterr().out
+    assert "Unknown reasoning mode" in output
+
+
+def test_reasoning_change_does_not_affect_teaching_mode(app, capsys):
+    app.sessions.set_teaching_mode(TeachingMode.HOMEWORK)
+
+    cli._handle_reasoning_command(app, "deep")
+
+    assert app.sessions.get_teaching_mode() is TeachingMode.HOMEWORK
+    assert app.sessions.get_reasoning_mode() is ReasoningMode.DEEP
+
+
+def test_reasoning_change_does_not_add_history_message(app, capsys):
+    app.sessions.send("hello")
+    before = len(app.sessions.history)
+
+    cli._handle_reasoning_command(app, "deep")
+
+    assert len(app.sessions.history) == before
+
+
+def test_banner_shows_reasoning_mode(app, capsys, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: (_ for _ in ()).throw(EOFError()))
+
+    cli._run_loop(app)
+
+    assert "Reasoning: Fast" in capsys.readouterr().out

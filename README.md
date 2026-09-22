@@ -1,20 +1,24 @@
-# Study Bot (v0.2, Stage 5.6 — Flutter Product UI Foundation)
+# Study Bot (v0.2, Stage 5.7 — Response Speed / Reasoning Policy)
 
 A local-first personal study assistant. **Stage 5.5** added a local HTTP +
 WebSocket API (`python -m studybot.api`) in front of the same engine the
-CLI uses; **Stage 5.6** adds the first real product UI on top of it — a
+CLI uses; **Stage 5.6** added the first real product UI on top of it — a
 Flutter desktop/mobile app at [`frontend/studybot_app/`](frontend/studybot_app/)
 (primary target macOS) that drives Study Bot entirely through that API,
-knowing nothing about SQLite, Ollama, or Python internals. The CLI
-(`python -m studybot`) is unchanged and keeps working exactly as before —
-these are two interfaces onto the same core, not a replacement. See
-**[API_CONTRACT.md](API_CONTRACT.md)** for the full API reference
-(endpoints, the WebSocket protocol, error codes, auth).
+knowing nothing about SQLite, Ollama, or Python internals. **Stage 5.7**
+adds an explicit, per-chat **reasoning mode** (Fast/Deep Think) so the app
+no longer leaves Qwen3's "thinking" behavior implicit — see "Reasoning
+modes" below. The CLI (`python -m studybot`) is unchanged and keeps
+working exactly as before — these are two interfaces onto the same core,
+not a replacement. See **[API_CONTRACT.md](API_CONTRACT.md)** for the full
+API reference (endpoints, the WebSocket protocol, error codes, auth).
 
 Teaching modes (Teach, Homework, Quick Answer, Practice, Exam — one active
 per chat, prompt-based, added in Stage 5) and course organization (Stage 4)
-are unchanged from before; this stage is purely about exposing the
-existing engine over a second, UI-independent transport.
+are unchanged from before. **Reasoning mode is a separate, independent
+per-chat setting** (Stage 5.7) — it controls the model's inference-time
+"thinking" depth/latency, not instructional behavior; a chat can be in any
+combination of the two.
 
 The product name is provisional; the internal Python package is `studybot`.
 
@@ -72,10 +76,14 @@ The product name is provisional; the internal Python package is `studybot`.
 - ❌ No desktop GUI, filesystem/browser/calendar agent access, or cloud sync
 - ❌ No automatic model downloading — you always run `ollama pull` yourself
 - ✅ A Flutter desktop/mobile app ([`frontend/studybot_app/`](frontend/studybot_app/)) —
-  courses, chats, teaching-mode picker, and streaming conversation, adaptive
-  from phone width up to a full four-pane desktop layout; see
-  [frontend/studybot_app/README.md](frontend/studybot_app/README.md) for how
-  to run it
+  courses, chats, teaching-mode picker, reasoning-mode picker, and streaming
+  conversation, adaptive from phone width up to a full four-pane desktop
+  layout; see [frontend/studybot_app/README.md](frontend/studybot_app/README.md)
+  for how to run it
+- ✅ Two reasoning modes, one active per chat, independent of teaching mode:
+  **Fast** (`think=False` — the default for every new chat) and **Deep
+  Think** (`think=True`, for harder questions). Hidden model "thinking" is
+  never shown in the UI and never persisted — only the final answer is.
 - ❌ No Materials, Notes, Progress, RAG, mastery, or PDFs in the Flutter app
   — only what the API above actually exposes
 - ❌ No remote/network exposure, cloud deployment, or user accounts — the
@@ -233,6 +241,8 @@ Flutter section of the architecture notes below for details.
 | `/delete`            | Delete the active chat entirely — asks to confirm             |
 | `/mode`              | Show the active chat's teaching mode and all available modes  |
 | `/mode <name>`       | Change the active chat's teaching mode                        |
+| `/reasoning`         | Show the active chat's reasoning mode and all available modes |
+| `/reasoning <name>`  | Change the active chat's reasoning mode (`fast` or `deep`)    |
 | `/course new`        | Create a course (interactive) and activate it                 |
 | `/course list`       | List courses (`*` marks the active one)                        |
 | `/course open <id>`  | Activate a course by id or unique id prefix                    |
@@ -295,6 +305,38 @@ Expect the wording of each mode's instructions to be refined after more
 real-world use; it lives in one place (`core/mode_prompts.py`) specifically
 so that's easy to do without hunting through the codebase.
 
+### Reasoning modes
+
+A second, **independent** per-chat setting (Stage 5.7) — controls how much
+inference-time "thinking" Ollama/Qwen3 does before answering, not
+instructional behavior (that's teaching mode, above). A chat can combine
+any teaching mode with any reasoning mode.
+
+| Mode | `/reasoning` name | What it does |
+|------|-------------------|--------------|
+| Fast | `fast` | Answers immediately (`think=False`). **Default for every new chat.** |
+| Deep Think | `deep` | Reasons through the problem before answering (`think=True`) — slower, for harder questions. |
+
+```
+You > /reasoning
+Reasoning mode: Fast
+
+Available:
+  fast       Answers immediately, without extended step-by-step reasoning.
+  deep       Reasons through the problem before answering — slower, for harder questions.
+
+You > /reasoning deep
+Reasoning mode changed to Deep Think.
+```
+
+Measured against real `qwen3:4b` (five prompts each; see
+[API_CONTRACT.md](API_CONTRACT.md#reasoning-modes-stage-57) for the
+mechanism): median time to the first visible token was **~3.7s in Fast**
+vs **~21s in Deep** — Fast is the right default for a conversational feel;
+Deep is opt-in for problems that benefit from it. Whichever mode is active,
+the model's hidden reasoning/thinking text is never shown in the UI and
+never persisted to the database — only the final answer is.
+
 ## Configuration
 
 Configuration is centralized in `studybot.config.settings.Settings` and read
@@ -333,11 +375,11 @@ created and upgraded automatically — there's nothing to run by hand. A
 database from any earlier version is upgraded the first time this version
 opens it, in one atomic step per version bump: it either fully succeeds or
 leaves your existing database completely untouched, chained as needed
-(e.g. a Version 0.1 database goes v1 → v2 → v3 in one open). Existing
+(e.g. a Version 0.1 database goes v1 → v2 → v3 → v4 in one open). Existing
 chats keep their ids, titles, timestamps, course assignments, and
-messages exactly; they simply default to Teach mode until you change it.
-You never need to open this database file directly; manage everything
-through the app's commands.
+messages exactly; they simply default to Teach teaching mode and Fast
+reasoning mode until you change them. You never need to open this
+database file directly; manage everything through the app's commands.
 
 **Resetting local data:** to start over with a clean slate, quit Study Bot
 and delete the database file:
@@ -507,9 +549,9 @@ Key modules:
   `storage/` sees a raw SQLite row
 - `src/studybot/storage/database.py` — opens the one shared
   `sqlite3.Connection` both repositories use and applies schema migrations,
-  versioned via SQLite's own `PRAGMA user_version` (currently `3`); each
+  versioned via SQLite's own `PRAGMA user_version` (currently `4`); each
   migration step runs in one explicit, all-or-nothing transaction, chained
-  as needed (v1 → v2 → v3)
+  as needed (v1 → v2 → v3 → v4)
 - `src/studybot/storage/sqlite_repository.py` / `sqlite_course_repository.py`
   — the **only** two modules allowed to contain SQL; parameterized queries
   only, for chats/messages and courses respectively. `sqlite_repository.py`
@@ -553,20 +595,23 @@ mode changes: `/mode homework` never inserts a "Mode changed to Homework"
 message into the conversation either — the CLI prints a confirmation to
 the terminal, but it's never part of what the model sees as history.
 
-### Schema migrations (v1 → v2 → v3)
+### Schema migrations (v1 → v2 → v3 → v4)
 
 - **v1 → v2** (Stage 4): adds a `courses` table and a nullable
   `chats.course_id` referencing it with `ON DELETE SET NULL` — deleting a
   course never touches its chats or their messages.
 - **v2 → v3** (Stage 5): adds `chats.teaching_mode` (`NOT NULL DEFAULT
   'teach'`) — every existing chat becomes Teach mode; nothing else changes.
+- **v3 → v4** (Stage 5.7): adds `chats.reasoning_mode` (`NOT NULL DEFAULT
+  'fast'`) — every existing chat becomes Fast reasoning mode; teaching
+  mode, courses, chats, and messages are all left completely untouched.
 
 Each step is one explicit SQL transaction (`BEGIN` ...
 `commit()`/`rollback()` — plain DDL statements are *not* automatically
 transactional in Python's `sqlite3` module, so this is done by hand): if
 anything in a step fails, the database is left exactly as it was before
 that step, not partially upgraded. Steps chain automatically (a v1
-database run against this version goes straight to v3 in one `open`), a
+database run against this version goes straight to v4 in one `open`), a
 brand-new database skips migration entirely and is created directly at the
 current schema, and re-opening an already-current database is a no-op.
 
@@ -597,8 +642,10 @@ clears messages, creates a new chat, or alters the chat's course or title.
 ## Next planned stage
 
 The Flutter app at [`frontend/studybot_app/`](frontend/studybot_app/) now
-covers courses, chats, teaching modes, and streaming conversation end to
-end. Persistent long-term learning memory, mastery tracking, RAG over
+covers courses, chats, teaching modes, reasoning modes, and streaming
+conversation end to end, with control over Ollama's thinking behavior
+(Stage 5.7) so simple prompts answer materially faster by default.
+Persistent long-term learning memory, mastery tracking, RAG over
 PDFs/notes/slides, embeddings, image/screenshot understanding, quizzes,
 and eventually device/tool access are all still future work — none of
 which exists yet, in either the API or the Flutter app.

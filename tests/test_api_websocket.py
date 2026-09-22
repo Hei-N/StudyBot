@@ -22,10 +22,10 @@ class ChunkedModel:
     def __init__(self, chunks):
         self.chunks = chunks
 
-    def generate(self, messages):
+    def generate(self, messages, *, reasoning_mode=None):
         raise AssertionError("not used in these tests")
 
-    def stream(self, messages):
+    def stream(self, messages, *, reasoning_mode=None):
         yield from self.chunks
 
     def get_status(self):
@@ -39,10 +39,10 @@ class FailingStreamModel:
 
     name = "failing"
 
-    def generate(self, messages):
+    def generate(self, messages, *, reasoning_mode=None):
         raise AssertionError("not used in these tests")
 
-    def stream(self, messages):
+    def stream(self, messages, *, reasoning_mode=None):
         from studybot.core.exceptions import ModelError
 
         yield "partial "
@@ -64,10 +64,10 @@ class SlowStreamModel:
         self._release_event = release_event
         self._remaining_chunks = remaining_chunks
 
-    def generate(self, messages):
+    def generate(self, messages, *, reasoning_mode=None):
         raise AssertionError("not used in these tests")
 
-    def stream(self, messages):
+    def stream(self, messages, *, reasoning_mode=None):
         yield "chunk1"
         if self._release_event.wait(timeout=5):
             yield from self._remaining_chunks

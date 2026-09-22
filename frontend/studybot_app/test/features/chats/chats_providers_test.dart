@@ -8,14 +8,16 @@ import 'package:studybot_app/features/courses/courses_providers.dart';
 import '../../support/fake_studybot_api.dart';
 import '../../support/no_retry_container.dart';
 
-Chat _chat(String id, {String? courseId, String mode = 'teach', String? title}) => Chat(
-  id: id,
-  title: title,
-  courseId: courseId,
-  teachingMode: mode,
-  createdAt: 'now',
-  updatedAt: 'now',
-);
+Chat _chat(String id, {String? courseId, String mode = 'teach', String reasoningMode = 'fast', String? title}) =>
+    Chat(
+      id: id,
+      title: title,
+      courseId: courseId,
+      teachingMode: mode,
+      reasoningMode: reasoningMode,
+      createdAt: 'now',
+      updatedAt: 'now',
+    );
 
 void main() {
   test('chatsProvider requests General (course_id=none) when no course is active', () async {
@@ -183,5 +185,65 @@ void main() {
 
     expect(container.read(chatsProvider).value!.single.teachingMode, 'quick_answer');
     expect(api.calls, contains('setChatMode:chat1:quick_answer'));
+  });
+
+  test('setReasoningMode persists through the API and updates Chat.reasoningMode', () async {
+    final api = FakeStudyBotApi(chats: [_chat('chat1')], reasoningModes: const []);
+    final container = ProviderContainer(overrides: [studyBotApiProvider.overrideWithValue(api)], retry: kNoRetry);
+    addTearDown(container.dispose);
+
+    await container.read(chatsProvider.future);
+    await container.read(chatsProvider.notifier).setReasoningMode('chat1', 'deep');
+
+    expect(container.read(chatsProvider).value!.single.reasoningMode, 'deep');
+    expect(api.calls, contains('setChatReasoningMode:chat1:deep'));
+  });
+
+  test('setReasoningMode does not change teachingMode, and vice versa', () async {
+    final api = FakeStudyBotApi(chats: [_chat('chat1', mode: 'homework')]);
+    final container = ProviderContainer(overrides: [studyBotApiProvider.overrideWithValue(api)], retry: kNoRetry);
+    addTearDown(container.dispose);
+
+    await container.read(chatsProvider.future);
+    await container.read(chatsProvider.notifier).setReasoningMode('chat1', 'deep');
+
+    final chat = container.read(chatsProvider).value!.single;
+    expect(chat.teachingMode, 'homework'); // untouched
+    expect(chat.reasoningMode, 'deep');
+
+    await container.read(chatsProvider.notifier).setMode('chat1', 'exam');
+    final after = container.read(chatsProvider).value!.single;
+    expect(after.reasoningMode, 'deep'); // untouched
+    expect(after.teachingMode, 'exam');
+  });
+
+  test('a freshly created chat defaults to fast reasoning mode', () async {
+    final api = FakeStudyBotApi();
+    final container = ProviderContainer(overrides: [studyBotApiProvider.overrideWithValue(api)], retry: kNoRetry);
+    addTearDown(container.dispose);
+
+    await container.read(chatsProvider.future);
+    final created = await container.read(chatsProvider.notifier).create();
+
+    expect(created.reasoningMode, 'fast');
+  });
+
+  test('switching the active chat shows each chat\'s own reasoning mode (no bleed-through)', () async {
+    final api = FakeStudyBotApi(
+      chats: [_chat('chat1', reasoningMode: 'deep'), _chat('chat2', reasoningMode: 'fast')],
+    );
+    final container = ProviderContainer(overrides: [studyBotApiProvider.overrideWithValue(api)], retry: kNoRetry);
+    addTearDown(container.dispose);
+
+    await container.read(chatsProvider.future);
+
+    container.read(activeChatIdProvider.notifier).select('chat1');
+    expect(container.read(activeChatProvider)?.reasoningMode, 'deep');
+
+    container.read(activeChatIdProvider.notifier).select('chat2');
+    expect(container.read(activeChatProvider)?.reasoningMode, 'fast');
+
+    container.read(activeChatIdProvider.notifier).select('chat1');
+    expect(container.read(activeChatProvider)?.reasoningMode, 'deep');
   });
 }

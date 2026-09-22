@@ -8,6 +8,7 @@ import '../models/chat.dart';
 import '../models/course.dart';
 import '../models/health.dart';
 import '../models/message.dart';
+import '../models/reasoning_mode.dart';
 import '../models/teaching_mode.dart';
 import 'api_exception.dart';
 import 'connection_config.dart';
@@ -120,6 +121,13 @@ class StudyBotApi {
     return (json as List).cast<Map<String, dynamic>>().map(TeachingModeInfo.fromJson).toList();
   }
 
+  // --- reasoning modes -------------------------------------------------------------
+
+  Future<List<ReasoningModeInfo>> listReasoningModes() async {
+    final json = await _send(() => _client.get(_uri('/reasoning-modes'), headers: _headers));
+    return (json as List).cast<Map<String, dynamic>>().map(ReasoningModeInfo.fromJson).toList();
+  }
+
   // --- chats ---------------------------------------------------------------------
 
   Future<List<Chat>> listChats({String? courseId}) async {
@@ -182,6 +190,22 @@ class StudyBotApi {
       () => _client.put(_uri('/chats/$chatId/mode'), headers: _headers, body: jsonEncode({'mode': mode})),
     );
     return TeachingModeInfo.fromJson(json as Map<String, dynamic>);
+  }
+
+  Future<ReasoningModeInfo> getChatReasoningMode(String chatId) async {
+    final json = await _send(() => _client.get(_uri('/chats/$chatId/reasoning-mode'), headers: _headers));
+    return ReasoningModeInfo.fromJson(json as Map<String, dynamic>);
+  }
+
+  Future<ReasoningModeInfo> setChatReasoningMode(String chatId, String reasoningMode) async {
+    final json = await _send(
+      () => _client.put(
+        _uri('/chats/$chatId/reasoning-mode'),
+        headers: _headers,
+        body: jsonEncode({'reasoningMode': reasoningMode}),
+      ),
+    );
+    return ReasoningModeInfo.fromJson(json as Map<String, dynamic>);
   }
 
   void close() => _client.close();

@@ -3,6 +3,7 @@ import pytest
 from studybot.core.exceptions import ModelError, SessionError
 from studybot.core.messages import Role
 from studybot.core.mode_prompts import get_mode_prompt
+from studybot.core.reasoning_mode import ReasoningMode
 from studybot.core.session_service import SessionService
 from studybot.core.teaching_mode import TeachingMode
 from studybot.models.base import ModelResponse, ProviderStatus
@@ -13,7 +14,8 @@ from studybot.storage.sqlite_repository import SQLiteChatRepository
 
 
 class RecordingModel:
-    """Records the exact message sequence it was called with."""
+    """Records the exact message sequence (and reasoning mode) it was
+    called with."""
 
     name = "recording"
 
@@ -21,13 +23,16 @@ class RecordingModel:
         self.reply = reply
         self.chunks = chunks if chunks is not None else [reply]
         self.received_calls: list[list] = []
+        self.received_reasoning_modes: list[ReasoningMode] = []
 
-    def generate(self, messages):
+    def generate(self, messages, *, reasoning_mode=None):
         self.received_calls.append(list(messages))
+        self.received_reasoning_modes.append(reasoning_mode)
         return ModelResponse(content=self.reply, model_name=self.name)
 
-    def stream(self, messages):
+    def stream(self, messages, *, reasoning_mode=None):
         self.received_calls.append(list(messages))
+        self.received_reasoning_modes.append(reasoning_mode)
         yield from self.chunks
 
     def get_status(self):
@@ -41,10 +46,10 @@ class FailingModel:
 
     name = "failing"
 
-    def generate(self, messages):
+    def generate(self, messages, *, reasoning_mode=None):
         raise ModelError("model is down")
 
-    def stream(self, messages):
+    def stream(self, messages, *, reasoning_mode=None):
         raise ModelError("model is down")
         yield  # pragma: no cover - never reached; keeps this a generator function
 
@@ -59,10 +64,10 @@ class FailingStreamModel:
 
     name = "failing-stream"
 
-    def generate(self, messages):
+    def generate(self, messages, *, reasoning_mode=None):
         raise AssertionError("not used in these tests")
 
-    def stream(self, messages):
+    def stream(self, messages, *, reasoning_mode=None):
         yield "partial "
         raise ModelError("stream broke")
 
@@ -936,3 +941,244 @@ def test_different_chats_preserve_different_modes_across_restart(repository, cou
     service2 = make_service(repository, course_repository)
     assert service2.open_chat(chat_a).teaching_mode is TeachingMode.HOMEWORK
     assert service2.open_chat(chat_b).teaching_mode is TeachingMode.QUICK
+
+
+# --- reasoning mode ----------------------------------------------------------------
+
+
+def test_new_chat_defaults_to_fast_reasoning_mode(repository, course_repository):
+    service = make_service(repository, course_repository)
+
+    assert service.get_reasoning_mode() is ReasoningMode.FAST
+    assert service.active_session.reasoning_mode is ReasoningMode.FAST
+
+
+def test_new_chat_does_not_inherit_previous_chats_reasoning_mode(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+    service.send("hello")
+
+    service.new_chat()
+
+    assert service.get_reasoning_mode() is ReasoningMode.FAST
+
+
+def test_set_reasoning_mode_updates_active_session(repository, course_repository):
+    service = make_service(repository, course_repository)
+
+    session = service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    assert session.reasoning_mode is ReasoningMode.DEEP
+    assert service.get_reasoning_mode() is ReasoningMode.DEEP
+
+
+def test_set_reasoning_mode_persists_immediately(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")  # persist the chat first
+
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    assert repository.get_chat(service.active_session.id).reasoning_mode is ReasoningMode.DEEP
+
+
+def test_set_reasoning_mode_on_unpersisted_chat_is_honored_once_persisted(repository, course_repository):
+    service = make_service(repository, course_repository)
+
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+    assert repository.list_chats() == []  # still not persisted
+
+    service.send("hello")
+
+    assert repository.get_chat(service.active_session.id).reasoning_mode is ReasoningMode.DEEP
+
+
+def test_set_reasoning_mode_does_not_clear_messages(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    assert content_only(service.history) == ["hello", "[Mock] You said: hello"]
+
+
+def test_set_reasoning_mode_does_not_add_a_history_message(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    before = list(service.history)
+
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    after = [m for m in service.history if m.role is not Role.SYSTEM]
+    assert [m.content for m in after] == [m.content for m in before if m.role is not Role.SYSTEM]
+
+
+def test_set_reasoning_mode_does_not_create_a_new_chat(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    chat_id = service.active_session.id
+
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    assert service.active_session.id == chat_id
+    assert len(repository.list_chats()) == 1
+
+
+def test_set_reasoning_mode_does_not_alter_course(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.new_chat(course_id=course.id)
+    service.send("hello")
+
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    assert service.active_session.course_id == course.id
+
+
+def test_set_reasoning_mode_does_not_alter_title(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    service.rename_active_chat("My Title")
+
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    assert service.active_session.title == "My Title"
+
+
+def test_reasoning_mode_and_teaching_mode_are_fully_independent(repository, course_repository):
+    """Setting one never touches the other, in either direction or order."""
+    service = make_service(repository, course_repository)
+    service.send("hello")
+
+    service.set_teaching_mode(TeachingMode.EXAM)
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    assert service.active_session.teaching_mode is TeachingMode.EXAM
+    assert service.active_session.reasoning_mode is ReasoningMode.DEEP
+
+    service.set_teaching_mode(TeachingMode.QUICK)
+    assert service.active_session.reasoning_mode is ReasoningMode.DEEP  # untouched
+
+    service.set_reasoning_mode(ReasoningMode.FAST)
+    assert service.active_session.teaching_mode is TeachingMode.QUICK  # untouched
+
+
+def test_reasoning_mode_applies_to_next_inference(repository, course_repository):
+    """ChatService/ModelProvider receive the chat's current reasoning mode
+    on every call — proven generically here (no Ollama dependency) via
+    RecordingModel's received_reasoning_modes."""
+    model = RecordingModel(reply="ack")
+    service = SessionService(
+        model=model, repository=repository, course_repository=course_repository,
+        system_prompt="Baseline.",
+    )
+    service.send("hello")
+    assert model.received_reasoning_modes[-1] is ReasoningMode.FAST
+
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+    service.send("next message")
+
+    assert model.received_reasoning_modes[-1] is ReasoningMode.DEEP
+
+
+def test_rename_does_not_reset_reasoning_mode(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    service.rename_active_chat("New Title")
+
+    assert service.active_session.reasoning_mode is ReasoningMode.DEEP
+    assert repository.get_chat(service.active_session.id).reasoning_mode is ReasoningMode.DEEP
+
+
+def test_clear_does_not_reset_reasoning_mode(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    service.clear_active_chat()
+
+    assert service.active_session.reasoning_mode is ReasoningMode.DEEP
+
+
+def test_moving_chat_between_courses_does_not_change_reasoning_mode(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.send("hello")
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    service.move_active_chat_to_course(course.id)
+
+    assert service.active_session.reasoning_mode is ReasoningMode.DEEP
+
+
+def test_deleting_course_does_not_change_chat_reasoning_mode(repository, course_repository):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    service = make_service(repository, course_repository)
+    service.new_chat(course_id=course.id)
+    service.send("hello")
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    course_repository.delete_course(course.id)
+    service.sync_active_chat_course()
+
+    assert service.active_session.reasoning_mode is ReasoningMode.DEEP
+
+
+def test_reasoning_mode_persists_across_restart(repository, course_repository):
+    service1 = make_service(repository, course_repository)
+    service1.send("hello")
+    service1.set_reasoning_mode(ReasoningMode.DEEP)
+
+    service2 = make_service(repository, course_repository)
+
+    assert service2.get_reasoning_mode() is ReasoningMode.DEEP
+
+
+def test_different_chats_preserve_different_reasoning_modes(repository, course_repository):
+    """Chat A -> Fast, Chat B -> Deep, Chat C -> Fast: changing one must
+    never change the others, and reopening each restores its own — proving
+    reasoning-mode isolation the same way teaching mode is proven above."""
+    service = make_service(repository, course_repository)
+
+    service.send("chat a")
+    chat_a = service.active_session.id  # stays Fast (the default)
+
+    service.new_chat()
+    service.send("chat b")
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+    chat_b = service.active_session.id
+
+    service.new_chat()
+    service.send("chat c")
+    chat_c = service.active_session.id  # stays Fast
+
+    service.open_chat(chat_a)
+    assert service.get_reasoning_mode() is ReasoningMode.FAST
+    service.open_chat(chat_b)
+    assert service.get_reasoning_mode() is ReasoningMode.DEEP
+    service.open_chat(chat_c)
+    assert service.get_reasoning_mode() is ReasoningMode.FAST
+
+    # Changing chat B's mode does not affect A or C.
+    service.open_chat(chat_b)
+    service.set_reasoning_mode(ReasoningMode.FAST)
+    service.open_chat(chat_a)
+    assert service.get_reasoning_mode() is ReasoningMode.FAST
+    service.open_chat(chat_c)
+    assert service.get_reasoning_mode() is ReasoningMode.FAST
+
+
+def test_different_chats_preserve_different_reasoning_modes_across_restart(repository, course_repository):
+    service1 = make_service(repository, course_repository)
+    service1.send("chat a")
+    chat_a = service1.active_session.id  # Fast (default)
+
+    service1.new_chat()
+    service1.send("chat b")
+    service1.set_reasoning_mode(ReasoningMode.DEEP)
+    chat_b = service1.active_session.id
+
+    service2 = make_service(repository, course_repository)
+    assert service2.open_chat(chat_a).reasoning_mode is ReasoningMode.FAST
+    assert service2.open_chat(chat_b).reasoning_mode is ReasoningMode.DEEP

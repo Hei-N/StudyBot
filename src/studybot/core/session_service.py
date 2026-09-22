@@ -25,6 +25,13 @@ Teaching mode (Stage 5) is simpler still: it's a plain field on the active
 `ChatSession`, fed into the same `build_system_prompt` call as another
 independent section. Changing it never touches messages, title, or course,
 and — like course context — it's never persisted as a chat message.
+
+Reasoning mode (Stage 5.7) is a second, independent plain field on
+`ChatSession` — unlike teaching mode it never feeds into the system prompt
+at all; it's passed straight through to `ChatService`/`ModelProvider` as an
+inference-time preference (see `core.reasoning_mode`), since it controls
+*how* the model answers (thinking depth/latency), not *what instructions*
+it's given.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ from studybot.core.context import CourseContext, build_system_prompt
 from studybot.core.exceptions import SessionError
 from studybot.core.messages import Message, Role
 from studybot.core.mode_prompts import get_mode_prompt
+from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
 from studybot.core.titles import generate_title
 from studybot.models.base import ModelProvider, ProviderStatus
@@ -97,6 +105,7 @@ class SessionService:
             model=self._model,
             system_prompt=self._effective_system_prompt(session.course_id, session.teaching_mode),
             history=messages,
+            reasoning_mode=session.reasoning_mode,
         )
 
     def _start_new_chat_in_memory(self, course_id: str | None) -> None:
@@ -104,8 +113,9 @@ class SessionService:
 
         This avoids writing an empty "Untitled" row every time the app is
         launched (or a course opened) and quit without anyone actually
-        chatting. Always starts in the default teaching mode (Teach) —
-        a new chat never inherits whatever mode was active elsewhere.
+        chatting. Always starts in the default teaching mode (Teach) and
+        the default reasoning mode (Fast) — a new chat never inherits
+        whatever mode was active elsewhere.
         """
         now = _now()
         self._active_session = ChatSession(
@@ -113,6 +123,7 @@ class SessionService:
             title=None,
             course_id=course_id,
             teaching_mode=DEFAULT_TEACHING_MODE,
+            reasoning_mode=DEFAULT_REASONING_MODE,
             created_at=now,
             updated_at=now,
         )
@@ -120,6 +131,7 @@ class SessionService:
         self._chat = ChatService(
             model=self._model,
             system_prompt=self._effective_system_prompt(course_id, DEFAULT_TEACHING_MODE),
+            reasoning_mode=DEFAULT_REASONING_MODE,
         )
 
     # --- chat lifecycle ------------------------------------------------------
@@ -219,6 +231,7 @@ class SessionService:
                 self._active_session.course_id, self._active_session.teaching_mode
             ),
             history=history,
+            reasoning_mode=self._active_session.reasoning_mode,
         )
 
     def _resolve_chat(self, id_or_prefix: str) -> ChatSession:
@@ -301,6 +314,7 @@ class SessionService:
             system_prompt=self._effective_system_prompt(
                 self._active_session.course_id, self._active_session.teaching_mode
             ),
+            reasoning_mode=self._active_session.reasoning_mode,
         )
 
     # --- teaching mode -------------------------------------------------------
@@ -319,6 +333,26 @@ class SessionService:
             self._active_session = self._repository.set_teaching_mode(self._active_session.id, mode)
         else:
             self._active_session.teaching_mode = mode
+        self._rebuild_chat_service_preserving_history()
+        return self._active_session
+
+    # --- reasoning mode --------------------------------------------------------
+
+    def get_reasoning_mode(self) -> ReasoningMode:
+        return self._active_session.reasoning_mode
+
+    def set_reasoning_mode(self, mode: ReasoningMode) -> ChatSession:
+        """Change the active chat's reasoning mode.
+
+        Persists immediately, never touches messages/title/course/teaching
+        mode, and applies starting with the next model request — like
+        teaching mode, no confirmation message is added to conversation
+        history for this.
+        """
+        if self._active_persisted:
+            self._active_session = self._repository.set_reasoning_mode(self._active_session.id, mode)
+        else:
+            self._active_session.reasoning_mode = mode
         self._rebuild_chat_service_preserving_history()
         return self._active_session
 
@@ -370,6 +404,7 @@ class SessionService:
                 self._active_session.title,
                 self._active_session.course_id,
                 self._active_session.teaching_mode,
+                self._active_session.reasoning_mode,
             )
             self._active_persisted = True
 

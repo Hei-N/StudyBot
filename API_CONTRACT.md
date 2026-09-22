@@ -101,6 +101,7 @@ Errors are JSON with a stable, machine-readable `code` and a human-readable
 | `CHAT_NOT_FOUND` | 404 | No chat with that id exists. |
 | `COURSE_NOT_FOUND` | 404 | No course with that id exists. |
 | `INVALID_MODE` | 422 | The `mode` string isn't a recognized teaching mode. |
+| `INVALID_REASONING_MODE` | 422 | The `reasoningMode` string isn't a recognized reasoning mode. |
 | `MODEL_UNAVAILABLE` | — | Reported via `GET /health`'s `providerReachable: false`, not as an error response — see below. |
 | `MODEL_ERROR` | — (WebSocket `error` event) | The model failed to produce a response (connection issue, missing model, timeout, ...). Covers every generation-time failure uniformly; `message` carries the same user-safe detail text `OllamaModel` already produces for the CLI (e.g. the exact `ollama pull ...` command for a missing model). There is no finer-grained code because the underlying domain exception (`ModelError`) doesn't currently distinguish sub-cases either — see "Known limitations". |
 | `VALIDATION_ERROR` | 422 | A business-rule validation failed (e.g. an empty course/chat name) or a WebSocket message was malformed. |
@@ -179,6 +180,31 @@ sourced directly from `core.teaching_mode.all_modes()` — never duplicated
 in the API layer, so this catalog can't drift from what the mode prompts
 actually implement.
 
+### Reasoning modes (Stage 5.7)
+
+```
+GET /api/v1/reasoning-modes -> [ModeInfoOut]
+```
+```json
+[{"id": "fast", "displayName": "Fast", "description": "..."},
+ {"id": "deep", "displayName": "Deep Think", "description": "..."}]
+```
+Always both modes (`fast`, `deep`), sourced from
+`core.reasoning_mode.all_modes()`. Uses the same `ModeInfoOut` shape as
+`GET /modes` (an id plus display metadata) — the two catalogs are
+otherwise unrelated: **reasoning mode is completely independent of
+teaching mode.** Teaching mode (Teach/Homework/Quick/Practice/Exam)
+controls instructional behavior via the system prompt; reasoning mode
+(Fast/Deep) controls the model's inference-time "thinking" depth and
+latency and never touches the system prompt at all. A chat can be in any
+combination of the two, and changing one never affects the other.
+
+`fast` maps to Ollama's `think=False`; `deep` maps to `think=True` — see
+`models/ollama.py`. **Hidden reasoning/thinking text is never sent to a
+client and never persisted** — only the final, user-visible answer is
+ever included in a `delta` event, `MessageOut.content`, or a WebSocket
+`message_completed` payload, regardless of reasoning mode.
+
 ### Chats
 
 ```
@@ -192,13 +218,16 @@ DELETE /api/v1/chats/{id}               -> 204
 PUT    /api/v1/chats/{id}/course        <- {"courseId": "..." | null}  -> ChatOut
 GET    /api/v1/chats/{id}/mode          -> ModeInfoOut
 PUT    /api/v1/chats/{id}/mode          <- {"mode": "homework"}  -> ModeInfoOut
+GET    /api/v1/chats/{id}/reasoning-mode -> ModeInfoOut
+PUT    /api/v1/chats/{id}/reasoning-mode <- {"reasoningMode": "deep"}  -> ModeInfoOut
 ```
 
 ```jsonc
 // ChatOut
 {
   "id": "...", "title": "...", "courseId": "..." | null,
-  "teachingMode": "teach", "createdAt": "...", "updatedAt": "..."
+  "teachingMode": "teach", "reasoningMode": "fast",
+  "createdAt": "...", "updatedAt": "..."
 }
 // MessageOut
 { "id": 1, "role": "user", "content": "...", "createdAt": "..." }
@@ -217,6 +246,9 @@ PUT    /api/v1/chats/{id}/mode          <- {"mode": "homework"}  -> ModeInfoOut
 - `MessageOut` never includes the system prompt, course context, or
   teaching-mode instructions — only real, persisted user/assistant turns,
   exactly what `ChatRepository.load_message_records` returns.
+- Every new chat starts at `reasoningMode: "fast"`, exactly like teaching
+  mode always starts at `"teach"` — a new chat never inherits whatever
+  reasoning mode was active elsewhere.
 
 **Lazy persistence (important, and easy to be surprised by):** creating a
 chat does **not** write a database row — this mirrors the CLI's existing
@@ -257,6 +289,18 @@ or, instead of the above, at any point:
 
 An `error` event **does not close the connection** — send another
 `send_message` on the same socket to try again or move to a different chat.
+
+**Reasoning mode and streaming (Stage 5.7):** the chat's current reasoning
+mode (see "Reasoning modes" above) is applied automatically to every
+`send_message` on that chat — there is no separate parameter on the
+WebSocket message itself; change it first via `PUT
+/chats/{id}/reasoning-mode`. In Fast mode, the first `delta` typically
+arrives quickly. In Deep mode, expect a materially longer gap between
+`message_started` and the first `delta` while the model reasons — this is
+expected, not a stall. **Whichever mode is active, only visible-answer
+`delta` chunks are ever sent** — if the backend model produces hidden
+"thinking" content, it is filtered out before reaching the WebSocket, never
+streamed and never included in the final `message_completed.message`.
 
 This reuses `SessionService.send_streaming()` exactly as the CLI does —
 there is no second streaming implementation. That means the existing

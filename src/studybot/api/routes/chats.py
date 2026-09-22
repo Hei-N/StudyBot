@@ -19,20 +19,30 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from studybot.api.converters import chat_to_out, message_record_to_out, mode_info_to_out
+from studybot.api.converters import chat_to_out, message_record_to_out, mode_info_to_out, reasoning_mode_info_to_out
 from studybot.api.dependencies import require_token
 from studybot.api.engine import Engine, get_engine
-from studybot.api.errors import CHAT_NOT_FOUND, COURSE_NOT_FOUND, INVALID_MODE, VALIDATION_ERROR, ApiError
+from studybot.api.errors import (
+    CHAT_NOT_FOUND,
+    COURSE_NOT_FOUND,
+    INVALID_MODE,
+    INVALID_REASONING_MODE,
+    VALIDATION_ERROR,
+    ApiError,
+)
 from studybot.api.schemas import (
     ChatCourseIn,
     ChatCreateIn,
     ChatModeIn,
     ChatOut,
+    ChatReasoningModeIn,
     ChatRenameIn,
     MessageOut,
     ModeInfoOut,
 )
 from studybot.core.exceptions import SessionError
+from studybot.core.reasoning_mode import get_mode_info as get_reasoning_mode_info
+from studybot.core.reasoning_mode import parse_reasoning_mode
 from studybot.core.teaching_mode import get_mode_info, parse_teaching_mode
 
 router = APIRouter(dependencies=[Depends(require_token)])
@@ -148,3 +158,23 @@ async def set_chat_mode(chat_id: str, body: ChatModeIn, engine: Engine = Depends
         raise ApiError(422, INVALID_MODE, f"Unknown teaching mode: {body.mode!r}") from exc
     await engine.call(engine.app.sessions.set_teaching_mode, mode)
     return mode_info_to_out(get_mode_info(mode))
+
+
+@router.get("/chats/{chat_id}/reasoning-mode", response_model=ModeInfoOut)
+async def get_chat_reasoning_mode(chat_id: str, engine: Engine = Depends(get_engine)) -> ModeInfoOut:
+    await _activate(engine, chat_id)
+    mode = await engine.call(engine.app.sessions.get_reasoning_mode)
+    return reasoning_mode_info_to_out(get_reasoning_mode_info(mode))
+
+
+@router.put("/chats/{chat_id}/reasoning-mode", response_model=ModeInfoOut)
+async def set_chat_reasoning_mode(
+    chat_id: str, body: ChatReasoningModeIn, engine: Engine = Depends(get_engine)
+) -> ModeInfoOut:
+    await _activate(engine, chat_id)
+    try:
+        mode = parse_reasoning_mode(body.reasoning_mode)
+    except ValueError as exc:
+        raise ApiError(422, INVALID_REASONING_MODE, f"Unknown reasoning mode: {body.reasoning_mode!r}") from exc
+    await engine.call(engine.app.sessions.set_reasoning_mode, mode)
+    return reasoning_mode_info_to_out(get_reasoning_mode_info(mode))

@@ -10,13 +10,14 @@ from typing import Callable, Iterator
 
 
 class FakeMessage:
-    def __init__(self, content: str | None) -> None:
+    def __init__(self, content: str | None, thinking: str | None = None) -> None:
         self.content = content
+        self.thinking = thinking
 
 
 class FakeChatResponse:
-    def __init__(self, content: str | None) -> None:
-        self.message = FakeMessage(content)
+    def __init__(self, content: str | None, thinking: str | None = None) -> None:
+        self.message = FakeMessage(content, thinking)
 
 
 class FakeModelEntry:
@@ -53,9 +54,9 @@ class FakeOllamaClient:
         self.chat_calls: list[dict] = []
         self.list_call_count = 0
 
-    def chat(self, model, messages, stream=False, keep_alive=None):
+    def chat(self, model, messages, stream=False, think=None, keep_alive=None):
         self.chat_calls.append(
-            {"model": model, "messages": messages, "stream": stream, "keep_alive": keep_alive}
+            {"model": model, "messages": messages, "stream": stream, "think": think, "keep_alive": keep_alive}
         )
         if self._chat_exception is not None:
             raise self._chat_exception

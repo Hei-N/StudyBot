@@ -73,6 +73,18 @@ class ChatsNotifier extends AsyncNotifier<List<Chat>> {
     ]);
   }
 
+  /// Reasoning mode is a fully independent per-chat setting from teaching
+  /// mode (see `core/models/reasoning_mode.dart`) — patched the same way.
+  Future<void> setReasoningMode(String chatId, String reasoningMode) async {
+    await ref.read(studyBotApiProvider).setChatReasoningMode(chatId, reasoningMode);
+    final current = state.value;
+    if (current == null) return;
+    state = AsyncValue.data([
+      for (final chat in current)
+        if (chat.id == chatId) chat.copyWith(reasoningMode: reasoningMode) else chat,
+    ]);
+  }
+
   void _replaceLocally(Chat chat) {
     final current = state.value;
     if (current == null) return;

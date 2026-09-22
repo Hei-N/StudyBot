@@ -11,6 +11,7 @@ import logging
 from typing import Iterator, Sequence
 
 from studybot.core.messages import Message
+from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.models.base import ModelProvider, ProviderStatus
 
 logger = logging.getLogger(__name__)
@@ -24,11 +25,19 @@ class ChatService:
         model: ModelProvider,
         system_prompt: str | None = None,
         history: Sequence[Message] = (),
+        reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE,
     ) -> None:
         """`history` preloads prior user/assistant turns (e.g. restored from
         persistence) after the system prompt, without re-sending it to the
-        model until the next `send`/`send_streaming` call."""
+        model until the next `send`/`send_streaming` call.
+
+        `reasoning_mode` is fixed for this service instance's lifetime, like
+        `system_prompt` — callers (`SessionService`) that need to change it
+        for an existing chat rebuild the `ChatService`, the same way they
+        already do when teaching mode changes.
+        """
         self._model = model
+        self._reasoning_mode = reasoning_mode
         self._history: list[Message] = []
         if system_prompt:
             self._history.append(Message.system(system_prompt))
@@ -48,7 +57,7 @@ class ChatService:
         self._history.append(user_message)
         logger.debug("Sending conversation of length %d to model", len(self._history))
 
-        response = self._model.generate(self._history)
+        response = self._model.generate(self._history, reasoning_mode=self._reasoning_mode)
 
         assistant_message = Message.assistant(response.content)
         self._history.append(assistant_message)
@@ -75,7 +84,7 @@ class ChatService:
         logger.debug("Streaming conversation of length %d to model", len(self._history))
 
         chunks: list[str] = []
-        for chunk in self._model.stream(self._history):
+        for chunk in self._model.stream(self._history, reasoning_mode=self._reasoning_mode):
             chunks.append(chunk)
             yield chunk
 

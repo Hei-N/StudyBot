@@ -13,7 +13,7 @@ import '../../support/fake_studybot_api.dart';
 import '../../support/no_retry_container.dart';
 
 Chat _chat() =>
-    Chat(id: 'chat1', title: null, courseId: null, teachingMode: 'teach', createdAt: 'now', updatedAt: 'now');
+    Chat(id: 'chat1', title: null, courseId: null, teachingMode: 'teach', reasoningMode: 'fast', createdAt: 'now', updatedAt: 'now');
 
 Future<ProviderContainer> _pumpComposer(WidgetTester tester, FakeStudyBotApi api, FakeChatWebSocketClient ws) async {
   final container = ProviderContainer(

@@ -15,6 +15,7 @@ import ollama
 
 from studybot.core.exceptions import ModelError
 from studybot.core.messages import Message, Role
+from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.models.base import ModelResponse, ProviderStatus
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,13 @@ _ROLE_TO_OLLAMA = {
     Role.SYSTEM: "system",
     Role.USER: "user",
     Role.ASSISTANT: "assistant",
+}
+
+# The only place that knows Qwen/Ollama's `think` request parameter exists
+# — ChatService/SessionService only ever pass a generic ReasoningMode.
+_REASONING_MODE_TO_THINK = {
+    ReasoningMode.FAST: False,
+    ReasoningMode.DEEP: True,
 }
 
 _MODEL_NOT_FOUND_STATUS = 404
@@ -67,12 +75,15 @@ class OllamaModel:
     def name(self) -> str:
         return "ollama"
 
-    def generate(self, messages: Sequence[Message]) -> ModelResponse:
+    def generate(
+        self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
+    ) -> ModelResponse:
         try:
             response = self._client.chat(
                 model=self._model,
                 messages=_to_ollama_messages(messages),
                 stream=False,
+                think=_REASONING_MODE_TO_THINK[reasoning_mode],
                 keep_alive=self._keep_alive,
             )
         except _CONNECTION_ERRORS as exc:
@@ -84,18 +95,26 @@ class OllamaModel:
         except Exception as exc:
             raise self._unexpected_error(exc) from exc
 
+        # `response.message.thinking` (present when `think` is truthy) is
+        # deliberately never read here — hidden reasoning text must never
+        # reach ChatService/persistence, only the final visible content.
         content = response.message.content or ""
         return ModelResponse(content=content, model_name=self._model)
 
-    def stream(self, messages: Sequence[Message]) -> Iterator[str]:
+    def stream(
+        self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
+    ) -> Iterator[str]:
         try:
             chunks = self._client.chat(
                 model=self._model,
                 messages=_to_ollama_messages(messages),
                 stream=True,
+                think=_REASONING_MODE_TO_THINK[reasoning_mode],
                 keep_alive=self._keep_alive,
             )
             for chunk in chunks:
+                # As in `generate`, `chunk.message.thinking` is deliberately
+                # never read/yielded — only user-visible content streams.
                 content = chunk.message.content
                 if content:
                     yield content

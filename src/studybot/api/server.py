@@ -22,7 +22,7 @@ from studybot.api import websocket
 from studybot.api.auth import resolve_startup_token
 from studybot.api.engine import Engine
 from studybot.api.errors import INTERNAL_ERROR, ApiError
-from studybot.api.routes import chats, courses, health, modes
+from studybot.api.routes import chats, courses, health, modes, reasoning
 from studybot.api.version import API_PREFIX
 from studybot.app import StudyBotApp
 from studybot.config.settings import Settings
@@ -61,6 +61,7 @@ def create_app(settings: Settings | None = None, token: str | None = None) -> Fa
     app.include_router(courses.router, prefix=API_PREFIX)
     app.include_router(chats.router, prefix=API_PREFIX)
     app.include_router(modes.router, prefix=API_PREFIX)
+    app.include_router(reasoning.router, prefix=API_PREFIX)
     app.include_router(websocket.router, prefix=API_PREFIX)
 
     @app.exception_handler(ApiError)

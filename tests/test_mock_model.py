@@ -2,6 +2,7 @@ import pytest
 
 from studybot.core.exceptions import ModelError
 from studybot.core.messages import Message
+from studybot.core.reasoning_mode import ReasoningMode
 from studybot.models.mock import MockModel
 
 
@@ -57,3 +58,25 @@ def test_mock_model_raises_model_error_with_empty_messages():
 
     with pytest.raises(ModelError):
         model.generate([])
+
+
+def test_mock_model_accepts_and_ignores_reasoning_mode():
+    """A capability the mock has no concept of at all — accepted uniformly
+    (not rejected) but deliberately produces no behavior difference."""
+    model = MockModel()
+    messages = [Message.user("hello")]
+
+    fast = model.generate(messages, reasoning_mode=ReasoningMode.FAST)
+    deep = model.generate(messages, reasoning_mode=ReasoningMode.DEEP)
+
+    assert fast.content == deep.content
+
+
+def test_mock_model_stream_accepts_and_ignores_reasoning_mode():
+    model = MockModel()
+    messages = [Message.user("hello")]
+
+    fast_chunks = list(model.stream(messages, reasoning_mode=ReasoningMode.FAST))
+    deep_chunks = list(model.stream(messages, reasoning_mode=ReasoningMode.DEEP))
+
+    assert fast_chunks == deep_chunks

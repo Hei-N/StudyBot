@@ -1,6 +1,7 @@
 import pytest
 
 from studybot.core.messages import Role
+from studybot.core.reasoning_mode import ReasoningMode
 from studybot.core.teaching_mode import TeachingMode
 from studybot.storage.database import open_database
 from studybot.storage.sqlite_repository import SQLiteChatRepository
@@ -33,6 +34,7 @@ def test_create_and_get_chat(repo):
     assert fetched.title == "My Chat"
     assert fetched.course_id is None
     assert fetched.teaching_mode is TeachingMode.TEACH
+    assert fetched.reasoning_mode is ReasoningMode.FAST
     assert fetched.created_at == created.created_at
     assert fetched.updated_at == created.updated_at
 
@@ -357,3 +359,132 @@ def test_invalid_stored_mode_falls_back_to_default(repo, connection):
     chat = repo.get_chat("chat-1")
 
     assert chat.teaching_mode is TeachingMode.TEACH  # deliberate, documented fallback
+
+
+# --- reasoning mode ------------------------------------------------------------------
+
+
+def test_create_chat_with_explicit_reasoning_mode(repo):
+    created = repo.create_chat("chat-1", "Title", reasoning_mode=ReasoningMode.DEEP)
+
+    assert created.reasoning_mode is ReasoningMode.DEEP
+    assert repo.get_chat("chat-1").reasoning_mode is ReasoningMode.DEEP
+
+
+def test_set_reasoning_mode_updates_and_bumps_updated_at(repo):
+    created = repo.create_chat("chat-1", "Title")
+
+    updated = repo.set_reasoning_mode("chat-1", ReasoningMode.DEEP)
+
+    assert updated.reasoning_mode is ReasoningMode.DEEP
+    assert updated.updated_at >= created.updated_at
+    assert repo.get_chat("chat-1").reasoning_mode is ReasoningMode.DEEP
+
+
+def test_set_reasoning_mode_does_not_touch_title_or_course(repo, connection):
+    connection.execute(
+        "INSERT INTO courses (id, name, created_at, updated_at) VALUES ('c1', 'Physics', 't', 't')"
+    )
+    repo.create_chat("chat-1", "Keep Me", course_id="c1")
+
+    repo.set_reasoning_mode("chat-1", ReasoningMode.DEEP)
+
+    chat = repo.get_chat("chat-1")
+    assert chat.title == "Keep Me"
+    assert chat.course_id == "c1"
+
+
+def test_set_reasoning_mode_does_not_touch_messages(repo):
+    repo.create_chat("chat-1", "Title")
+    repo.append_message("chat-1", Role.USER, "hello")
+
+    repo.set_reasoning_mode("chat-1", ReasoningMode.DEEP)
+
+    assert [m.content for m in repo.load_messages("chat-1")] == ["hello"]
+
+
+def test_set_reasoning_mode_does_not_touch_teaching_mode(repo):
+    """Reasoning mode and teaching mode are fully independent — changing
+    one must never affect the other, in either direction."""
+    repo.create_chat("chat-1", "Title", teaching_mode=TeachingMode.HOMEWORK)
+
+    repo.set_reasoning_mode("chat-1", ReasoningMode.DEEP)
+
+    chat = repo.get_chat("chat-1")
+    assert chat.teaching_mode is TeachingMode.HOMEWORK
+    assert chat.reasoning_mode is ReasoningMode.DEEP
+
+
+def test_set_teaching_mode_does_not_touch_reasoning_mode(repo):
+    repo.create_chat("chat-1", "Title", reasoning_mode=ReasoningMode.DEEP)
+
+    repo.set_teaching_mode("chat-1", TeachingMode.EXAM)
+
+    chat = repo.get_chat("chat-1")
+    assert chat.reasoning_mode is ReasoningMode.DEEP
+    assert chat.teaching_mode is TeachingMode.EXAM
+
+
+def test_moving_chat_between_courses_preserves_reasoning_mode(repo, connection):
+    connection.execute(
+        "INSERT INTO courses (id, name, created_at, updated_at) VALUES ('c1', 'Physics', 't', 't')"
+    )
+    repo.create_chat("chat-1", "Title", reasoning_mode=ReasoningMode.DEEP)
+
+    repo.move_chat_to_course("chat-1", "c1")
+
+    assert repo.get_chat("chat-1").reasoning_mode is ReasoningMode.DEEP
+
+
+def test_renaming_chat_preserves_reasoning_mode(repo):
+    repo.create_chat("chat-1", "Old Title", reasoning_mode=ReasoningMode.DEEP)
+
+    repo.rename_chat("chat-1", "New Title")
+
+    assert repo.get_chat("chat-1").reasoning_mode is ReasoningMode.DEEP
+
+
+def test_clearing_messages_preserves_reasoning_mode(repo):
+    repo.create_chat("chat-1", "Title", reasoning_mode=ReasoningMode.DEEP)
+    repo.append_message("chat-1", Role.USER, "hello")
+
+    repo.clear_messages("chat-1")
+
+    assert repo.get_chat("chat-1").reasoning_mode is ReasoningMode.DEEP
+
+
+def test_invalid_stored_reasoning_mode_falls_back_to_default(repo, connection):
+    repo.create_chat("chat-1", "Title")
+    # Simulate a corrupted/tampered value bypassing the repository API.
+    connection.execute("UPDATE chats SET reasoning_mode = 'not-a-real-mode' WHERE id = 'chat-1'")
+    connection.commit()
+
+    chat = repo.get_chat("chat-1")
+
+    assert chat.reasoning_mode is ReasoningMode.FAST  # deliberate, documented fallback
+
+
+def test_different_chats_can_have_different_reasoning_modes(repo):
+    repo.create_chat("chat-1", "Fast chat", reasoning_mode=ReasoningMode.FAST)
+    repo.create_chat("chat-2", "Deep chat", reasoning_mode=ReasoningMode.DEEP)
+
+    assert repo.get_chat("chat-1").reasoning_mode is ReasoningMode.FAST
+    assert repo.get_chat("chat-2").reasoning_mode is ReasoningMode.DEEP
+
+
+def test_reasoning_mode_survives_reopening_the_database(tmp_path):
+    db_path = tmp_path / "studybot-restart-test.db"
+
+    conn1 = open_database(db_path)
+    try:
+        SQLiteChatRepository(conn1).create_chat("chat-1", "Title", reasoning_mode=ReasoningMode.DEEP)
+    finally:
+        conn1.close()
+
+    conn2 = open_database(db_path)
+    try:
+        restored = SQLiteChatRepository(conn2).get_chat("chat-1")
+        assert restored is not None
+        assert restored.reasoning_mode is ReasoningMode.DEEP
+    finally:
+        conn2.close()

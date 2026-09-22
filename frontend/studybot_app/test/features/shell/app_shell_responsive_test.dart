@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:studybot_app/core/models/chat.dart';
 import 'package:studybot_app/core/models/course.dart';
+import 'package:studybot_app/core/models/reasoning_mode.dart';
 import 'package:studybot_app/core/models/teaching_mode.dart';
 import 'package:studybot_app/features/chats/chats_list_view.dart';
 import 'package:studybot_app/features/chats/chats_providers.dart';
@@ -32,6 +33,7 @@ Chat _chat(int i) => Chat(
   title: 'Chat number $i',
   courseId: null,
   teachingMode: 'teach',
+  reasoningMode: 'fast',
   createdAt: 'now',
   updatedAt: 'now',
 );
@@ -50,6 +52,10 @@ Future<ProviderContainer> _pumpShellAt(WidgetTester tester, Size logicalSize, {i
     modes: const [
       TeachingModeInfo(id: 'teach', displayName: 'Teach', description: 'Step by step.'),
       TeachingModeInfo(id: 'quick', displayName: 'Quick Answer', description: 'Direct and concise.'),
+    ],
+    reasoningModes: const [
+      ReasoningModeInfo(id: 'fast', displayName: 'Fast', description: 'Answers immediately.'),
+      ReasoningModeInfo(id: 'deep', displayName: 'Deep Think', description: 'Reasons before answering.'),
     ],
   );
   for (var i = 0; i < 20; i++) {

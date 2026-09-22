@@ -6,11 +6,13 @@ import '../../core/theme/app_radii.dart';
 import '../../core/theme/app_spacing.dart';
 import '../chats/chats_providers.dart';
 import '../modes/mode_picker.dart';
+import '../modes/reasoning_picker.dart';
 import 'conversation_providers.dart';
 
-/// The bottom composer: teaching-mode picker, multiline input, send button.
-/// Enter sends; Shift+Enter inserts a newline. Disabled entirely while a
-/// reply is streaming, and never sends blank/whitespace-only text.
+/// The bottom composer: teaching-mode picker, reasoning-mode picker,
+/// multiline input, send button. Enter sends; Shift+Enter inserts a
+/// newline. Disabled entirely while a reply is streaming, and never sends
+/// blank/whitespace-only text.
 class Composer extends ConsumerStatefulWidget {
   const Composer({super.key});
 
@@ -66,6 +68,8 @@ class _ComposerState extends ConsumerState<Composer> {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           const ModePicker(),
+          const SizedBox(width: AppSpacing.xs),
+          const ReasoningPicker(),
           const SizedBox(width: AppSpacing.sm),
           Expanded(
             child: Focus(

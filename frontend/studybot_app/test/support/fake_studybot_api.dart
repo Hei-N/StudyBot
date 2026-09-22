@@ -5,6 +5,7 @@ import 'package:studybot_app/core/models/chat.dart';
 import 'package:studybot_app/core/models/course.dart';
 import 'package:studybot_app/core/models/health.dart';
 import 'package:studybot_app/core/models/message.dart';
+import 'package:studybot_app/core/models/reasoning_mode.dart';
 import 'package:studybot_app/core/models/teaching_mode.dart';
 
 const _testConfig = ConnectionConfig(baseUrl: 'http://fake', token: 'fake-token');
@@ -14,15 +15,21 @@ const _testConfig = ConnectionConfig(baseUrl: 'http://fake', token: 'fake-token'
 /// traffic. Seed the lists in the constructor; call sites record via the
 /// `calls` log for assertions like "listChats was called with courseId=none".
 class FakeStudyBotApi extends StudyBotApi {
-  FakeStudyBotApi({List<Course>? courses, List<Chat>? chats, List<TeachingModeInfo>? modes})
-    : courses = courses ?? [],
-      chats = chats ?? [],
-      modes = modes ?? const [],
-      super(_testConfig);
+  FakeStudyBotApi({
+    List<Course>? courses,
+    List<Chat>? chats,
+    List<TeachingModeInfo>? modes,
+    List<ReasoningModeInfo>? reasoningModes,
+  }) : courses = courses ?? [],
+       chats = chats ?? [],
+       modes = modes ?? const [],
+       reasoningModes = reasoningModes ?? const [],
+       super(_testConfig);
 
   final List<Course> courses;
   final List<Chat> chats;
   final List<TeachingModeInfo> modes;
+  final List<ReasoningModeInfo> reasoningModes;
   final List<String> calls = [];
   ApiException? nextError;
 
@@ -128,6 +135,13 @@ class FakeStudyBotApi extends StudyBotApi {
   }
 
   @override
+  Future<List<ReasoningModeInfo>> listReasoningModes() async {
+    calls.add('listReasoningModes');
+    _maybeThrow();
+    return List.of(reasoningModes);
+  }
+
+  @override
   Future<List<Chat>> listChats({String? courseId}) async {
     calls.add('listChats:${courseId ?? '<all>'}');
     _maybeThrow();
@@ -146,6 +160,7 @@ class FakeStudyBotApi extends StudyBotApi {
       title: null,
       courseId: courseId,
       teachingMode: modes.isNotEmpty ? modes.first.id : 'teach',
+      reasoningMode: 'fast',
       createdAt: 'now',
       updatedAt: 'now',
     );
@@ -206,5 +221,24 @@ class FakeStudyBotApi extends StudyBotApi {
     chats[index] = chats[index].copyWith(teachingMode: mode);
     return modes.where((m) => m.id == mode).firstOrNull ??
         TeachingModeInfo(id: mode, displayName: mode, description: '');
+  }
+
+  @override
+  Future<ReasoningModeInfo> getChatReasoningMode(String chatId) async {
+    calls.add('getChatReasoningMode:$chatId');
+    _maybeThrow();
+    final chat = chats.firstWhere((c) => c.id == chatId, orElse: () => throw _chatNotFound);
+    return reasoningModes.where((m) => m.id == chat.reasoningMode).firstOrNull ??
+        ReasoningModeInfo(id: chat.reasoningMode, displayName: chat.reasoningMode, description: '');
+  }
+
+  @override
+  Future<ReasoningModeInfo> setChatReasoningMode(String chatId, String reasoningMode) async {
+    calls.add('setChatReasoningMode:$chatId:$reasoningMode');
+    _maybeThrow();
+    final index = chats.indexWhere((c) => c.id == chatId);
+    chats[index] = chats[index].copyWith(reasoningMode: reasoningMode);
+    return reasoningModes.where((m) => m.id == reasoningMode).firstOrNull ??
+        ReasoningModeInfo(id: reasoningMode, displayName: reasoningMode, description: '');
   }
 }

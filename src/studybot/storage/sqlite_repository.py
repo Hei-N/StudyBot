@@ -15,6 +15,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from studybot.core.messages import Message, Role
+from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
 from studybot.storage.base import ChatSession, MessageRecord
 
@@ -37,12 +38,22 @@ def _parse_stored_mode(value: str) -> TeachingMode:
         return DEFAULT_TEACHING_MODE
 
 
+def _parse_stored_reasoning_mode(value: str) -> ReasoningMode:
+    """Like `_parse_stored_mode`, for the independent `reasoning_mode` column."""
+    try:
+        return ReasoningMode(value)
+    except ValueError:
+        logger.warning("Unknown reasoning_mode %r in database; falling back to default", value)
+        return DEFAULT_REASONING_MODE
+
+
 def _row_to_session(row: sqlite3.Row) -> ChatSession:
     return ChatSession(
         id=row["id"],
         title=row["title"],
         course_id=row["course_id"],
         teaching_mode=_parse_stored_mode(row["teaching_mode"]),
+        reasoning_mode=_parse_stored_reasoning_mode(row["reasoning_mode"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -62,17 +73,23 @@ class SQLiteChatRepository:
         title: str | None,
         course_id: str | None = None,
         teaching_mode: TeachingMode = DEFAULT_TEACHING_MODE,
+        reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE,
     ) -> ChatSession:
         now = _now()
         with self._conn:
             self._conn.execute(
-                "INSERT INTO chats (id, title, course_id, teaching_mode, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (chat_id, title, course_id, teaching_mode.value, now, now),
+                "INSERT INTO chats (id, title, course_id, teaching_mode, reasoning_mode, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (chat_id, title, course_id, teaching_mode.value, reasoning_mode.value, now, now),
             )
         return ChatSession(
-            id=chat_id, title=title, course_id=course_id, teaching_mode=teaching_mode,
-            created_at=now, updated_at=now,
+            id=chat_id,
+            title=title,
+            course_id=course_id,
+            teaching_mode=teaching_mode,
+            reasoning_mode=reasoning_mode,
+            created_at=now,
+            updated_at=now,
         )
 
     def get_chat(self, chat_id: str) -> ChatSession | None:
@@ -124,6 +141,15 @@ class SQLiteChatRepository:
         with self._conn:
             self._conn.execute(
                 "UPDATE chats SET teaching_mode = ?, updated_at = ? WHERE id = ?",
+                (mode.value, now, chat_id),
+            )
+        return self.get_chat(chat_id)
+
+    def set_reasoning_mode(self, chat_id: str, mode: ReasoningMode) -> ChatSession:
+        now = _now()
+        with self._conn:
+            self._conn.execute(
+                "UPDATE chats SET reasoning_mode = ?, updated_at = ? WHERE id = ?",
                 (mode.value, now, chat_id),
             )
         return self.get_chat(chat_id)

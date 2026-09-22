@@ -9,7 +9,7 @@ import 'package:studybot_app/features/connection/connection_providers.dart';
 import '../../support/fake_studybot_api.dart';
 
 Chat _chat(String id, {String? title}) =>
-    Chat(id: id, title: title, courseId: null, teachingMode: 'teach', createdAt: 'now', updatedAt: 'now');
+    Chat(id: id, title: title, courseId: null, teachingMode: 'teach', reasoningMode: 'fast', createdAt: 'now', updatedAt: 'now');
 
 Widget _wrap(FakeStudyBotApi api) {
   return ProviderScope(

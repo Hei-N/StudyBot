@@ -5,6 +5,7 @@ import pytest
 from studybot.core.chat import ChatService
 from studybot.core.exceptions import ModelError
 from studybot.core.messages import Message, Role
+from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.models.base import ModelResponse, ProviderStatus
 from studybot.models.mock import MockModel
 
@@ -14,13 +15,16 @@ class FailingModel:
 
     name = "failing"
 
-    def generate(self, messages: Sequence[Message]) -> ModelResponse:
+    def generate(
+        self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
+    ) -> ModelResponse:
         raise ModelError("backend unavailable")
 
 
 class RecordingModel:
-    """Records the exact message sequence it was called with, for asserting
-    ordering/context without depending on a real backend."""
+    """Records the exact message sequence (and reasoning mode) it was
+    called with, for asserting ordering/context without depending on a
+    real backend."""
 
     name = "recording"
 
@@ -28,13 +32,20 @@ class RecordingModel:
         self.reply = reply
         self.chunks = chunks if chunks is not None else [reply]
         self.received_calls: list[list[Message]] = []
+        self.received_reasoning_modes: list[ReasoningMode] = []
 
-    def generate(self, messages: Sequence[Message]) -> ModelResponse:
+    def generate(
+        self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
+    ) -> ModelResponse:
         self.received_calls.append(list(messages))
+        self.received_reasoning_modes.append(reasoning_mode)
         return ModelResponse(content=self.reply, model_name=self.name)
 
-    def stream(self, messages: Sequence[Message]) -> Iterator[str]:
+    def stream(
+        self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
+    ) -> Iterator[str]:
         self.received_calls.append(list(messages))
+        self.received_reasoning_modes.append(reasoning_mode)
         yield from self.chunks
 
     def get_status(self) -> ProviderStatus:
@@ -51,10 +62,14 @@ class StreamingFailureModel:
 
     name = "streaming-failure"
 
-    def generate(self, messages: Sequence[Message]) -> ModelResponse:
+    def generate(
+        self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
+    ) -> ModelResponse:
         raise ModelError("should not be called in these tests")
 
-    def stream(self, messages: Sequence[Message]) -> Iterator[str]:
+    def stream(
+        self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
+    ) -> Iterator[str]:
         yield "partial "
         yield "output"
         raise ModelError("stream broke")

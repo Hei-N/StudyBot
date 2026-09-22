@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Iterator, Protocol, Sequence
 
 from studybot.core.messages import Message
+from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,22 +54,39 @@ class ModelProvider(Protocol):
         """A short identifier for the backend (e.g. 'mock', 'ollama')."""
         ...
 
-    def generate(self, messages: Sequence[Message]) -> ModelResponse:
+    def generate(
+        self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
+    ) -> ModelResponse:
         """Produce a complete response given the full conversation so far.
+
+        `reasoning_mode` is a generic preference — how much inference-time
+        "thinking" to do before answering — passed through explicitly by
+        the caller rather than left to the backend's own default. A
+        provider with no such concept is free to ignore it, deliberately
+        (see e.g. `MockModel`); nothing above this layer (`ChatService`,
+        `SessionService`) knows or cares which concrete backend, if any,
+        actually acts on it.
 
         Implementations should raise `studybot.core.exceptions.ModelError`
         on failure rather than letting backend-specific exceptions escape.
+        A provider must never return hidden reasoning/thinking text as part
+        of `ModelResponse.content` — only the final, user-visible answer.
         """
         ...
 
-    def stream(self, messages: Sequence[Message]) -> Iterator[str]:
+    def stream(
+        self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
+    ) -> Iterator[str]:
         """Produce a response incrementally, yielding content chunks.
 
         Concatenating all yielded chunks must equal what `generate` would
-        have returned as `ModelResponse.content` for the same input.
-        Implementations should raise `ModelError` (before yielding anything,
-        or by letting the exception propagate out of iteration) rather than
-        letting backend-specific exceptions escape.
+        have returned as `ModelResponse.content` for the same input, given
+        the same `reasoning_mode` (see `generate`). Implementations should
+        raise `ModelError` (before yielding anything, or by letting the
+        exception propagate out of iteration) rather than letting
+        backend-specific exceptions escape. Hidden reasoning/thinking
+        chunks, if the backend emits them, must never be yielded here —
+        only user-visible content.
         """
         ...
 
