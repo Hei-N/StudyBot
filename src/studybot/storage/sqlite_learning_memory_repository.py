@@ -189,3 +189,11 @@ class SQLiteLearningMemoryRepository:
     def delete(self, memory_id: str) -> None:
         with self._conn:
             self._conn.execute("DELETE FROM learning_memories WHERE id = ?", (memory_id,))
+
+    def archive_for_course(self, course_id: str) -> None:
+        now = _now()
+        with self._conn:
+            self._conn.execute(
+                "UPDATE learning_memories SET status = ?, updated_at = ? WHERE course_id = ? AND status = ?",
+                (MemoryStatus.ARCHIVED.value, now, course_id, MemoryStatus.ACTIVE.value),
+            )

@@ -49,10 +49,18 @@ MAX_CONTEXT_CHARS = 1200
 _CONTEXT_SUMMARY_TRUNCATE = 200
 
 _MEMORY_CONTEXT_HEADER = (
-    "Learning memory (use this to naturally tailor your explanations and "
-    "pacing for this student — never mention this list explicitly, and "
-    "never say things like \"according to your records\" or \"my notes "
-    "say\"):"
+    "Background on this student from past conversations, for your own "
+    "calibration only. It may be outdated — treat it as a soft hint about "
+    "where to focus, never as proof of their current understanding, and "
+    "never as authoritative over what they are actually asking right now. "
+    "If a note below says they 'understand' something but they ask about "
+    "it anyway, explain it in full — do not shorten, skip, or refuse an "
+    "explanation because of this background. It never overrides the "
+    "student's current question or the active teaching mode; when they "
+    "conflict, follow the student. Let this quietly shape tone and "
+    "emphasis only — never mention, quote, summarize, or otherwise refer "
+    "to this background, this list, or its existence anywhere in your "
+    "reply:"
 )
 
 

@@ -344,9 +344,31 @@ wording (see "Context injection" below).
 produced a memory, but the memory's validity never depends on that chat
 still existing: clearing or deleting the source chat leaves the memory
 completely intact and simply sets `sourceChatId` to `null` (`ON DELETE SET
-NULL`, like `chats.courseId` → `courses.id`). The same is true for
-`courseId` if its course is deleted. Neither foreign key ever cascades a
-delete into a memory.
+NULL`, like `chats.courseId` → `courses.id`). Neither foreign key ever
+cascades a delete into a memory.
+
+**Deleting a course archives its memories first (Stage 6.1).** The
+database's `ON DELETE SET NULL` on `learning_memories.courseId` would, on
+its own, turn every *active* memory in a deleted course into an active
+*global* one the instant the course disappears — silently injecting that
+subject's context into every other course's (and every General chat's)
+requests from then on. `DELETE /courses/{id}` prevents that: every
+currently active memory belonging to that course is archived first, then
+the course is deleted. Only that course's memories are touched — memories
+that were already global, or that belong to a different course, are
+completely unaffected. The archived memory keeps all its content (topic,
+kind, summary) and is fully visible via `?status=archived` and editable —
+it is never hard-deleted by this. Its `courseId` still becomes `null` (the
+same `ON DELETE SET NULL` as before), so recovering it is a **separate,
+explicit** decision: `POST /memories/{id}/restore` makes it an active
+*global* memory (since its course is gone), or `PATCH
+{"courseId": "<a-different-course>"}` reassigns it to a different existing
+course first (in either order relative to restoring). Neither happens
+automatically — both require the same deliberate action a brand-new
+global/reassigned memory would need. This applies uniformly everywhere a
+course can be deleted (the HTTP API and the CLI's `/course delete` both go
+through the same `CourseService.delete_course`, so there is only one
+implementation of this policy to keep correct).
 
 **`PATCH` is a true partial update**, unlike course's full-replace `PUT`:
 omit a field to leave it unchanged. `topic`/`kind`/`summary` additionally
@@ -383,13 +405,26 @@ updated first, course-specific entries preferred over global ones — never
 the full memory history. This costs well under a millisecond of extra
 request-preparation time regardless of how many memories exist (measured;
 see the main README's "Performance" notes), so it never materially affects
-first-token latency. The model is instructed to use this context
-*naturally* (adjust explanations, don't over-simplify a topic the student
-already understands) and never to mention the list explicitly or say
-things like "according to your records" — but it never overrides an
-explicit current instruction (e.g. Quick Answer mode still answers
-quickly, even with a "needs review" memory for the topic asked about).
-Nothing about this is visible in `MessageOut`/`message_completed` — the
+first-token latency.
+
+The model is instructed (Stage 6.1 wording, refined after real testing) to
+treat this context as a soft, possibly outdated hint about where to
+focus — **never as proof of the student's current understanding**, and
+never authoritative over what they're actually asking right now. If a
+memory says the student "understands" a topic but they ask about it
+anyway, the instruction is to explain it in full, not shorten, skip, or
+refuse the explanation because of the memory — a real failure mode caught
+during testing (an earlier, less careful wording risked the model treating
+"understands" as a reason to under-explain). It's told never to mention,
+quote, or otherwise refer to this background or its existence in its
+reply, and to always follow the student's current question and the active
+teaching mode when they conflict with it (e.g. Quick Answer mode still
+answers quickly, even with a "needs review" memory for the topic asked
+about). None of this is enforced by post-processing the model's output —
+there is no text stripped or filtered after generation; it is prompt
+guidance only, verified against real `qwen3:4b` output in both Fast and
+Deep modes rather than assumed. Nothing about this is visible in
+`MessageOut`/`message_completed` — the
 composed context is injected the same way course context and teaching-mode
 instructions already were, and is never itself persisted as a chat
 message.

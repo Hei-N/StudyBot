@@ -1697,7 +1697,7 @@ def test_no_memory_service_means_no_memory_section_in_prompt(repository, course_
     service.send("hello")
 
     system_message = model.received_calls[-1][0]
-    assert "Learning memory" not in system_message.content
+    assert "Background on this student" not in system_message.content
 
 
 def test_active_course_memory_appears_in_model_input(repository, course_repository, memory_service):
@@ -1806,4 +1806,4 @@ def test_memory_context_appears_before_teaching_mode_instructions(repository, co
     service.send("hello")
 
     system_message = model.received_calls[-1][0].content
-    assert system_message.index("Learning memory") < system_message.index("Teaching mode:")
+    assert system_message.index("Background on this student") < system_message.index("Teaching mode:")

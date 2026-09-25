@@ -199,6 +199,93 @@ void main() {
     expect(find.text('General topic'), findsNothing);
   });
 
+  // --- Stage 6.1: memories orphaned by a course deletion (archived + global) ------------
+
+  testWidgets('a memory archived and unassigned by a course deletion shows correctly under Archived/General', (
+    tester,
+  ) async {
+    // Simulates exactly what the backend now does to a course's memories
+    // when the course is deleted (Stage 6.1: archived first, courseId set
+    // to null) — the Flutter layer has no special-casing for this and
+    // must just display whatever the backend authoritatively returns.
+    final api = FakeStudyBotApi(
+      memories: [_memory(id: 'm1', courseId: null, topic: 'Stoichiometry', status: 'archived')],
+    );
+    await _pump(tester, api);
+
+    await tester.tap(find.text('Active')); // status dropdown
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Archived').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Stoichiometry'), findsOneWidget);
+
+    await tester.tap(find.text('All courses'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('General only').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Stoichiometry'), findsOneWidget);
+  });
+
+  testWidgets('an orphaned archived memory can be restored, becoming active and global', (tester) async {
+    final api = FakeStudyBotApi(
+      memories: [_memory(id: 'm1', courseId: null, topic: 'Stoichiometry', status: 'archived')],
+    );
+    await _pump(tester, api);
+    await tester.tap(find.text('Active'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Archived').last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.more_horiz));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Restore'));
+    await tester.pumpAndSettle();
+
+    expect(api.memories.single.status, 'active');
+    expect(api.memories.single.courseId, isNull);
+  });
+
+  testWidgets('an orphaned archived memory can be reassigned to a different course while still archived', (
+    tester,
+  ) async {
+    final calculus = Course(
+      id: 'calc',
+      name: 'Calculus',
+      code: null,
+      term: null,
+      description: null,
+      createdAt: 'now',
+      updatedAt: 'now',
+    );
+    final api = FakeStudyBotApi(
+      courses: [calculus],
+      memories: [_memory(id: 'm1', courseId: null, topic: 'Related topic', status: 'archived')],
+    );
+    await _pump(tester, api);
+    await tester.tap(find.text('Active'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Archived').last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.more_horiz));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('General (no course)'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Calculus').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final updated = api.memories.single;
+    expect(updated.id, 'm1');
+    expect(updated.courseId, 'calc');
+    expect(updated.status, 'archived'); // reassigning alone does not restore it
+  });
+
   testWidgets('shows an error view when the list fails to load', (tester) async {
     final api = FakeStudyBotApi()
       ..nextError = const ApiException(code: ApiErrorCode.internalError, message: 'boom');

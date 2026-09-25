@@ -281,6 +281,16 @@ class LearningMemoryRepository(Protocol):
         from `archive` — normal retirement should archive, not delete."""
         ...
 
+    def archive_for_course(self, course_id: str) -> None:
+        """Archive every currently *active* memory belonging to
+        `course_id` (Stage 6.1). Used by `CourseService.delete_course` so a
+        course's memories are retired, not silently turned into active
+        global memories, when their course goes away — see that method's
+        docstring for the full policy. Never touches memories that are
+        already archived, or memories belonging to a different course (or
+        no course at all)."""
+        ...
+
 
 class CourseRepository(Protocol):
     """Durable storage for course metadata (not chats — see `ChatRepository`)."""

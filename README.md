@@ -1,4 +1,4 @@
-# Study Bot (v0.2, Stage 6 — Learning Memory Foundation)
+# Study Bot (v0.2, Stage 6.1 — Learning Memory Reliability Pass)
 
 A local-first personal study assistant. **Stage 5.5** added a local HTTP +
 WebSocket API (`python -m studybot.api`) in front of the same engine the
@@ -11,13 +11,19 @@ no longer leaves Qwen3's "thinking" behavior implicit. **Stage 5.8** removed
 the API's last remaining coupling to a single mutable "active chat" per
 process: every chat-specific HTTP/WebSocket operation addresses its
 `chat_id` explicitly and is safe to interleave with operations on any other
-chat, in any order. **Stage 6** adds **learning memory** — durable,
+chat, in any order. **Stage 6** added **learning memory** — durable,
 course-scoped learning facts ("needs review: vector components",
 "understands significant figures") that StudyBot retains independently of
 raw chat history, are fully user-visible and user-controlled, and are
-woven into future answers for the same course — see "Learning memory"
-below. The CLI (`python -m studybot`) is unchanged and keeps working
-exactly as before — these are two interfaces onto the same core, not a
+woven into future answers for the same course. **Stage 6.1** is a narrow
+reliability pass on top of that: deleting a course now archives its
+memories instead of silently turning them into active global ones (see
+"Learning memory" below), and the prompt guidance around using memory was
+refined after real-model testing surfaced a subtler failure mode (treating
+a memory as authoritative proof of current understanding, rather than a
+soft, overridable hint). The CLI (`python -m studybot`) is unchanged and
+keeps working exactly as before — these are two interfaces onto the same
+core, not a
 replacement. See **[API_CONTRACT.md](API_CONTRACT.md)** for the full API
 reference (endpoints, the WebSocket protocol, error codes, auth).
 
@@ -376,14 +382,29 @@ shown in every course), but that should be the exception, not the norm.
 **Source-chat provenance, not a dependency.** A memory may record
 `sourceChatId` — which chat produced it — purely for reference. The memory
 remains fully valid, with all its own content intact, even after that chat
-is cleared or deleted (`sourceChatId` just becomes `null`); deleting a
-course does the same to `courseId`. Neither foreign key ever cascades a
-delete into a memory — see `ON DELETE SET NULL` in the schema below.
+is cleared or deleted (`sourceChatId` just becomes `null`). Neither foreign
+key ever cascades a delete into a memory — see `ON DELETE SET NULL` in the
+schema below.
 
 **Archive, don't delete.** Retiring a memory (e.g. the student no longer
 needs review on a topic) archives it — it stays visible under "Archived"
 and can be restored — rather than being erased. A separate, explicit hard
 delete is available for when a memory should genuinely be gone.
+
+**Deleting a course archives its memories first (Stage 6.1).** The
+database's `ON DELETE SET NULL` would, by itself, turn every active memory
+in a deleted course into an active *global* memory the instant the course
+disappears — silently injecting that subject's context into every other
+course from then on. Instead, `CourseService.delete_course` (used by both
+the API and the CLI's `/course delete` — one implementation, so both stay
+consistent) archives every active memory belonging to that course first,
+then deletes the course. Memories that were already global, or belong to a
+different course, are never touched. The archived memory keeps all its
+content and is fully visible/editable via the usual archive-listing and
+edit operations; recovering it into active use again is a **separate,
+explicit** choice — restore it (it becomes global, since its course is
+gone) or reassign its `courseId` to a different existing course first —
+never automatic.
 
 **Duplicate and conflict policy** (deliberately simple, no fuzzy/semantic
 matching yet): within one course (or the global scope), topics are compared
@@ -408,15 +429,23 @@ message actions include **"Save to Learning Memory"**, turning a specific
 assistant explanation or user-stated weakness into a real, structured
 memory with one action.
 
-**Woven into future answers, not announced.** Every chat request
-automatically includes a compact, size-limited block of that chat's
-course's active memories (plus global ones) in the model's system prompt —
-at most 12 entries, ~1200 characters, most-recently-updated first. The
-model is instructed to use this context naturally (adjust explanations,
-don't re-teach something already understood) and never say things like
-"according to your records." It never overrides an explicit instruction:
-Quick Answer mode still gives a quick answer even with a relevant memory
-present. Composing this context measures at **well under 1ms of overhead**
+**Woven into future answers, not announced — and never authoritative
+(refined in Stage 6.1).** Every chat request automatically includes a
+compact, size-limited block of that chat's course's active memories (plus
+global ones) in the model's system prompt — at most 12 entries, ~1200
+characters, most-recently-updated first. The model is told to treat this
+as a soft, possibly outdated hint, never as proof of the student's current
+understanding: if a memory says they "understand" a topic but they ask
+about it anyway, it's instructed to explain in full rather than shorten or
+skip the explanation — real testing during Stage 6.1 showed an earlier,
+less careful wording risked exactly that under-explaining failure. It's
+also told never to mention, quote, or refer to this background in its
+reply, and to always follow the student's current question and teaching
+mode when they conflict with it — Quick Answer mode still gives a quick
+answer even with a relevant memory present. None of this is enforced by
+editing the model's output afterward; it's prompt guidance only, checked
+against real `qwen3:4b` responses in both Fast and Deep modes, not just
+asserted. Composing this context measures at **well under 1ms of overhead**
 regardless of memory count (0/5/20 memories benchmarked — see
 [API_CONTRACT.md](API_CONTRACT.md#learning-memory-stage-6)) — it never
 materially affects first-token latency.
@@ -644,7 +673,13 @@ Key modules:
   by diffing a `ChatService`'s history before/after each call.
 - `src/studybot/core/course_service.py` — `CourseService`: course
   validation (name required and length-limited; optional fields trimmed;
-  full Unicode support) and CRUD, independent of `SessionService`
+  full Unicode support) and CRUD, independent of `SessionService`.
+  `delete_course` optionally takes a `LearningMemoryRepository` (Stage
+  6.1) and archives a doomed course's active memories before deleting it —
+  see "Learning memory" above for why
+- `src/studybot/storage/sqlite_learning_memory_repository.py` gained
+  `archive_for_course(course_id)` (Stage 6.1) — a bulk status transition
+  `CourseService.delete_course` uses; not exposed as its own API endpoint
 - `src/studybot/core/exceptions.py` — `StudyBotError` and subclasses:
   `SessionError` for chat/course navigation or validation problems (not
   found, ambiguous id prefix, empty name, ...); `ChatNotFoundError`/

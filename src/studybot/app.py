@@ -36,7 +36,9 @@ class StudyBotApp:
         course_repository = SQLiteCourseRepository(self._connection)
         memory_repository = SQLiteLearningMemoryRepository(self._connection)
 
-        self.courses = CourseService(course_repository=course_repository, chat_repository=chat_repository)
+        self.courses = CourseService(
+            course_repository=course_repository, chat_repository=chat_repository, memory_repository=memory_repository
+        )
         self.memories = LearningMemoryService(
             repository=memory_repository, course_repository=course_repository, chat_repository=chat_repository
         )

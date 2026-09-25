@@ -171,3 +171,75 @@ def test_multiline_description_round_trips(client):
     )
 
     assert response.json()["description"] == description
+
+
+# --- Stage 6.1: deleting a course archives its memories, never leaks them global -------
+
+
+def test_deleting_course_archives_its_memories_instead_of_making_them_active_global(client):
+    course = client.post("/api/v1/courses", json={"name": "Physics"}, headers=HEADERS).json()
+    memory = client.post(
+        "/api/v1/memories",
+        json={"topic": "Vector components", "kind": "needs_review", "summary": "Mixes x/y.", "courseId": course["id"]},
+        headers=HEADERS,
+    ).json()
+
+    response = client.delete(f"/api/v1/courses/{course['id']}", headers=HEADERS)
+    assert response.status_code == 204
+
+    survived = client.get(f"/api/v1/memories/{memory['id']}", headers=HEADERS).json()
+    assert survived["status"] == "archived"
+    assert survived["courseId"] is None
+    assert survived["topic"] == "Vector components"
+
+
+def test_deleting_course_never_archives_a_different_courses_memories(client):
+    physics = client.post("/api/v1/courses", json={"name": "Physics"}, headers=HEADERS).json()
+    calculus = client.post("/api/v1/courses", json={"name": "Calculus"}, headers=HEADERS).json()
+    calc_memory = client.post(
+        "/api/v1/memories",
+        json={"topic": "Derivatives", "kind": "needs_review", "summary": "s", "courseId": calculus["id"]},
+        headers=HEADERS,
+    ).json()
+
+    client.delete(f"/api/v1/courses/{physics['id']}", headers=HEADERS)
+
+    untouched = client.get(f"/api/v1/memories/{calc_memory['id']}", headers=HEADERS).json()
+    assert untouched["status"] == "active"
+    assert untouched["courseId"] == calculus["id"]
+
+
+def test_deleting_course_never_archives_already_global_memories(client):
+    course = client.post("/api/v1/courses", json={"name": "Physics"}, headers=HEADERS).json()
+    global_memory = client.post(
+        "/api/v1/memories",
+        json={"topic": "Study habits", "kind": "useful_strategy", "summary": "s"},
+        headers=HEADERS,
+    ).json()
+
+    client.delete(f"/api/v1/courses/{course['id']}", headers=HEADERS)
+
+    still_active = client.get(f"/api/v1/memories/{global_memory['id']}", headers=HEADERS).json()
+    assert still_active["status"] == "active"
+
+
+def test_orphaned_memory_from_deleted_course_can_be_restored_and_reassigned(client):
+    physics = client.post("/api/v1/courses", json={"name": "Physics"}, headers=HEADERS).json()
+    calculus = client.post("/api/v1/courses", json={"name": "Calculus"}, headers=HEADERS).json()
+    memory = client.post(
+        "/api/v1/memories",
+        json={"topic": "Topic", "kind": "learning_goal", "summary": "s", "courseId": physics["id"]},
+        headers=HEADERS,
+    ).json()
+
+    client.delete(f"/api/v1/courses/{physics['id']}", headers=HEADERS)
+
+    reassigned = client.patch(
+        f"/api/v1/memories/{memory['id']}", json={"courseId": calculus["id"]}, headers=HEADERS
+    ).json()
+    assert reassigned["courseId"] == calculus["id"]
+    assert reassigned["status"] == "archived"  # reassigning alone does not restore it
+
+    restored = client.post(f"/api/v1/memories/{memory['id']}/restore", headers=HEADERS).json()
+    assert restored["status"] == "active"
+    assert restored["courseId"] == calculus["id"]
