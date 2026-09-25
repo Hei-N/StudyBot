@@ -210,6 +210,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
 
+    await tester.tap(find.byTooltip('Learning memory'));
+    await tester.pumpAndSettle();
+    expect(find.text('Learning memory'), findsWidgets);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
     await tester.tap(find.byTooltip('Settings'));
     await tester.pumpAndSettle();
     expect(find.text('Settings'), findsWidgets);
@@ -224,6 +230,13 @@ void main() {
     await tester.tap(find.text('Course number 1'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+
+    // The compact StudyPanel (and its Learning Memory summary) is hidden at
+    // this width, but the full management view stays reachable via the nav
+    // rail (Stage 6 §18: a drawer/sheet/page, not a forced fourth column).
+    await tester.tap(find.byTooltip('Learning memory'));
+    await tester.pumpAndSettle();
+    expect(find.text('No learning memory yet'), findsOneWidget);
   });
 
   testWidgets('compact tier: the menu button toggles the combined sidebar and both panes stay usable', (

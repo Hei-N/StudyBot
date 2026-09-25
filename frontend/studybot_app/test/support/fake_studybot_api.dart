@@ -4,6 +4,7 @@ import 'package:studybot_app/core/api/studybot_api.dart';
 import 'package:studybot_app/core/models/chat.dart';
 import 'package:studybot_app/core/models/course.dart';
 import 'package:studybot_app/core/models/health.dart';
+import 'package:studybot_app/core/models/learning_memory.dart';
 import 'package:studybot_app/core/models/message.dart';
 import 'package:studybot_app/core/models/reasoning_mode.dart';
 import 'package:studybot_app/core/models/teaching_mode.dart';
@@ -20,16 +21,30 @@ class FakeStudyBotApi extends StudyBotApi {
     List<Chat>? chats,
     List<TeachingModeInfo>? modes,
     List<ReasoningModeInfo>? reasoningModes,
+    List<MemoryKindInfo>? memoryKinds,
+    List<LearningMemory>? memories,
   }) : courses = courses ?? [],
        chats = chats ?? [],
        modes = modes ?? const [],
        reasoningModes = reasoningModes ?? const [],
+       memoryKinds = memoryKinds ?? _defaultMemoryKinds,
+       memories = memories ?? [],
        super(_testConfig);
+
+  static const _defaultMemoryKinds = [
+    MemoryKindInfo(id: 'understands', displayName: 'Understands', description: 'Understood.'),
+    MemoryKindInfo(id: 'needs_review', displayName: 'Needs review', description: 'Should revisit.'),
+    MemoryKindInfo(id: 'misconception', displayName: 'Misconception', description: 'Mistaken belief.'),
+    MemoryKindInfo(id: 'learning_goal', displayName: 'Goal', description: 'Wants to work toward.'),
+    MemoryKindInfo(id: 'useful_strategy', displayName: 'Helpful approach', description: 'Worked well before.'),
+  ];
 
   final List<Course> courses;
   final List<Chat> chats;
   final List<TeachingModeInfo> modes;
   final List<ReasoningModeInfo> reasoningModes;
+  final List<MemoryKindInfo> memoryKinds;
+  final List<LearningMemory> memories;
   final List<String> calls = [];
   ApiException? nextError;
 
@@ -42,6 +57,8 @@ class FakeStudyBotApi extends StudyBotApi {
   void persist(String chatId) => phantomChatIds.remove(chatId);
 
   ApiException get _chatNotFound => const ApiException(code: ApiErrorCode.chatNotFound, message: 'No such chat.');
+  ApiException get _memoryNotFound =>
+      const ApiException(code: ApiErrorCode.memoryNotFound, message: 'No such memory.');
 
   int _idSeed = 100;
 
@@ -240,5 +257,126 @@ class FakeStudyBotApi extends StudyBotApi {
     chats[index] = chats[index].copyWith(reasoningMode: reasoningMode);
     return reasoningModes.where((m) => m.id == reasoningMode).firstOrNull ??
         ReasoningModeInfo(id: reasoningMode, displayName: reasoningMode, description: '');
+  }
+
+  // --- learning memory (Stage 6) -----------------------------------------------
+
+  int _memoryIdSeed = 100;
+
+  @override
+  Future<List<MemoryKindInfo>> listMemoryKinds() async {
+    calls.add('listMemoryKinds');
+    _maybeThrow();
+    return List.of(memoryKinds);
+  }
+
+  @override
+  Future<List<LearningMemory>> listMemories({String? courseId, String? kind, String? status}) async {
+    calls.add('listMemories:${courseId ?? '<all>'}:${kind ?? '<all>'}:${status ?? '<all>'}');
+    _maybeThrow();
+    return memories.where((m) {
+      if (courseId == 'none' && m.courseId != null) return false;
+      if (courseId != null && courseId != 'none' && m.courseId != courseId) return false;
+      if (kind != null && m.kind != kind) return false;
+      if (status != null && m.status != status) return false;
+      return true;
+    }).toList();
+  }
+
+  @override
+  Future<LearningMemory> createMemory({
+    required String topic,
+    required String kind,
+    required String summary,
+    String? courseId,
+    String? sourceChatId,
+  }) async {
+    calls.add('createMemory:$topic:$kind');
+    _maybeThrow();
+    final memory = LearningMemory(
+      id: 'memory-${_memoryIdSeed++}',
+      courseId: courseId,
+      sourceChatId: sourceChatId,
+      topic: topic,
+      kind: kind,
+      summary: summary,
+      status: 'active',
+      createdAt: 'now',
+      updatedAt: 'now',
+    );
+    memories.insert(0, memory);
+    return memory;
+  }
+
+  @override
+  Future<LearningMemory> getMemory(String memoryId) async {
+    calls.add('getMemory:$memoryId');
+    _maybeThrow();
+    return memories.firstWhere((m) => m.id == memoryId, orElse: () => throw _memoryNotFound);
+  }
+
+  @override
+  Future<LearningMemory> updateMemory(
+    String memoryId, {
+    String? topic,
+    String? kind,
+    String? summary,
+    bool setCourseId = false,
+    String? courseId,
+  }) async {
+    calls.add('updateMemory:$memoryId');
+    _maybeThrow();
+    final index = memories.indexWhere((m) => m.id == memoryId);
+    if (index == -1) throw _memoryNotFound;
+    final current = memories[index];
+    final updated = LearningMemory(
+      id: current.id,
+      courseId: setCourseId ? courseId : current.courseId,
+      sourceChatId: current.sourceChatId,
+      topic: topic ?? current.topic,
+      kind: kind ?? current.kind,
+      summary: summary ?? current.summary,
+      status: current.status,
+      createdAt: current.createdAt,
+      updatedAt: 'now',
+    );
+    memories[index] = updated;
+    return updated;
+  }
+
+  @override
+  Future<LearningMemory> archiveMemory(String memoryId) => _setMemoryStatus(memoryId, 'archived');
+
+  @override
+  Future<LearningMemory> restoreMemory(String memoryId) => _setMemoryStatus(memoryId, 'active');
+
+  Future<LearningMemory> _setMemoryStatus(String memoryId, String status) async {
+    calls.add('setMemoryStatus:$memoryId:$status');
+    _maybeThrow();
+    final index = memories.indexWhere((m) => m.id == memoryId);
+    if (index == -1) throw _memoryNotFound;
+    final current = memories[index];
+    final updated = LearningMemory(
+      id: current.id,
+      courseId: current.courseId,
+      sourceChatId: current.sourceChatId,
+      topic: current.topic,
+      kind: current.kind,
+      summary: current.summary,
+      status: status,
+      createdAt: current.createdAt,
+      updatedAt: 'now',
+    );
+    memories[index] = updated;
+    return updated;
+  }
+
+  @override
+  Future<void> deleteMemory(String memoryId) async {
+    calls.add('deleteMemory:$memoryId');
+    _maybeThrow();
+    final existed = memories.any((m) => m.id == memoryId);
+    if (!existed) throw _memoryNotFound;
+    memories.removeWhere((m) => m.id == memoryId);
   }
 }

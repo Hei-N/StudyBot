@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import '../models/chat.dart';
 import '../models/course.dart';
 import '../models/health.dart';
+import '../models/learning_memory.dart';
 import '../models/message.dart';
 import '../models/reasoning_mode.dart';
 import '../models/teaching_mode.dart';
@@ -206,6 +207,93 @@ class StudyBotApi {
       ),
     );
     return ReasoningModeInfo.fromJson(json as Map<String, dynamic>);
+  }
+
+  // --- learning memory (Stage 6) ---------------------------------------------------
+
+  Future<List<MemoryKindInfo>> listMemoryKinds() async {
+    final json = await _send(() => _client.get(_uri('/memory-kinds'), headers: _headers));
+    return (json as List).cast<Map<String, dynamic>>().map(MemoryKindInfo.fromJson).toList();
+  }
+
+  /// `courseId: 'none'` filters to global-only memories, matching
+  /// `listChats`' own convention. Omit any filter to mean "no constraint".
+  Future<List<LearningMemory>> listMemories({String? courseId, String? kind, String? status}) async {
+    final query = <String, String>{
+      'course_id': ?courseId,
+      'kind': ?kind,
+      'status': ?status,
+    };
+    final json = await _send(() => _client.get(_uri('/memories', query.isEmpty ? null : query), headers: _headers));
+    return (json as List).cast<Map<String, dynamic>>().map(LearningMemory.fromJson).toList();
+  }
+
+  Future<LearningMemory> createMemory({
+    required String topic,
+    required String kind,
+    required String summary,
+    String? courseId,
+    String? sourceChatId,
+  }) async {
+    final json = await _send(
+      () => _client.post(
+        _uri('/memories'),
+        headers: _headers,
+        body: jsonEncode({
+          'topic': topic,
+          'kind': kind,
+          'summary': summary,
+          'courseId': courseId,
+          'sourceChatId': sourceChatId,
+        }),
+      ),
+    );
+    return LearningMemory.fromJson(json as Map<String, dynamic>);
+  }
+
+  Future<LearningMemory> getMemory(String memoryId) async {
+    final json = await _send(() => _client.get(_uri('/memories/$memoryId'), headers: _headers));
+    return LearningMemory.fromJson(json as Map<String, dynamic>);
+  }
+
+  /// PATCH semantics: only `topic`/`kind`/`summary` args that are non-null
+  /// are sent (and therefore changed). `courseId` is different — pass
+  /// [setCourseId] `true` to include it at all (even when [courseId] is
+  /// `null`, meaning "unassign to General"); leave it `false` to omit the
+  /// field entirely and keep the memory's current course unchanged. See
+  /// `LearningMemoryUpdateIn` in API_CONTRACT.md.
+  Future<LearningMemory> updateMemory(
+    String memoryId, {
+    String? topic,
+    String? kind,
+    String? summary,
+    bool setCourseId = false,
+    String? courseId,
+  }) async {
+    final body = <String, dynamic>{
+      'topic': ?topic,
+      'kind': ?kind,
+      'summary': ?summary,
+      if (setCourseId) 'courseId': courseId,
+    };
+    final json = await _send(
+      () => _client.patch(_uri('/memories/$memoryId'), headers: _headers, body: jsonEncode(body)),
+    );
+    return LearningMemory.fromJson(json as Map<String, dynamic>);
+  }
+
+  Future<LearningMemory> archiveMemory(String memoryId) async {
+    final json = await _send(() => _client.post(_uri('/memories/$memoryId/archive'), headers: _headers));
+    return LearningMemory.fromJson(json as Map<String, dynamic>);
+  }
+
+  Future<LearningMemory> restoreMemory(String memoryId) async {
+    final json = await _send(() => _client.post(_uri('/memories/$memoryId/restore'), headers: _headers));
+    return LearningMemory.fromJson(json as Map<String, dynamic>);
+  }
+
+  Future<void> deleteMemory(String memoryId) async {
+    await _send(() => _client.delete(_uri('/memories/$memoryId'), headers: _headers));
   }
 
   void close() => _client.close();

@@ -6,14 +6,16 @@ import '../../core/widgets/section_header.dart';
 import '../../core/widgets/status_dot.dart';
 import '../chats/chats_providers.dart';
 import '../courses/courses_providers.dart';
+import '../memory/memory_management_view.dart';
+import '../memory/memory_providers.dart';
 import '../modes/modes_providers.dart';
 import '../modes/reasoning_providers.dart';
 import '../status/status_providers.dart';
 
-/// The contextual right-hand panel: only real, already-available data —
-/// current course, code/term, teaching mode, reasoning mode, and engine
-/// status. No mastery, key concepts, notes, or progress — none of that
-/// exists in the backend yet (deliberately deferred past this stage).
+/// The contextual right-hand panel: current course, code/term, teaching
+/// mode, reasoning mode, a compact learning-memory summary (Stage 6), and
+/// engine status. No mastery percentages, key concepts, or progress —
+/// none of that exists in the backend, deliberately.
 class StudyPanel extends ConsumerWidget {
   const StudyPanel({super.key});
 
@@ -75,6 +77,8 @@ class StudyPanel extends ConsumerWidget {
                   ),
           ),
           const SizedBox(height: AppSpacing.md),
+          const _LearningMemorySection(),
+          const SizedBox(height: AppSpacing.md),
           const SectionHeader('Engine'),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
@@ -89,6 +93,82 @@ class StudyPanel extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// A compact, grouped summary of the active course's active learning
+/// memories (course-specific plus global) — grouped by kind ("Needs
+/// review", "Understands", ...), topics only (no summary text, to stay
+/// compact), each group hidden entirely when it has nothing to show.
+/// Never a percentage or score. "View all" opens the full management view
+/// for editing/archiving/creating.
+class _LearningMemorySection extends ConsumerWidget {
+  const _LearningMemorySection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final memories = ref.watch(activeCourseMemoriesProvider);
+    final kindsAsync = ref.watch(memoryKindCatalogProvider);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionHeader(
+          'Learning memory',
+          trailing: TextButton(
+            style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 0)),
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MemoryManagementView())),
+            child: const Text('View all'),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+          child: memories.isEmpty
+              ? Text(
+                  'No learning memory yet for this course.',
+                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                )
+              : kindsAsync.when(
+                  loading: () => const SizedBox(height: 16),
+                  error: (_, _) => const SizedBox.shrink(),
+                  data: (kinds) {
+                    final order = [for (final k in kinds) k.id];
+                    final byKind = <String, List<String>>{};
+                    for (final memory in memories) {
+                      (byKind[memory.kind] ??= []).add(memory.topic);
+                    }
+                    final kindLabel = {for (final k in kinds) k.id: k.displayName};
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final kindId in order)
+                          if (byKind[kindId] case final topics? when topics.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    kindLabel[kindId] ?? kindId,
+                                    style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w600),
+                                  ),
+                                  for (final topic in topics)
+                                    Padding(
+                                      padding: const EdgeInsets.only(left: AppSpacing.xs),
+                                      child: Text('•  $topic', style: theme.textTheme.bodySmall),
+                                    ),
+                                ],
+                              ),
+                            ),
+                      ],
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 }

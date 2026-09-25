@@ -45,3 +45,28 @@ class ChatBusyError(StudyBotError):
     goal is to prevent two assistant replies from racing and appending to
     a chat's history in a nondeterministic order, never to make one
     request wait for another."""
+
+
+class CourseNotFoundError(SessionError):
+    """Raised specifically when an operation references a course id that
+    doesn't exist. A `SessionError` subtype (like `ChatNotFoundError`) so a
+    bare `except SessionError` keeps working; introduced for
+    `LearningMemoryService`, which (unlike `CourseService`) can raise both
+    a course-not-found and other kinds of `SessionError` from the same
+    call and needs to tell them apart precisely at the API layer."""
+
+
+class MemoryNotFoundError(SessionError):
+    """Raised when an operation targets a learning memory id that doesn't
+    exist. A `SessionError` subtype (like `ChatNotFoundError`) so a bare
+    `except SessionError` keeps working, while the API layer can map it to
+    `MEMORY_NOT_FOUND` precisely."""
+
+
+class MemoryConflictError(StudyBotError):
+    """Raised when creating (or reactivating) a learning memory would
+    produce two *active* memories for the same course with the same
+    normalized topic and the same kind (Stage 6's exact-duplicate policy —
+    see `LearningMemoryService`). Not raised for a topic whose *opposite*
+    learning state already exists — that case is resolved automatically by
+    archiving the superseded entry instead of raising."""

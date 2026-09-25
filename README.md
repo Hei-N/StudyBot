@@ -1,4 +1,4 @@
-# Study Bot (v0.2, Stage 5.8 — Stateless Multi-Chat API / Session Architecture)
+# Study Bot (v0.2, Stage 6 — Learning Memory Foundation)
 
 A local-first personal study assistant. **Stage 5.5** added a local HTTP +
 WebSocket API (`python -m studybot.api`) in front of the same engine the
@@ -7,16 +7,19 @@ Flutter desktop/mobile app at [`frontend/studybot_app/`](frontend/studybot_app/)
 (primary target macOS) that drives Study Bot entirely through that API,
 knowing nothing about SQLite, Ollama, or Python internals. **Stage 5.7**
 added an explicit, per-chat **reasoning mode** (Fast/Deep Think) so the app
-no longer leaves Qwen3's "thinking" behavior implicit — see "Reasoning
-modes" below. **Stage 5.8** removed the API's last remaining coupling to a
-single mutable "active chat" per process: every chat-specific HTTP/
-WebSocket operation now addresses its `chat_id` explicitly and is safe to
-interleave with operations on any other chat, in any order — see
-"Explicit chat-id operations" below. The CLI (`python -m studybot`) is
-unchanged and keeps working exactly as before — these are two interfaces
-onto the same core, not a replacement. See
-**[API_CONTRACT.md](API_CONTRACT.md)** for the full API reference
-(endpoints, the WebSocket protocol, error codes, auth).
+no longer leaves Qwen3's "thinking" behavior implicit. **Stage 5.8** removed
+the API's last remaining coupling to a single mutable "active chat" per
+process: every chat-specific HTTP/WebSocket operation addresses its
+`chat_id` explicitly and is safe to interleave with operations on any other
+chat, in any order. **Stage 6** adds **learning memory** — durable,
+course-scoped learning facts ("needs review: vector components",
+"understands significant figures") that StudyBot retains independently of
+raw chat history, are fully user-visible and user-controlled, and are
+woven into future answers for the same course — see "Learning memory"
+below. The CLI (`python -m studybot`) is unchanged and keeps working
+exactly as before — these are two interfaces onto the same core, not a
+replacement. See **[API_CONTRACT.md](API_CONTRACT.md)** for the full API
+reference (endpoints, the WebSocket protocol, error codes, auth).
 
 Teaching modes (Teach, Homework, Quick Answer, Practice, Exam — one active
 per chat, prompt-based, added in Stage 5) and course organization (Stage 4)
@@ -342,6 +345,82 @@ Deep is opt-in for problems that benefit from it. Whichever mode is active,
 the model's hidden reasoning/thinking text is never shown in the UI and
 never persisted to the database — only the final answer is.
 
+### Learning memory
+
+**A different system from chat history.** Chat history answers "what was
+said?"; learning memory answers "what useful learning information should
+StudyBot retain?" — a small, deliberately-recorded set of durable facts
+("needs review: vector components", "understands significant figures",
+"recurring misconception: confuses velocity and acceleration"), completely
+independent of the conversation that produced them. Clearing or deleting a
+chat never destroys a memory it produced. **This is not a mastery/scoring
+engine** — there are no percentages, numeric weights, or aggregation
+anywhere in Stage 6, by design; that's explicitly deferred (see "Next
+planned stage").
+
+**Five kinds, a strict closed set** (never arbitrary free text):
+
+| Kind | Shown as | Meaning |
+|------|----------|---------|
+| `understands` | Understands | The student has shown they understand this. |
+| `needs_review` | Needs review | The student should revisit this before moving on. |
+| `misconception` | Misconception | A recurring mistaken belief worth gently correcting. |
+| `learning_goal` | Goal | Something the student wants to work toward. |
+| `useful_strategy` | Helpful approach | An explanation/strategy that worked well before. |
+
+**Course-scoped by default.** A memory normally belongs to a course
+(`courseId`) — Physics memories never appear in a Calculus chat, no matter
+how similar the wording. A memory can also be global (`courseId: null`,
+shown in every course), but that should be the exception, not the norm.
+
+**Source-chat provenance, not a dependency.** A memory may record
+`sourceChatId` — which chat produced it — purely for reference. The memory
+remains fully valid, with all its own content intact, even after that chat
+is cleared or deleted (`sourceChatId` just becomes `null`); deleting a
+course does the same to `courseId`. Neither foreign key ever cascades a
+delete into a memory — see `ON DELETE SET NULL` in the schema below.
+
+**Archive, don't delete.** Retiring a memory (e.g. the student no longer
+needs review on a topic) archives it — it stays visible under "Archived"
+and can be restored — rather than being erased. A separate, explicit hard
+delete is available for when a memory should genuinely be gone.
+
+**Duplicate and conflict policy** (deliberately simple, no fuzzy/semantic
+matching yet): within one course (or the global scope), topics are compared
+case-insensitively with whitespace collapsed.
+- The exact same active topic+kind already exists → rejected
+  (`MEMORY_CONFLICT`); edit the existing memory instead.
+- The same topic has an active memory in the **opposite** learning state
+  (`understands` vs. `needs_review`/`misconception`) → the old one is
+  **archived automatically** as the new one is created — learning changes,
+  and Stage 6 models that as supersession, not indefinite coexistence.
+  `learning_goal`/`useful_strategy` never trigger this (they're not claims
+  about current understanding).
+
+**User control first.** Every memory is visible and editable in the
+Flutter app's Study Panel and a dedicated management view: create, edit,
+archive, restore, delete. **Nothing is created automatically** — Stage 6
+deliberately does not run a second model call after every chat response to
+extract memories on its own (local inference is still comparatively
+expensive and serialized; see "Known limitations" — automatic extraction
+is explicitly future work, not implemented here). Instead, the composer's
+message actions include **"Save to Learning Memory"**, turning a specific
+assistant explanation or user-stated weakness into a real, structured
+memory with one action.
+
+**Woven into future answers, not announced.** Every chat request
+automatically includes a compact, size-limited block of that chat's
+course's active memories (plus global ones) in the model's system prompt —
+at most 12 entries, ~1200 characters, most-recently-updated first. The
+model is instructed to use this context naturally (adjust explanations,
+don't re-teach something already understood) and never say things like
+"according to your records." It never overrides an explicit instruction:
+Quick Answer mode still gives a quick answer even with a relevant memory
+present. Composing this context measures at **well under 1ms of overhead**
+regardless of memory count (0/5/20 memories benchmarked — see
+[API_CONTRACT.md](API_CONTRACT.md#learning-memory-stage-6)) — it never
+materially affects first-token latency.
+
 ## Configuration
 
 Configuration is centralized in `studybot.config.settings.Settings` and read
@@ -522,10 +601,25 @@ Key modules:
   each mode, kept in one small module so it's easy to revise after
   real-world testing
 - `src/studybot/core/context.py` — `CourseContext` and `build_system_prompt`,
-  the single place baseline instructions, course context, and teaching-mode
-  instructions are composed into one system prompt — kept separate from
-  both `core/prompts.py`/`core/mode_prompts.py` and any model provider so
+  the single place baseline instructions, course context, learning-memory
+  context (Stage 6), and teaching-mode instructions are composed into one
+  system prompt, in that order — kept separate from both
+  `core/prompts.py`/`core/mode_prompts.py` and any model provider so
   there's no scattered string concatenation elsewhere
+- `src/studybot/core/learning_memory.py` (Stage 6) — the `MemoryKind`
+  (`understands`/`needs_review`/`misconception`/`learning_goal`/
+  `useful_strategy`) and `MemoryStatus` (`active`/`archived`) enums, their
+  display metadata/`all_kinds()` catalog, `parse_memory_kind()`, and
+  `opposes()` — the pure building block the conflict/supersession policy
+  is built on (which kinds represent opposite learning states for the same
+  topic). No I/O, no business logic.
+- `src/studybot/core/memory_service.py` (Stage 6) — `LearningMemoryService`:
+  validation/normalization, the duplicate (`MEMORY_CONFLICT`) and
+  conflict/supersession (auto-archive) policy, course-scoped CRUD, and
+  `build_memory_context_text()` — the compact, size-limited block injected
+  into a chat's system prompt. The only place that knows what a "learning
+  memory" is at the business-logic level; `OllamaModel`, the SQLite
+  repository, and Flutter never do.
 - `src/studybot/core/titles.py` — deterministic, local chat-title
   generation from a chat's first message (no LLM call)
 - `src/studybot/core/chat.py` — `ChatService`: in-memory history for one
@@ -553,11 +647,16 @@ Key modules:
   full Unicode support) and CRUD, independent of `SessionService`
 - `src/studybot/core/exceptions.py` — `StudyBotError` and subclasses:
   `SessionError` for chat/course navigation or validation problems (not
-  found, ambiguous id prefix, empty name, ...); `ChatNotFoundError` (a
-  `SessionError` subtype, Stage 5.8) specifically for an explicit-by-id
-  operation on a chat that doesn't exist, so the API can map it to
-  `CHAT_NOT_FOUND` precisely; `ChatBusyError` for the per-chat generation
-  lock above
+  found, ambiguous id prefix, empty name, ...); `ChatNotFoundError`/
+  `CourseNotFoundError` (`SessionError` subtypes) for precise
+  `CHAT_NOT_FOUND`/`COURSE_NOT_FOUND` mapping when a call could otherwise
+  raise either; `ChatBusyError` for the per-chat generation lock above;
+  `MemoryNotFoundError` (Stage 6, a `SessionError` subtype) and
+  `MemoryConflictError` (Stage 6) for the learning-memory duplicate policy
+- `src/studybot/storage/sqlite_learning_memory_repository.py` (Stage 6) —
+  `SQLiteLearningMemoryRepository`, one of three modules allowed to
+  contain SQL (with `sqlite_repository.py`/`sqlite_course_repository.py`);
+  a dumb data layer with no validation or policy logic of its own
 - `src/studybot/models/` — unchanged since Stage 2 (`ModelProvider`,
   `MockModel`, `OllamaModel`, the provider factory); `OllamaModel` has no
   awareness of courses, teaching modes, or SQLite
@@ -613,7 +712,7 @@ mode changes: `/mode homework` never inserts a "Mode changed to Homework"
 message into the conversation either — the CLI prints a confirmation to
 the terminal, but it's never part of what the model sees as history.
 
-### Schema migrations (v1 → v2 → v3 → v4)
+### Schema migrations (v1 → v2 → v3 → v4 → v5)
 
 - **v1 → v2** (Stage 4): adds a `courses` table and a nullable
   `chats.course_id` referencing it with `ON DELETE SET NULL` — deleting a
@@ -623,13 +722,18 @@ the terminal, but it's never part of what the model sees as history.
 - **v3 → v4** (Stage 5.7): adds `chats.reasoning_mode` (`NOT NULL DEFAULT
   'fast'`) — every existing chat becomes Fast reasoning mode; teaching
   mode, courses, chats, and messages are all left completely untouched.
+- **v4 → v5** (Stage 6): adds a new `learning_memories` table (`course_id`
+  and `source_chat_id` both nullable, both `ON DELETE SET NULL`, plus
+  indexes on `course_id`/`status`/`topic`) — a brand-new table, so no
+  existing courses/chats/messages/modes are touched at all; the table
+  starts empty.
 
 Each step is one explicit SQL transaction (`BEGIN` ...
 `commit()`/`rollback()` — plain DDL statements are *not* automatically
 transactional in Python's `sqlite3` module, so this is done by hand): if
 anything in a step fails, the database is left exactly as it was before
 that step, not partially upgraded. Steps chain automatically (a v1
-database run against this version goes straight to v4 in one `open`), a
+database run against this version goes straight to v5 in one `open`), a
 brand-new database skips migration entirely and is created directly at the
 current schema, and re-opening an already-current database is a no-op.
 
@@ -660,14 +764,15 @@ clears messages, creates a new chat, or alters the chat's course or title.
 ## Next planned stage
 
 The Flutter app at [`frontend/studybot_app/`](frontend/studybot_app/) now
-covers courses, chats, teaching modes, reasoning modes, and streaming
-conversation end to end, with control over Ollama's thinking behavior
-(Stage 5.7) so simple prompts answer materially faster by default, and
-(Stage 5.8) an API that no longer depends on a single mutable "active
-chat" per process — every chat-specific operation addresses its `chat_id`
-explicitly and safely, regardless of what other chats exist or have been
-touched in between. Persistent long-term learning memory, mastery
-tracking, RAG over PDFs/notes/slides, embeddings, image/screenshot
-understanding, quizzes, and eventually device/tool access are all still
-future work — none of which exists yet, in either the API or the Flutter
-app.
+covers courses, chats, teaching modes, reasoning modes, streaming
+conversation, and (Stage 6) learning memory end to end, with control over
+Ollama's thinking behavior (Stage 5.7) so simple prompts answer materially
+faster by default, an API that no longer depends on a single mutable
+"active chat" per process (Stage 5.8), and durable, user-controlled,
+course-scoped learning facts that are woven into future answers without
+ever exposing a mastery percentage (Stage 6). Deliberately **not** yet
+implemented: numeric mastery/scoring, automatic LLM-driven memory
+extraction, a knowledge graph, spaced repetition, quizzes, a study planner,
+RAG over PDFs/notes/slides, embeddings, image/screenshot understanding,
+calendar/LMS integration, cloud sync, accounts, and eventually device/tool
+access — none of which exists yet, in either the API or the Flutter app.

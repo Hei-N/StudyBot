@@ -6,8 +6,12 @@ abstract final class ApiErrorCode {
   static const chatNotFound = 'CHAT_NOT_FOUND';
   static const chatBusy = 'CHAT_BUSY';
   static const courseNotFound = 'COURSE_NOT_FOUND';
+  static const memoryNotFound = 'MEMORY_NOT_FOUND';
+  static const memoryConflict = 'MEMORY_CONFLICT';
   static const invalidMode = 'INVALID_MODE';
   static const invalidReasoningMode = 'INVALID_REASONING_MODE';
+  static const invalidMemoryKind = 'INVALID_MEMORY_KIND';
+  static const invalidMemoryStatus = 'INVALID_MEMORY_STATUS';
   static const modelError = 'MODEL_ERROR';
   static const validationError = 'VALIDATION_ERROR';
   static const unauthorized = 'UNAUTHORIZED';

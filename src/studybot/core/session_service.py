@@ -86,6 +86,7 @@ from typing import Iterator, Sequence
 from studybot.core.chat import ChatService
 from studybot.core.context import CourseContext, build_system_prompt
 from studybot.core.exceptions import ChatBusyError, ChatNotFoundError, SessionError
+from studybot.core.memory_service import LearningMemoryService
 from studybot.core.messages import Message, Role
 from studybot.core.mode_prompts import get_mode_prompt
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
@@ -112,11 +113,16 @@ class SessionService:
         repository: ChatRepository,
         course_repository: CourseRepository,
         system_prompt: str | None = None,
+        memory_service: LearningMemoryService | None = None,
     ) -> None:
         self._model = model
         self._repository = repository
         self._course_repository = course_repository
         self._baseline_system_prompt = system_prompt
+        # Optional (Stage 6): `None` simply means no learning-memory context
+        # is ever injected — every existing caller that constructs a
+        # `SessionService` without this keeps working unchanged.
+        self._memory_service = memory_service
         self._active_session: ChatSession
         self._active_persisted: bool
         self._chat: ChatService
@@ -427,7 +433,10 @@ class SessionService:
     def _effective_system_prompt(self, course_id: str | None, teaching_mode: TeachingMode) -> str | None:
         context = self._course_context(course_id)
         mode_instructions = get_mode_prompt(teaching_mode)
-        prompt = build_system_prompt(self._baseline_system_prompt or "", context, mode_instructions)
+        memory_context = self._memory_service.build_memory_context_text(course_id) if self._memory_service else None
+        prompt = build_system_prompt(
+            self._baseline_system_prompt or "", context, mode_instructions, memory_context=memory_context
+        )
         return prompt if prompt.strip() else None
 
     def _course_context(self, course_id: str | None) -> CourseContext | None:

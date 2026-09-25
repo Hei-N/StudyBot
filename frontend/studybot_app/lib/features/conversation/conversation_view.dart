@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/api_exception.dart';
+import '../../core/models/chat.dart';
 import '../../core/models/message.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../core/widgets/error_view.dart';
 import '../../core/widgets/loading_view.dart';
 import '../chats/chats_providers.dart';
+import '../memory/memory_edit_dialog.dart';
 import 'composer.dart';
 import 'conversation_providers.dart';
 import 'message_bubble.dart';
@@ -91,7 +93,11 @@ class _ConversationViewState extends ConsumerState<ConversationView> {
                 itemCount: state.messages.length + (streamingMessage == null ? 0 : 1),
                 itemBuilder: (context, index) {
                   if (index < state.messages.length) {
-                    return MessageBubble(message: state.messages[index]);
+                    final message = state.messages[index];
+                    return MessageBubble(
+                      message: message,
+                      onSaveToMemory: message.isPending ? null : () => _saveToMemory(context, chat, message),
+                    );
                   }
                   return MessageBubble(message: streamingMessage!, isStreaming: true);
                 },
@@ -113,5 +119,18 @@ class _ConversationViewState extends ConsumerState<ConversationView> {
       default:
         return error.message;
     }
+  }
+
+  /// Opens the memory dialog pre-filled from [message], defaulting course
+  /// scope and provenance to the chat it came from (Stage 6 §20) — the
+  /// user still fills in the topic and picks a kind deliberately; this
+  /// never guesses those from the text.
+  void _saveToMemory(BuildContext context, Chat chat, ChatMessage message) {
+    showMemoryEditDialog(
+      context,
+      initialSummary: message.content,
+      initialCourseId: chat.courseId,
+      initialSourceChatId: chat.id,
+    );
   }
 }

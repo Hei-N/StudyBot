@@ -7,10 +7,11 @@ handlers call these rather than constructing DTOs field-by-field inline.
 
 from __future__ import annotations
 
-from studybot.api.schemas import ChatOut, CourseOut, MessageOut, ModeInfoOut
+from studybot.api.schemas import ChatOut, CourseOut, LearningMemoryOut, MemoryKindInfoOut, MessageOut, ModeInfoOut
+from studybot.core.learning_memory import MemoryKindInfo
 from studybot.core.reasoning_mode import ReasoningModeInfo
 from studybot.core.teaching_mode import TeachingModeInfo
-from studybot.storage.base import ChatSession, Course, MessageRecord
+from studybot.storage.base import ChatSession, Course, LearningMemory, MessageRecord
 
 
 def course_to_out(course: Course) -> CourseOut:
@@ -52,3 +53,21 @@ def mode_info_to_out(info: TeachingModeInfo) -> ModeInfoOut:
 
 def reasoning_mode_info_to_out(info: ReasoningModeInfo) -> ModeInfoOut:
     return ModeInfoOut(id=info.mode.value, display_name=info.display_name, description=info.description)
+
+
+def memory_kind_info_to_out(info: MemoryKindInfo) -> MemoryKindInfoOut:
+    return MemoryKindInfoOut(id=info.kind.value, display_name=info.display_name, description=info.description)
+
+
+def learning_memory_to_out(memory: LearningMemory) -> LearningMemoryOut:
+    return LearningMemoryOut(
+        id=memory.id,
+        course_id=memory.course_id,
+        source_chat_id=memory.source_chat_id,
+        topic=memory.topic,
+        kind=memory.kind.value,
+        summary=memory.summary,
+        status=memory.status.value,
+        created_at=memory.created_at,
+        updated_at=memory.updated_at,
+    )

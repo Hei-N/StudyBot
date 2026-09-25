@@ -5,24 +5,26 @@ import pytest
 from studybot.storage.database import SCHEMA_VERSION, get_schema_version, open_database
 
 
-def test_schema_version_constant_is_4():
-    assert SCHEMA_VERSION == 4
+def test_schema_version_constant_is_5():
+    assert SCHEMA_VERSION == 5
 
 
-def test_fresh_database_starts_directly_at_v4(tmp_path):
+def test_fresh_database_starts_directly_at_v5(tmp_path):
     connection = open_database(tmp_path / "studybot.db")
     try:
-        assert get_schema_version(connection) == 4
+        assert get_schema_version(connection) == 5
         tables = {
             row[0]
             for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        assert {"chats", "messages", "courses"} <= tables
+        assert {"chats", "messages", "courses", "learning_memories"} <= tables
         columns = [row[1] for row in connection.execute("PRAGMA table_info(chats)").fetchall()]
         assert "teaching_mode" in columns
         assert "reasoning_mode" in columns
+        memory_columns = [row[1] for row in connection.execute("PRAGMA table_info(learning_memories)").fetchall()]
+        assert {"course_id", "source_chat_id", "topic", "kind", "summary", "status"} <= set(memory_columns)
     finally:
         connection.close()
 
@@ -83,7 +85,7 @@ def test_opening_the_same_database_twice_is_idempotent(tmp_path):
 
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 4
+        assert get_schema_version(conn2) == 5
         row = conn2.execute(
             "SELECT title, teaching_mode FROM chats WHERE id = 'chat-1'"
         ).fetchone()
@@ -94,7 +96,7 @@ def test_opening_the_same_database_twice_is_idempotent(tmp_path):
         conn2.close()
 
 
-# --- v1 -> v4 migration (chained through v2, v3) --------------------------------------
+# --- v1 -> v5 migration (chained through v2, v3, v4) ----------------------------------
 
 
 def _create_v1_database(db_path):
@@ -116,7 +118,7 @@ def _create_v1_database(db_path):
     return conn
 
 
-def test_migration_upgrades_v1_database_directly_to_v4(tmp_path):
+def test_migration_upgrades_v1_database_directly_to_v5(tmp_path):
     db_path = tmp_path / "studybot.db"
     seed = _create_v1_database(db_path)
     seed.execute(
@@ -132,7 +134,7 @@ def test_migration_upgrades_v1_database_directly_to_v4(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 4
+        assert get_schema_version(connection) == 5
 
         chat = connection.execute("SELECT * FROM chats WHERE id = 'chat-1'").fetchone()
         assert chat["title"] == "Old Chat"
@@ -191,11 +193,11 @@ def test_v1_migration_is_idempotent_when_run_twice(tmp_path):
     conn1 = open_database(db_path)
     conn1.close()
 
-    # Reopening an already-migrated (v4) database must not re-run any
+    # Reopening an already-migrated (v5) database must not re-run any
     # migration (which would fail trying to add a duplicate column/table).
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 4
+        assert get_schema_version(conn2) == 5
         assert conn2.execute("SELECT title FROM chats WHERE id = 'c1'").fetchone()[0] == "T"
     finally:
         conn2.close()
@@ -255,7 +257,7 @@ def _create_v2_database(db_path):
     return conn
 
 
-def test_migration_upgrades_v2_database_to_v4(tmp_path):
+def test_migration_upgrades_v2_database_to_v5(tmp_path):
     db_path = tmp_path / "studybot.db"
     seed = _create_v2_database(db_path)
     seed.execute(
@@ -275,7 +277,7 @@ def test_migration_upgrades_v2_database_to_v4(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 4
+        assert get_schema_version(connection) == 5
 
         course = connection.execute("SELECT * FROM courses WHERE id = 'course-1'").fetchone()
         assert course["name"] == "Physics"
@@ -307,7 +309,7 @@ def test_v2_migration_is_idempotent_when_run_twice(tmp_path):
 
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 4
+        assert get_schema_version(conn2) == 5
         row = conn2.execute("SELECT title, teaching_mode, reasoning_mode FROM chats WHERE id = 'c1'").fetchone()
         assert row[0] == "T"
         assert row[1] == "teach"
@@ -367,7 +369,7 @@ def _create_v3_database(db_path):
     return conn
 
 
-def test_migration_upgrades_v3_database_to_v4(tmp_path):
+def test_migration_upgrades_v3_database_to_v5(tmp_path):
     db_path = tmp_path / "studybot.db"
     seed = _create_v3_database(db_path)
     seed.execute(
@@ -387,7 +389,7 @@ def test_migration_upgrades_v3_database_to_v4(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 4
+        assert get_schema_version(connection) == 5
 
         course = connection.execute("SELECT * FROM courses WHERE id = 'course-1'").fetchone()
         assert course["name"] == "Physics"  # courses untouched
@@ -417,11 +419,11 @@ def test_v3_migration_is_idempotent_when_run_twice(tmp_path):
     conn1 = open_database(db_path)
     conn1.close()
 
-    # Reopening an already-migrated (v4) database must not re-run any
+    # Reopening an already-migrated (v5) database must not re-run any
     # migration (which would fail trying to add a duplicate column).
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 4
+        assert get_schema_version(conn2) == 5
         row = conn2.execute("SELECT title, teaching_mode, reasoning_mode FROM chats WHERE id = 'c1'").fetchone()
         assert row[0] == "T"
         assert row[1] == "exam"
@@ -454,3 +456,181 @@ def test_v3_to_v4_failed_migration_does_not_leave_a_partially_upgraded_database(
         assert verify.execute("SELECT title FROM chats WHERE id = 'c1'").fetchone()[0] == "T"
     finally:
         verify.close()
+
+
+# --- v4 -> v5 migration (Stage 6: learning memory) --------------------------------------
+
+
+def _create_v4_database(db_path):
+    """Build a schema-v4 (Stage 5.8) database by hand to simulate a real
+    pre-Stage-6 user database with a course, a chat, and a message already
+    in use — no `learning_memories` table exists yet."""
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE courses (id TEXT PRIMARY KEY, name TEXT NOT NULL, code TEXT, term TEXT, "
+        "description TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE chats (id TEXT PRIMARY KEY, title TEXT, "
+        "course_id TEXT REFERENCES courses(id) ON DELETE SET NULL, "
+        "teaching_mode TEXT NOT NULL DEFAULT 'teach', "
+        "reasoning_mode TEXT NOT NULL DEFAULT 'fast', "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL "
+        "REFERENCES chats(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT NOT NULL, "
+        "created_at TEXT NOT NULL)"
+    )
+    conn.execute("PRAGMA user_version = 4")
+    conn.commit()
+    return conn
+
+
+def test_migration_upgrades_v4_database_to_v5(tmp_path):
+    db_path = tmp_path / "studybot.db"
+    seed = _create_v4_database(db_path)
+    seed.execute(
+        "INSERT INTO courses (id, name, code, term, description, created_at, updated_at) "
+        "VALUES ('course-1', 'Physics', 'PHY 215', 'Fall 2026', 'Mechanics', 't1', 't1')"
+    )
+    seed.execute(
+        "INSERT INTO chats (id, title, course_id, teaching_mode, reasoning_mode, created_at, updated_at) VALUES "
+        "('chat-1', 'Old Chat', 'course-1', 'homework', 'deep', 't2', 't3')"
+    )
+    seed.execute(
+        "INSERT INTO messages (chat_id, role, content, created_at) VALUES "
+        "('chat-1', 'user', 'hello from v4', 't2')"
+    )
+    seed.commit()
+    seed.close()
+
+    connection = open_database(db_path)
+    try:
+        assert get_schema_version(connection) == 5
+
+        course = connection.execute("SELECT * FROM courses WHERE id = 'course-1'").fetchone()
+        assert course["name"] == "Physics"  # courses untouched
+
+        chat = connection.execute("SELECT * FROM chats WHERE id = 'chat-1'").fetchone()
+        assert chat["title"] == "Old Chat"
+        assert chat["course_id"] == "course-1"
+        assert chat["teaching_mode"] == "homework"  # existing modes preserved exactly
+        assert chat["reasoning_mode"] == "deep"
+
+        message = connection.execute("SELECT * FROM messages WHERE chat_id = 'chat-1'").fetchone()
+        assert message["content"] == "hello from v4"
+
+        # The new table exists, is empty, and has the expected shape.
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "learning_memories" in tables
+        count = connection.execute("SELECT COUNT(*) FROM learning_memories").fetchone()[0]
+        assert count == 0
+    finally:
+        connection.close()
+
+
+def test_v4_migration_is_idempotent_when_run_twice(tmp_path):
+    db_path = tmp_path / "studybot.db"
+    seed = _create_v4_database(db_path)
+    seed.execute(
+        "INSERT INTO chats (id, title, teaching_mode, reasoning_mode, created_at, updated_at) VALUES "
+        "('c1', 'T', 'exam', 'deep', 't', 't')"
+    )
+    seed.commit()
+    seed.close()
+
+    conn1 = open_database(db_path)
+    conn1.close()
+
+    # Reopening an already-migrated (v5) database must not re-run any
+    # migration (which would fail trying to create a duplicate table).
+    conn2 = open_database(db_path)
+    try:
+        assert get_schema_version(conn2) == 5
+        row = conn2.execute("SELECT title, teaching_mode, reasoning_mode FROM chats WHERE id = 'c1'").fetchone()
+        assert row[0] == "T"
+        assert row[1] == "exam"
+        assert row[2] == "deep"
+    finally:
+        conn2.close()
+
+
+def test_v4_to_v5_failed_migration_does_not_leave_a_partially_upgraded_database(tmp_path):
+    db_path = tmp_path / "studybot.db"
+    seed = _create_v4_database(db_path)
+    seed.execute(
+        "INSERT INTO chats (id, title, teaching_mode, reasoning_mode, created_at, updated_at) VALUES "
+        "('c1', 'T', 'teach', 'fast', 't', 't')"
+    )
+    # Sabotage the migration: a conflicting `learning_memories` table
+    # already exists, so the migration's own `CREATE TABLE
+    # learning_memories` will fail partway through its transaction.
+    seed.execute("CREATE TABLE learning_memories (bogus INTEGER)")
+    seed.execute("PRAGMA user_version = 4")
+    seed.commit()
+    seed.close()
+
+    with pytest.raises(sqlite3.OperationalError):
+        open_database(db_path)
+
+    verify = sqlite3.connect(db_path)
+    try:
+        assert verify.execute("PRAGMA user_version").fetchone()[0] == 4
+        columns = [row[1] for row in verify.execute("PRAGMA table_info(learning_memories)").fetchall()]
+        assert columns == ["bogus"]  # the real schema was never created
+        # The original chat data is completely untouched.
+        assert verify.execute("SELECT title FROM chats WHERE id = 'c1'").fetchone()[0] == "T"
+    finally:
+        verify.close()
+
+
+# --- foreign key behavior: course/chat deletion never destroys a memory ----------------
+
+
+def test_deleting_source_chat_sets_source_chat_id_null_but_keeps_the_memory(tmp_path):
+    from studybot.storage.sqlite_learning_memory_repository import SQLiteLearningMemoryRepository
+    from studybot.storage.sqlite_repository import SQLiteChatRepository
+    from studybot.core.learning_memory import MemoryKind
+
+    connection = open_database(tmp_path / "studybot.db")
+    try:
+        chats = SQLiteChatRepository(connection)
+        memories = SQLiteLearningMemoryRepository(connection)
+        chat = chats.create_chat("chat-1", "Physics chat")
+        memory = memories.create(
+            "mem-1", None, chat.id, "Vector components", MemoryKind.NEEDS_REVIEW, "Mixes x/y components."
+        )
+
+        chats.delete_chat(chat.id)
+
+        survived = memories.get(memory.id)
+        assert survived is not None
+        assert survived.source_chat_id is None
+        assert survived.topic == "Vector components"
+    finally:
+        connection.close()
+
+
+def test_deleting_course_sets_course_id_null_but_keeps_the_memory(tmp_path):
+    from studybot.storage.sqlite_course_repository import SQLiteCourseRepository
+    from studybot.storage.sqlite_learning_memory_repository import SQLiteLearningMemoryRepository
+    from studybot.core.learning_memory import MemoryKind
+
+    connection = open_database(tmp_path / "studybot.db")
+    try:
+        courses = SQLiteCourseRepository(connection)
+        memories = SQLiteLearningMemoryRepository(connection)
+        course = courses.create_course("course-1", "Physics", None, None, None)
+        memory = memories.create(
+            "mem-1", course.id, None, "Vector components", MemoryKind.NEEDS_REVIEW, "Mixes x/y components."
+        )
+
+        courses.delete_course(course.id)
+
+        survived = memories.get(memory.id)
+        assert survived is not None
+        assert survived.course_id is None
+        assert survived.topic == "Vector components"
+    finally:
+        connection.close()

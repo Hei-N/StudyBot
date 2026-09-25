@@ -3,15 +3,20 @@
 The Study Bot product UI — a Flutter desktop/mobile client for the
 `studybot.api` server in the parent repository. Primary target is macOS;
 Windows, iOS, and iPad are future targets. This app contains **no business
-logic** of its own: courses, chats, teaching modes, reasoning modes, and
-conversation history all live behind the HTTP + WebSocket API documented in
-[`../../API_CONTRACT.md`](../../API_CONTRACT.md), which this app treats as
-the single source of truth for every data shape and protocol detail.
-Teaching mode and reasoning mode are independent per-chat settings — the
-former (Teach/Homework/Quick/Practice/Exam) shapes instructional behavior,
-the latter (Fast/Deep Think) controls the model's inference-time
-"thinking" depth/latency, shown as two small pickers side by side in the
-composer.
+logic** of its own: courses, chats, teaching modes, reasoning modes,
+learning memory, and conversation history all live behind the HTTP +
+WebSocket API documented in [`../../API_CONTRACT.md`](../../API_CONTRACT.md),
+which this app treats as the single source of truth for every data shape
+and protocol detail. Teaching mode and reasoning mode are independent
+per-chat settings — the former (Teach/Homework/Quick/Practice/Exam) shapes
+instructional behavior, the latter (Fast/Deep Think) controls the model's
+inference-time "thinking" depth/latency, shown as two small pickers side by
+side in the composer. Learning memory (Stage 6) is a third, separate
+concept from either: durable, course-scoped learning facts ("needs review:
+vector components") that persist independently of chat history, shown in
+the Study Panel's compact summary, a dedicated management view (reachable
+from the nav rail), and a "Save to Learning Memory" action on each
+conversation message — never a mastery percentage.
 
 ## Running it
 
@@ -44,11 +49,15 @@ lib/
   features/
     courses/    Course list, create/edit/delete
     chats/      Chat list, rename/delete
-    modes/      Teaching-mode picker (backend catalog only)
-    conversation/  Message list, streaming state machine, composer
+    modes/      Teaching-mode and reasoning-mode pickers (backend catalogs only)
+    memory/     Learning memory (Stage 6): providers, create/edit dialog,
+                full management view (filter/archive/restore/delete)
+    conversation/  Message list, streaming state machine, composer,
+                    "Save to Learning Memory" per-message action
     connection/ Setup screen, "engine unavailable" screen, connection state
     settings/   Theme picker, connection info, app info
-    shell/      Adaptive four-breakpoint desktop/tablet/phone layout
+    shell/      Adaptive four-breakpoint desktop/tablet/phone layout,
+                Study Panel's learning-memory summary
 ```
 
 State management is Riverpod (`flutter_riverpod`); network/application

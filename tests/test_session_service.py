@@ -4,6 +4,9 @@ import time
 import pytest
 
 from studybot.core.exceptions import ChatBusyError, ChatNotFoundError, ModelError, SessionError
+from studybot.core.learning_memory import MemoryKind
+from studybot.core.memory_service import LearningMemoryService
+from studybot.storage.sqlite_learning_memory_repository import SQLiteLearningMemoryRepository
 from studybot.core.messages import Role
 from studybot.core.mode_prompts import get_mode_prompt
 from studybot.core.reasoning_mode import ReasoningMode
@@ -96,6 +99,18 @@ def repository(connection):
 @pytest.fixture
 def course_repository(connection):
     return SQLiteCourseRepository(connection)
+
+
+@pytest.fixture
+def memory_repository(connection):
+    return SQLiteLearningMemoryRepository(connection)
+
+
+@pytest.fixture
+def memory_service(memory_repository, course_repository, repository):
+    return LearningMemoryService(
+        repository=memory_repository, course_repository=course_repository, chat_repository=repository
+    )
 
 
 def make_service(repository, course_repository, model=None, system_prompt="sys prompt"):
@@ -1654,3 +1669,141 @@ def test_explicit_chats_remain_addressable_after_restart(repository, course_repo
         "[Mock] You said: hello b",
     ]
     assert service2.get_chat(chat_b.id).reasoning_mode is ReasoningMode.DEEP
+
+
+# =====================================================================================
+# Stage 6 — learning memory context injection
+# =====================================================================================
+
+
+def _service_with_memory(repository, course_repository, memory_service, model):
+    return SessionService(
+        model=model,
+        repository=repository,
+        course_repository=course_repository,
+        system_prompt="Baseline.",
+        memory_service=memory_service,
+    )
+
+
+def test_no_memory_service_means_no_memory_section_in_prompt(repository, course_repository):
+    """Backward compatibility: every pre-Stage-6 `SessionService(...)`
+    construction (no `memory_service` argument) must behave exactly as
+    before — this is the default in `make_service` used throughout this
+    file."""
+    model = RecordingModel(reply="ack")
+    service = make_service(repository, course_repository, model=model)
+
+    service.send("hello")
+
+    system_message = model.received_calls[-1][0]
+    assert "Learning memory" not in system_message.content
+
+
+def test_active_course_memory_appears_in_model_input(repository, course_repository, memory_service):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    memory_service.create(
+        topic="Vector components", kind=MemoryKind.NEEDS_REVIEW,
+        summary="often mixes x/y components", course_id=course.id,
+    )
+    model = RecordingModel(reply="ack")
+    service = _service_with_memory(repository, course_repository, memory_service, model)
+    service.new_chat(course_id=course.id)
+
+    service.send("Explain projectile motion")
+
+    system_message = model.received_calls[-1][0]
+    assert "Vector components" in system_message.content
+    assert "Needs review" in system_message.content
+
+
+def test_physics_memory_never_appears_in_calculus_chat(repository, course_repository, memory_service):
+    physics = course_repository.create_course("physics", "Physics", None, None, None)
+    calculus = course_repository.create_course("calc", "Calculus", None, None, None)
+    memory_service.create(
+        topic="Vector components", kind=MemoryKind.NEEDS_REVIEW, summary="s", course_id=physics.id
+    )
+    model = RecordingModel(reply="ack")
+    service = _service_with_memory(repository, course_repository, memory_service, model)
+    service.new_chat(course_id=calculus.id)
+
+    service.send("hello")
+
+    system_message = model.received_calls[-1][0]
+    assert "Vector components" not in system_message.content
+
+
+def test_archived_memory_is_not_injected(repository, course_repository, memory_service):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    memory = memory_service.create(topic="Vectors", kind=MemoryKind.NEEDS_REVIEW, summary="s", course_id=course.id)
+    memory_service.archive(memory.id)
+    model = RecordingModel(reply="ack")
+    service = _service_with_memory(repository, course_repository, memory_service, model)
+    service.new_chat(course_id=course.id)
+
+    service.send("hello")
+
+    system_message = model.received_calls[-1][0]
+    assert "Vectors" not in system_message.content
+
+
+def test_explicit_send_to_chat_also_receives_its_own_courses_memory(repository, course_repository, memory_service):
+    """The explicit-by-id layer (Stage 5.8) goes through the same
+    `_effective_system_prompt` path, so it must get memory context too."""
+    physics = course_repository.create_course("physics", "Physics", None, None, None)
+    memory_service.create(
+        topic="Vector components", kind=MemoryKind.NEEDS_REVIEW, summary="s", course_id=physics.id
+    )
+    model = RecordingModel(reply="ack")
+    service = _service_with_memory(repository, course_repository, memory_service, model)
+    chat = service.create_chat(course_id=physics.id)
+
+    service.send_to_chat(chat.id, "Explain projectile motion")
+
+    system_message = model.received_calls[-1][0]
+    assert "Vector components" in system_message.content
+
+
+def test_changing_teaching_mode_does_not_alter_memory_context(repository, course_repository, memory_service):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    memory_service.create(topic="Vectors", kind=MemoryKind.NEEDS_REVIEW, summary="s", course_id=course.id)
+    model = RecordingModel(reply="ack")
+    service = _service_with_memory(repository, course_repository, memory_service, model)
+    service.new_chat(course_id=course.id)
+    service.send("hello")
+
+    service.set_teaching_mode(TeachingMode.EXAM)
+    service.send("next")
+
+    system_message = model.received_calls[-1][0]
+    assert "Vectors" in system_message.content  # memory still present
+    assert "Teaching mode: Exam" in system_message.content  # mode changed independently
+
+
+def test_changing_reasoning_mode_does_not_alter_memory_context(repository, course_repository, memory_service):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    memory_service.create(topic="Vectors", kind=MemoryKind.NEEDS_REVIEW, summary="s", course_id=course.id)
+    model = RecordingModel(reply="ack")
+    service = _service_with_memory(repository, course_repository, memory_service, model)
+    service.new_chat(course_id=course.id)
+    service.send("hello")
+
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+    service.send("next")
+
+    system_message = model.received_calls[-1][0]
+    assert "Vectors" in system_message.content  # memory still present
+    assert model.received_reasoning_modes[-1] is ReasoningMode.DEEP
+
+
+def test_memory_context_appears_before_teaching_mode_instructions(repository, course_repository, memory_service):
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    memory_service.create(topic="Vectors", kind=MemoryKind.NEEDS_REVIEW, summary="s", course_id=course.id)
+    model = RecordingModel(reply="ack")
+    service = _service_with_memory(repository, course_repository, memory_service, model)
+    service.new_chat(course_id=course.id)
+
+    service.send("hello")
+
+    system_message = model.received_calls[-1][0].content
+    assert system_message.index("Learning memory") < system_message.index("Teaching mode:")

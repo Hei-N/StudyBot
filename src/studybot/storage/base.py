@@ -13,9 +13,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from studybot.core.learning_memory import DEFAULT_MEMORY_STATUS, MemoryKind, MemoryStatus
 from studybot.core.messages import Message, Role
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
+
+#: Sentinel distinguishing "don't filter/change this field" from a real
+#: value that happens to be `None` (which is itself meaningful — e.g.
+#: `course_id=None` means "General"/global). Used by
+#: `LearningMemoryRepository.list`/`update`, mirroring the
+#: `_KEEP_CURRENT_COURSE` idiom `SessionService` already uses for the same
+#: reason.
+UNSET = object()
 
 
 @dataclass(slots=True)
@@ -170,6 +179,106 @@ class ChatRepository(Protocol):
 
     def count_chats_for_course(self, course_id: str) -> int:
         """How many chats currently belong to a course."""
+        ...
+
+
+@dataclass(slots=True)
+class LearningMemory:
+    """One durable, course-scoped piece of learning information — separate
+    from and independent of chat history (Stage 6). See
+    `core.learning_memory` for `MemoryKind`/`MemoryStatus`.
+
+    `course_id` is `None` for genuinely general/global learning
+    information — not the common case, but supported (see
+    `LearningMemoryService`).
+
+    `source_chat_id` is provenance only: which chat this memory was
+    created from, if any. It remains valid (and the memory itself remains
+    fully intact) even after that chat is cleared or deleted — see
+    `LearningMemoryRepository`'s `ON DELETE SET NULL` foreign key.
+    """
+
+    id: str
+    course_id: str | None
+    source_chat_id: str | None
+    topic: str
+    kind: MemoryKind
+    summary: str
+    status: MemoryStatus
+    created_at: str
+    updated_at: str
+
+
+class LearningMemoryRepository(Protocol):
+    """Durable storage for learning memories.
+
+    Implementations must enforce foreign keys with `ON DELETE SET NULL` on
+    both `course_id` (→ `courses.id`) and `source_chat_id` (→ `chats.id`)
+    — deleting a course or a chat must never delete a learning memory, only
+    clear the now-dangling reference. Archiving (not deleting) is the
+    normal way a memory is retired; `delete` is a separate, explicit hard
+    delete.
+    """
+
+    def create(
+        self,
+        memory_id: str,
+        course_id: str | None,
+        source_chat_id: str | None,
+        topic: str,
+        kind: MemoryKind,
+        summary: str,
+        status: MemoryStatus = DEFAULT_MEMORY_STATUS,
+    ) -> LearningMemory:
+        """Insert a new learning memory row and return it (with
+        server-assigned timestamps)."""
+        ...
+
+    def get(self, memory_id: str) -> LearningMemory | None:
+        """Fetch one learning memory by its exact id, or None if it
+        doesn't exist."""
+        ...
+
+    def list(
+        self,
+        *,
+        course_id: str | None = UNSET,  # type: ignore[assignment]
+        kind: MemoryKind | None = None,
+        status: MemoryStatus | None = None,
+    ) -> list[LearningMemory]:
+        """All memories matching the given filters, most recently updated
+        first. `course_id=UNSET` (the default) means "any course";
+        `course_id=None` means "global memories only"; a real id filters to
+        exactly that course. `kind`/`status` of `None` mean "any"."""
+        ...
+
+    def update(
+        self,
+        memory_id: str,
+        *,
+        course_id: str | None = UNSET,  # type: ignore[assignment]
+        topic: str | None = None,
+        kind: MemoryKind | None = None,
+        summary: str | None = None,
+    ) -> LearningMemory:
+        """Partially update a memory: only fields that are provided
+        change. `course_id=UNSET` (the default) leaves it unchanged;
+        `course_id=None` explicitly unassigns it to General/global.
+        `topic`/`kind`/`summary` of `None` mean "leave unchanged" (a real
+        value can never legitimately be `None` once validated)."""
+        ...
+
+    def archive(self, memory_id: str) -> LearningMemory:
+        """Set a memory's status to archived and bump `updated_at`."""
+        ...
+
+    def restore(self, memory_id: str) -> LearningMemory:
+        """Set a memory's status back to active and bump `updated_at`."""
+        ...
+
+    def delete(self, memory_id: str) -> None:
+        """Permanently delete a memory. An explicit, separate operation
+        from `archive` — normal retirement should archive, not delete."""
         ...
 
 

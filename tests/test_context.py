@@ -126,3 +126,60 @@ def test_every_modes_prompt_is_distinct_and_non_empty():
 
     assert all(p.strip() for p in prompts)
     assert len(set(prompts)) == len(prompts)
+
+
+# --- learning-memory composition (Stage 6) ----------------------------------------------
+
+
+def test_memory_context_appears_between_course_and_mode():
+    course = CourseContext(name="Physics")
+    homework_prompt = get_mode_prompt(TeachingMode.HOMEWORK)
+    memory_text = "Learning memory:\n- Needs review: Vectors — mixes x/y."
+
+    prompt = build_system_prompt("Baseline.", course, homework_prompt, memory_context=memory_text)
+
+    course_index = prompt.index("Physics")
+    memory_index = prompt.index("Learning memory:")
+    mode_index = prompt.index(homework_prompt)
+    assert course_index < memory_index < mode_index
+
+
+def test_memory_context_with_no_course_still_appears():
+    homework_prompt = get_mode_prompt(TeachingMode.HOMEWORK)
+    memory_text = "Learning memory:\n- Goal: review Newton's laws."
+
+    prompt = build_system_prompt("Baseline.", None, homework_prompt, memory_context=memory_text)
+
+    assert "Learning memory:" in prompt
+    assert prompt.index("Learning memory:") < prompt.index(homework_prompt)
+
+
+def test_no_memory_context_means_no_memory_section():
+    prompt = build_system_prompt("Baseline.", None, None, memory_context=None)
+
+    assert prompt == "Baseline."
+
+
+def test_omitting_memory_context_keyword_preserves_old_three_arg_behavior():
+    """Every pre-Stage-6 positional call site (`build_system_prompt(base,
+    course, mode_instructions)`) must keep working unchanged."""
+    course = CourseContext(name="Physics")
+    homework_prompt = get_mode_prompt(TeachingMode.HOMEWORK)
+
+    with_memory_none = build_system_prompt("Baseline.", course, homework_prompt)
+    with_explicit_none = build_system_prompt("Baseline.", course, homework_prompt, memory_context=None)
+    assert with_memory_none == with_explicit_none
+
+
+def test_memory_context_and_course_and_mode_all_compose_independently():
+    course = CourseContext(name="Physics", code="PHY 215")
+    homework_prompt = get_mode_prompt(TeachingMode.HOMEWORK)
+    memory_text = "Learning memory:\n- Needs review: Vectors — mixes x/y."
+
+    prompt = build_system_prompt("Baseline.", course, homework_prompt, memory_context=memory_text)
+
+    assert "Baseline." in prompt
+    assert "Physics" in prompt
+    assert "PHY 215" in prompt
+    assert memory_text in prompt
+    assert homework_prompt in prompt

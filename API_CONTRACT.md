@@ -101,8 +101,12 @@ Errors are JSON with a stable, machine-readable `code` and a human-readable
 | `CHAT_NOT_FOUND` | 404 | No chat with that id exists. |
 | `CHAT_BUSY` | — (WebSocket `error` event) | That chat already has a generation (`send_message`) in progress on some connection; this one was rejected rather than allowed to race it — see "Concurrency and chat identity" below. Retry once the first one finishes. |
 | `COURSE_NOT_FOUND` | 404 | No course with that id exists. |
+| `MEMORY_NOT_FOUND` | 404 | No learning memory with that id exists. |
+| `MEMORY_CONFLICT` | 409 | Creating/reactivating this memory would produce two *active* memories with the same normalized topic and kind in the same scope — see "Learning memory" below. |
 | `INVALID_MODE` | 422 | The `mode` string isn't a recognized teaching mode. |
 | `INVALID_REASONING_MODE` | 422 | The `reasoningMode` string isn't a recognized reasoning mode. |
+| `INVALID_MEMORY_KIND` | 422 | The `kind` string isn't one of the five recognized learning-memory kinds. |
+| `INVALID_MEMORY_STATUS` | 422 | The `status` filter isn't `active` or `archived`. |
 | `MODEL_UNAVAILABLE` | — | Reported via `GET /health`'s `providerReachable: false`, not as an error response — see below. |
 | `MODEL_ERROR` | — (WebSocket `error` event) | The model failed to produce a response (connection issue, missing model, timeout, ...). Covers every generation-time failure uniformly; `message` carries the same user-safe detail text `OllamaModel` already produces for the CLI (e.g. the exact `ollama pull ...` command for a missing model). There is no finer-grained code because the underlying domain exception (`ModelError`) doesn't currently distinguish sub-cases either — see "Known limitations". |
 | `VALIDATION_ERROR` | 422 | A business-rule validation failed (e.g. an empty course/chat name) or a WebSocket message was malformed. |
@@ -276,6 +280,129 @@ etc. — but that's a terminal-only convenience built on top of the same
 explicit-by-id operations; it was never something the API needed and
 nothing here depends on it.)
 
+### Learning memory (Stage 6)
+
+```
+GET    /api/v1/memory-kinds                         -> [MemoryKindInfoOut]
+GET    /api/v1/memories?course_id=...&kind=...&status=...  -> [LearningMemoryOut]
+POST   /api/v1/memories                              <- LearningMemoryCreateIn  -> LearningMemoryOut (201)
+GET    /api/v1/memories/{id}                         -> LearningMemoryOut
+PATCH  /api/v1/memories/{id}                         <- LearningMemoryUpdateIn  -> LearningMemoryOut
+POST   /api/v1/memories/{id}/archive                 -> LearningMemoryOut
+POST   /api/v1/memories/{id}/restore                 -> LearningMemoryOut
+DELETE /api/v1/memories/{id}                         -> 204
+```
+
+```jsonc
+// MemoryKindInfoOut — GET /memory-kinds always returns exactly these five
+[{"id": "understands", "displayName": "Understands", "description": "..."},
+ {"id": "needs_review", "displayName": "Needs review", "description": "..."},
+ {"id": "misconception", "displayName": "Misconception", "description": "..."},
+ {"id": "learning_goal", "displayName": "Goal", "description": "..."},
+ {"id": "useful_strategy", "displayName": "Helpful approach", "description": "..."}]
+
+// LearningMemoryOut
+{
+  "id": "...", "courseId": "..." | null, "sourceChatId": "..." | null,
+  "topic": "Vector components", "kind": "needs_review",
+  "summary": "Often mixes x/y components.", "status": "active",
+  "createdAt": "...", "updatedAt": "..."
+}
+
+// LearningMemoryCreateIn
+{ "topic": "...", "kind": "needs_review", "summary": "...",
+  "courseId": null, "sourceChatId": null }
+
+// LearningMemoryUpdateIn (PATCH — every field optional; see below)
+{ "topic": "...", "kind": "...", "summary": "...", "courseId": "..." | null }
+```
+
+**What this is, and what it isn't:** a learning memory is one deliberately
+recorded, durable piece of learning information ("needs review: vector
+components", "understands significant figures") — completely separate from
+chat history, which just answers "what was said?". Clearing or deleting a
+chat never destroys a memory it produced (see `sourceChatId` below). This
+is **not** a mastery/scoring engine: there is no percentage, numeric
+weight, or aggregation anywhere in this API, deliberately — see the main
+README's "Learning memory" section for the full rationale.
+
+**The five kinds are a closed, strict set** (`understands`, `needs_review`,
+`misconception`, `learning_goal`, `useful_strategy`) — always fetch them
+from `GET /memory-kinds` rather than hardcoding them, exactly like teaching
+modes. `status` is `active` or `archived`; archiving (not deleting) is the
+normal way a memory is retired — a superseded memory is still visible via
+`?status=archived`, never silently lost. `DELETE` is a separate, explicit
+hard delete.
+
+**Course scope:** `courseId: null` means a genuinely general/global memory
+(shown in every course's context, and in a General chat's), not the common
+case — most memories should belong to a course. A course-scoped memory
+never appears in a different course's context, no matter how similar the
+wording (see "Context injection" below).
+
+**`sourceChatId` is provenance only.** It records which chat (if any)
+produced a memory, but the memory's validity never depends on that chat
+still existing: clearing or deleting the source chat leaves the memory
+completely intact and simply sets `sourceChatId` to `null` (`ON DELETE SET
+NULL`, like `chats.courseId` → `courses.id`). The same is true for
+`courseId` if its course is deleted. Neither foreign key ever cascades a
+delete into a memory.
+
+**`PATCH` is a true partial update**, unlike course's full-replace `PUT`:
+omit a field to leave it unchanged. `topic`/`kind`/`summary` additionally
+treat an explicit `null` the same as omission (a valid value can never
+legitimately be `null`). `courseId` is the one field where explicit `null`
+is meaningful (unassign to General) and distinct from omitting it
+(leave unchanged) — send the key only when you actually want to change it.
+
+**Duplicate and conflict policy (deliberately simple — no fuzzy/semantic
+matching in Stage 6):** topics are compared case-insensitively with
+whitespace collapsed, within one scope (the same `courseId`, including
+`null`==`null` for global).
+- Creating (or restoring) an *active* memory whose normalized topic and
+  exact kind already has an active match in that scope is rejected with
+  `MEMORY_CONFLICT` — edit the existing memory via `PATCH` instead of
+  creating a duplicate.
+- Creating (or restoring) an *active* memory whose normalized topic
+  matches an active memory in an **opposing** learning state (`understands`
+  vs. `needs_review`/`misconception`) automatically **archives** the
+  superseded one — learning changes, and the old state is preserved via
+  archiving, never silently kept active forever or hard-deleted.
+  `learning_goal`/`useful_strategy` never oppose anything or trigger this.
+- Anything else (different topic, or a different non-opposing kind on the
+  same topic, e.g. an existing `needs_review` alongside a new
+  `learning_goal`) creates normally, with no conflict.
+
+**Context injection into chat responses:** every chat request (both the
+WebSocket `send_message` path and the CLI) automatically includes a
+compact block of that chat's course's active memories (plus any global
+ones) in the model's system prompt — there is no separate API call needed
+to "activate" memory for a chat, and no way to turn it off per-request. At
+most 12 entries and roughly 1200 characters are included, most recently
+updated first, course-specific entries preferred over global ones — never
+the full memory history. This costs well under a millisecond of extra
+request-preparation time regardless of how many memories exist (measured;
+see the main README's "Performance" notes), so it never materially affects
+first-token latency. The model is instructed to use this context
+*naturally* (adjust explanations, don't over-simplify a topic the student
+already understands) and never to mention the list explicitly or say
+things like "according to your records" — but it never overrides an
+explicit current instruction (e.g. Quick Answer mode still answers
+quickly, even with a "needs review" memory for the topic asked about).
+Nothing about this is visible in `MessageOut`/`message_completed` — the
+composed context is injected the same way course context and teaching-mode
+instructions already were, and is never itself persisted as a chat
+message.
+
+**No automatic extraction (deliberate, for now):** nothing in this API
+calls a model to generate a learning memory automatically after a chat
+response. Every memory is created by an explicit `POST /memories` — driven
+by the user (a "Save to Learning Memory" action in the Flutter app) or a
+future application feature, but never as a hidden side effect of sending a
+message. This is a deliberate Stage 6 scope decision, not a technical
+limitation — see "Deferred" in the Stage 6 report for what a later stage
+might add here.
+
 ### WebSocket streaming chat
 
 ```
@@ -443,3 +570,8 @@ codebase. The API adds no exception to that. Specifically:
 - The per-chat generation lock (`CHAT_BUSY`, Stage 5.8) never logs prompt
   or response content — only a chat id and lock/busy state are ever
   eligible for debug-level logging, never message content.
+- Learning memory (Stage 6) topic/summary text is never logged, including
+  when it's composed into a chat's system prompt — only a memory id, kind,
+  course id, and status transition (e.g. active → archived) are ever
+  eligible for debug-level logging (verified by test, including a memory
+  actually injected into a real chat request).
