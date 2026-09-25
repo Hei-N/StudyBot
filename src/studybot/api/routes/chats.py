@@ -1,18 +1,22 @@
-"""Chat endpoints — thin translation onto the existing `SessionService`.
+"""Chat endpoints — thin translation onto `SessionService`'s explicit-by-id
+operations (Stage 5.8).
 
-Architectural note (active-session limitation, documented rather than
-"fixed" — see API_CONTRACT.md): `SessionService` was designed around one
-mutable "active chat" cursor per process (see its module docstring). Reads
-that don't need a live `ChatService` (list/get/history) use the stateless
-`get_chat`/`get_chat_history_records` passthroughs added for this API and
-never touch that cursor. Writes that inherently operate through the active
-chat (rename/clear/delete/move/mode) switch the cursor to the requested
-`chat_id` first via `_activate()` below — safe and correct for the single
-engine-process-per-app-instance model this stage targets, but requests
-targeting *different* chat ids are not safe to interleave concurrently
-against one running server process. Every call to `SessionService`/
-`CourseService` is dispatched via `Engine.call` — see `api/engine.py` for
-why (SQLite connection thread-affinity).
+Every route below addresses its chat purely by the `chat_id` in the URL,
+via `SessionService`'s explicit layer (`send_to_chat`, `rename_chat`,
+`set_teaching_mode_for_chat`, ...) — never the CLI-style active-chat
+cursor. This is deliberate: an earlier version of this file switched a
+single mutable "active chat" to `chat_id` before every write (see
+API_CONTRACT.md's git history / Stage 5.7 report for the old
+`_activate()` helper), which made two different chat ids unsafe to
+interleave against one running server process — creating a second chat
+before the first had ever been messaged could silently evict the first's
+unpersisted in-memory state and make it 404. `SessionService.create_chat`
+now always persists immediately, and the explicit layer always loads a
+chat fresh from the repository by id, so no such coupling exists anymore.
+
+Every call to `SessionService`/`CourseService` is dispatched via
+`Engine.call` — see `api/engine.py` for why (SQLite connection thread
+affinity), not for chat-cursor safety.
 """
 
 from __future__ import annotations
@@ -40,28 +44,12 @@ from studybot.api.schemas import (
     MessageOut,
     ModeInfoOut,
 )
-from studybot.core.exceptions import SessionError
+from studybot.core.exceptions import ChatNotFoundError, SessionError
 from studybot.core.reasoning_mode import get_mode_info as get_reasoning_mode_info
 from studybot.core.reasoning_mode import parse_reasoning_mode
 from studybot.core.teaching_mode import get_mode_info, parse_teaching_mode
 
 router = APIRouter(dependencies=[Depends(require_token)])
-
-
-async def _activate(engine: Engine, chat_id: str) -> None:
-    """Make `chat_id` the process's active chat if it isn't already.
-
-    Chat ids are full stable UUIDs (never CLI-style short prefixes) here,
-    so this always resolves exactly or not at all — see the module
-    docstring for the concurrency caveat this implies.
-    """
-    active = await engine.call(lambda: engine.app.sessions.active_session)
-    if active.id == chat_id:
-        return
-    try:
-        await engine.call(engine.app.sessions.open_chat, chat_id)
-    except SessionError as exc:
-        raise ApiError(404, CHAT_NOT_FOUND, f"No chat found with id '{chat_id}'.") from exc
 
 
 @router.get("/chats", response_model=list[ChatOut])
@@ -84,9 +72,10 @@ async def create_chat(body: ChatCreateIn, engine: Engine = Depends(get_engine)) 
         course = await engine.call(engine.app.courses.get_course, body.course_id)
         if course is None:
             raise ApiError(404, COURSE_NOT_FOUND, f"No course found with id '{body.course_id}'.")
-    # Explicit, not the CLI's "inherit whatever's currently active" default
-    # — a stateless API call always gets exactly the course it asked for.
-    chat = await engine.call(engine.app.sessions.new_chat, body.course_id)
+    # Immediately persisted (Stage 5.8) — the returned id is a real row
+    # from this point on, addressable by every route below even with zero
+    # messages, unlike the CLI's lazy `/new`.
+    chat = await engine.call(engine.app.sessions.create_chat, body.course_id)
     return chat_to_out(chat)
 
 
@@ -108,9 +97,10 @@ async def get_chat_messages(chat_id: str, engine: Engine = Depends(get_engine)) 
 
 @router.put("/chats/{chat_id}/rename", response_model=ChatOut)
 async def rename_chat(chat_id: str, body: ChatRenameIn, engine: Engine = Depends(get_engine)) -> ChatOut:
-    await _activate(engine, chat_id)
     try:
-        chat = await engine.call(engine.app.sessions.rename_active_chat, body.title)
+        chat = await engine.call(engine.app.sessions.rename_chat, chat_id, body.title)
+    except ChatNotFoundError as exc:
+        raise ApiError(404, CHAT_NOT_FOUND, str(exc)) from exc
     except SessionError as exc:
         raise ApiError(422, VALIDATION_ERROR, str(exc)) from exc
     return chat_to_out(chat)
@@ -118,25 +108,29 @@ async def rename_chat(chat_id: str, body: ChatRenameIn, engine: Engine = Depends
 
 @router.post("/chats/{chat_id}/clear", response_model=ChatOut)
 async def clear_chat(chat_id: str, engine: Engine = Depends(get_engine)) -> ChatOut:
-    await _activate(engine, chat_id)
-    await engine.call(engine.app.sessions.clear_active_chat)
-    chat = await engine.call(lambda: engine.app.sessions.active_session)
+    try:
+        chat = await engine.call(engine.app.sessions.clear_chat, chat_id)
+    except ChatNotFoundError as exc:
+        raise ApiError(404, CHAT_NOT_FOUND, str(exc)) from exc
     return chat_to_out(chat)
 
 
 @router.delete("/chats/{chat_id}", status_code=204, response_model=None)
 async def delete_chat(chat_id: str, engine: Engine = Depends(get_engine)) -> None:
-    await _activate(engine, chat_id)
-    await engine.call(engine.app.sessions.delete_active_chat)
+    try:
+        await engine.call(engine.app.sessions.delete_chat, chat_id)
+    except ChatNotFoundError as exc:
+        raise ApiError(404, CHAT_NOT_FOUND, str(exc)) from exc
 
 
 @router.put("/chats/{chat_id}/course", response_model=ChatOut)
 async def assign_chat_course(
     chat_id: str, body: ChatCourseIn, engine: Engine = Depends(get_engine)
 ) -> ChatOut:
-    await _activate(engine, chat_id)
     try:
-        chat = await engine.call(engine.app.sessions.move_active_chat_to_course, body.course_id)
+        chat = await engine.call(engine.app.sessions.assign_course_to_chat, chat_id, body.course_id)
+    except ChatNotFoundError as exc:
+        raise ApiError(404, CHAT_NOT_FOUND, str(exc)) from exc
     except SessionError as exc:
         raise ApiError(404, COURSE_NOT_FOUND, str(exc)) from exc
     return chat_to_out(chat)
@@ -144,37 +138,43 @@ async def assign_chat_course(
 
 @router.get("/chats/{chat_id}/mode", response_model=ModeInfoOut)
 async def get_chat_mode(chat_id: str, engine: Engine = Depends(get_engine)) -> ModeInfoOut:
-    await _activate(engine, chat_id)
-    mode = await engine.call(engine.app.sessions.get_teaching_mode)
-    return mode_info_to_out(get_mode_info(mode))
+    chat = await engine.call(engine.app.sessions.get_chat, chat_id)
+    if chat is None:
+        raise ApiError(404, CHAT_NOT_FOUND, f"No chat found with id '{chat_id}'.")
+    return mode_info_to_out(get_mode_info(chat.teaching_mode))
 
 
 @router.put("/chats/{chat_id}/mode", response_model=ModeInfoOut)
 async def set_chat_mode(chat_id: str, body: ChatModeIn, engine: Engine = Depends(get_engine)) -> ModeInfoOut:
-    await _activate(engine, chat_id)
     try:
         mode = parse_teaching_mode(body.mode)
     except ValueError as exc:
         raise ApiError(422, INVALID_MODE, f"Unknown teaching mode: {body.mode!r}") from exc
-    await engine.call(engine.app.sessions.set_teaching_mode, mode)
+    try:
+        await engine.call(engine.app.sessions.set_teaching_mode_for_chat, chat_id, mode)
+    except ChatNotFoundError as exc:
+        raise ApiError(404, CHAT_NOT_FOUND, str(exc)) from exc
     return mode_info_to_out(get_mode_info(mode))
 
 
 @router.get("/chats/{chat_id}/reasoning-mode", response_model=ModeInfoOut)
 async def get_chat_reasoning_mode(chat_id: str, engine: Engine = Depends(get_engine)) -> ModeInfoOut:
-    await _activate(engine, chat_id)
-    mode = await engine.call(engine.app.sessions.get_reasoning_mode)
-    return reasoning_mode_info_to_out(get_reasoning_mode_info(mode))
+    chat = await engine.call(engine.app.sessions.get_chat, chat_id)
+    if chat is None:
+        raise ApiError(404, CHAT_NOT_FOUND, f"No chat found with id '{chat_id}'.")
+    return reasoning_mode_info_to_out(get_reasoning_mode_info(chat.reasoning_mode))
 
 
 @router.put("/chats/{chat_id}/reasoning-mode", response_model=ModeInfoOut)
 async def set_chat_reasoning_mode(
     chat_id: str, body: ChatReasoningModeIn, engine: Engine = Depends(get_engine)
 ) -> ModeInfoOut:
-    await _activate(engine, chat_id)
     try:
         mode = parse_reasoning_mode(body.reasoning_mode)
     except ValueError as exc:
         raise ApiError(422, INVALID_REASONING_MODE, f"Unknown reasoning mode: {body.reasoning_mode!r}") from exc
-    await engine.call(engine.app.sessions.set_reasoning_mode, mode)
+    try:
+        await engine.call(engine.app.sessions.set_reasoning_mode_for_chat, chat_id, mode)
+    except ChatNotFoundError as exc:
+        raise ApiError(404, CHAT_NOT_FOUND, str(exc)) from exc
     return reasoning_mode_info_to_out(get_reasoning_mode_info(mode))

@@ -1,4 +1,4 @@
-# Study Bot (v0.2, Stage 5.7 — Response Speed / Reasoning Policy)
+# Study Bot (v0.2, Stage 5.8 — Stateless Multi-Chat API / Session Architecture)
 
 A local-first personal study assistant. **Stage 5.5** added a local HTTP +
 WebSocket API (`python -m studybot.api`) in front of the same engine the
@@ -6,12 +6,17 @@ CLI uses; **Stage 5.6** added the first real product UI on top of it — a
 Flutter desktop/mobile app at [`frontend/studybot_app/`](frontend/studybot_app/)
 (primary target macOS) that drives Study Bot entirely through that API,
 knowing nothing about SQLite, Ollama, or Python internals. **Stage 5.7**
-adds an explicit, per-chat **reasoning mode** (Fast/Deep Think) so the app
+added an explicit, per-chat **reasoning mode** (Fast/Deep Think) so the app
 no longer leaves Qwen3's "thinking" behavior implicit — see "Reasoning
-modes" below. The CLI (`python -m studybot`) is unchanged and keeps
-working exactly as before — these are two interfaces onto the same core,
-not a replacement. See **[API_CONTRACT.md](API_CONTRACT.md)** for the full
-API reference (endpoints, the WebSocket protocol, error codes, auth).
+modes" below. **Stage 5.8** removed the API's last remaining coupling to a
+single mutable "active chat" per process: every chat-specific HTTP/
+WebSocket operation now addresses its `chat_id` explicitly and is safe to
+interleave with operations on any other chat, in any order — see
+"Explicit chat-id operations" below. The CLI (`python -m studybot`) is
+unchanged and keeps working exactly as before — these are two interfaces
+onto the same core, not a replacement. See
+**[API_CONTRACT.md](API_CONTRACT.md)** for the full API reference
+(endpoints, the WebSocket protocol, error codes, auth).
 
 Teaching modes (Teach, Homework, Quick Answer, Practice, Exam — one active
 per chat, prompt-based, added in Stage 5) and course organization (Stage 4)
@@ -523,23 +528,36 @@ Key modules:
   there's no scattered string concatenation elsewhere
 - `src/studybot/core/titles.py` — deterministic, local chat-title
   generation from a chat's first message (no LLM call)
-- `src/studybot/core/chat.py` — `ChatService`: in-memory history for the
-  active chat, `send`/`send_streaming`, `clear`, `get_status`; can be
-  seeded with restored history via its `history=` constructor argument
-- `src/studybot/core/session_service.py` — `SessionService`: owns the
-  active chat (and, implicitly, its course and teaching-mode context,
-  both derived from fields on `active_session` — there is no separate
-  "active course"/"active mode" state to fall out of sync),
-  creates/lists/opens/renames/deletes/moves chats, exposes
-  `get_teaching_mode()`/`set_teaching_mode()`, and persists new messages
-  after each successful `ChatService` call by diffing its history
-  before/after
+- `src/studybot/core/chat.py` — `ChatService`: in-memory history for one
+  chat, `send`/`send_streaming`, `clear`, `get_status`; can be seeded with
+  restored history via its `history=` constructor argument; stateless
+  enough to be freely (re)constructed per request, which is exactly what
+  `SessionService`'s explicit-by-id layer does
+- `src/studybot/core/session_service.py` — `SessionService`: two layers
+  over the same storage (Stage 5.8). The **active-chat convenience layer**
+  (unchanged since earlier stages) owns one mutable "current chat" per
+  process — `new_chat`/`open_chat`/`send`/`send_streaming`/
+  `get_teaching_mode()`/`set_teaching_mode()`/etc. — exactly what the CLI
+  needs. The **explicit-by-id layer**
+  (`create_chat`/`send_to_chat`/`send_streaming_to_chat`/`rename_chat`/
+  `set_teaching_mode_for_chat`/`assign_course_to_chat`/...) takes a
+  `chat_id` and operates on exactly that chat, loaded fresh from the
+  repository every call, with no cursor involved — this is what the API
+  layer is built on. A per-chat `threading.Lock` (`_chat_lock`) rejects a
+  second concurrent generation for the same chat id with `ChatBusyError`
+  rather than letting two replies race; different chat ids are never
+  blocked by each other. Both layers persist new messages the same way:
+  by diffing a `ChatService`'s history before/after each call.
 - `src/studybot/core/course_service.py` — `CourseService`: course
   validation (name required and length-limited; optional fields trimmed;
   full Unicode support) and CRUD, independent of `SessionService`
-- `src/studybot/core/exceptions.py` — `StudyBotError` and subclasses,
-  including `SessionError` for chat/course navigation or validation
-  problems (not found, ambiguous id prefix, empty name, ...)
+- `src/studybot/core/exceptions.py` — `StudyBotError` and subclasses:
+  `SessionError` for chat/course navigation or validation problems (not
+  found, ambiguous id prefix, empty name, ...); `ChatNotFoundError` (a
+  `SessionError` subtype, Stage 5.8) specifically for an explicit-by-id
+  operation on a chat that doesn't exist, so the API can map it to
+  `CHAT_NOT_FOUND` precisely; `ChatBusyError` for the per-chat generation
+  lock above
 - `src/studybot/models/` — unchanged since Stage 2 (`ModelProvider`,
   `MockModel`, `OllamaModel`, the provider factory); `OllamaModel` has no
   awareness of courses, teaching modes, or SQLite
@@ -644,8 +662,12 @@ clears messages, creates a new chat, or alters the chat's course or title.
 The Flutter app at [`frontend/studybot_app/`](frontend/studybot_app/) now
 covers courses, chats, teaching modes, reasoning modes, and streaming
 conversation end to end, with control over Ollama's thinking behavior
-(Stage 5.7) so simple prompts answer materially faster by default.
-Persistent long-term learning memory, mastery tracking, RAG over
-PDFs/notes/slides, embeddings, image/screenshot understanding, quizzes,
-and eventually device/tool access are all still future work — none of
-which exists yet, in either the API or the Flutter app.
+(Stage 5.7) so simple prompts answer materially faster by default, and
+(Stage 5.8) an API that no longer depends on a single mutable "active
+chat" per process — every chat-specific operation addresses its `chat_id`
+explicitly and safely, regardless of what other chats exist or have been
+touched in between. Persistent long-term learning memory, mastery
+tracking, RAG over PDFs/notes/slides, embeddings, image/screenshot
+understanding, quizzes, and eventually device/tool access are all still
+future work — none of which exists yet, in either the API or the Flutter
+app.

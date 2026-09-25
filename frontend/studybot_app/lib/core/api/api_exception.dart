@@ -4,8 +4,10 @@
 /// — `message` is human-readable and fine to display, but not a contract.
 abstract final class ApiErrorCode {
   static const chatNotFound = 'CHAT_NOT_FOUND';
+  static const chatBusy = 'CHAT_BUSY';
   static const courseNotFound = 'COURSE_NOT_FOUND';
   static const invalidMode = 'INVALID_MODE';
+  static const invalidReasoningMode = 'INVALID_REASONING_MODE';
   static const modelError = 'MODEL_ERROR';
   static const validationError = 'VALIDATION_ERROR';
   static const unauthorized = 'UNAUTHORIZED';

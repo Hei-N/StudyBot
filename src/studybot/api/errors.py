@@ -9,6 +9,7 @@ unexpected exceptions server-side and returns `INTERNAL_ERROR` instead.
 from __future__ import annotations
 
 CHAT_NOT_FOUND = "CHAT_NOT_FOUND"
+CHAT_BUSY = "CHAT_BUSY"
 COURSE_NOT_FOUND = "COURSE_NOT_FOUND"
 INVALID_MODE = "INVALID_MODE"
 INVALID_REASONING_MODE = "INVALID_REASONING_MODE"

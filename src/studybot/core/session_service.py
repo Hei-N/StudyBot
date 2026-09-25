@@ -32,18 +32,60 @@ at all; it's passed straight through to `ChatService`/`ModelProvider` as an
 inference-time preference (see `core.reasoning_mode`), since it controls
 *how* the model answers (thinking depth/latency), not *what instructions*
 it's given.
+
+Two layers (Stage 5.8):
+
+Every method above this point in the file is the **active-chat
+convenience layer**: it reads/mutates `self._active_session`/`self._chat`,
+a single mutable "current chat" cursor. This is exactly what a terminal
+user needs (`/new`, `/open`, `/mode`, ...) and the CLI is built entirely
+on it — nothing about it changes in this stage, including its one
+CLI-only convenience: a brand-new chat lives only in memory
+(`_active_persisted = False`) until its first message arrives, so
+launching the app and quitting without chatting never writes an empty
+"Untitled" row.
+
+Below the "--- explicit chat-id operations ---" marker is the **explicit
+layer** the API is built on instead: every method takes a `chat_id` and
+operates on exactly that chat, loaded fresh from `self._repository` on
+every call — never the cursor, never `self._chat`. This is what fixes the
+real bug Stage 5.8 exists for: two API requests for two different chats
+used to be unsafe to interleave, because both went through the *same*
+mutable cursor (`_activate()`'s `open_chat(chat_id)` in the old API
+routes) — creating chat B while chat A was still an unpersisted,
+in-memory-only "pending" chat silently evicted A before it ever got a
+row, so sending to A afterward 404'd. The explicit layer has no cursor to
+evict: every explicit chat is required to already be a persisted row
+(`create_chat` below always persists immediately, unlike the CLI's
+`new_chat`), so any explicit method can address it at any time, in any
+order, regardless of what other chats have been created or messaged in
+between.
+
+Where a convenience method's persisted-chat behavior is now identical to
+an explicit one (rename, clear, delete, mode changes, course
+reassignment), it delegates to the explicit method rather than
+duplicating the repository call — see e.g. `rename_active_chat`. `send`/
+`send_streaming` are the one deliberate exception: they keep their
+existing self._chat-based implementation rather than delegating to
+`send_to_chat`/`send_streaming_to_chat`, because the CLI's lazy
+(not-yet-persisted) chat has no row for the explicit layer to load, and
+rebuilding `ChatService` from a fresh repository read on every CLI turn
+would add a DB round-trip per keystroke of conversation for a
+single-user, strictly-sequential process that never needs the explicit
+layer's per-chat locking anyway (see `_chat_locks` below).
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Iterator, Sequence
 
 from studybot.core.chat import ChatService
 from studybot.core.context import CourseContext, build_system_prompt
-from studybot.core.exceptions import SessionError
+from studybot.core.exceptions import ChatBusyError, ChatNotFoundError, SessionError
 from studybot.core.messages import Message, Role
 from studybot.core.mode_prompts import get_mode_prompt
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
@@ -79,6 +121,14 @@ class SessionService:
         self._active_persisted: bool
         self._chat: ChatService
         self._activate_most_recent_or_new()
+        # Per-chat generation locks for the explicit layer (see module
+        # docstring) — guards against two overlapping `send_to_chat`/
+        # `send_streaming_to_chat` calls for the *same* chat id racing to
+        # append messages in a nondeterministic order. `_chat_locks_guard`
+        # only protects creating a new per-chat `Lock` entry; it is not a
+        # substitute for the per-chat locks themselves.
+        self._chat_locks: dict[str, threading.Lock] = {}
+        self._chat_locks_guard = threading.Lock()
 
     # --- active chat -------------------------------------------------------
 
@@ -198,9 +248,7 @@ class SessionService:
             course_id = self._resolve_course(id_or_prefix).id
 
         if self._active_persisted:
-            self._active_session = self._repository.move_chat_to_course(
-                self._active_session.id, course_id
-            )
+            self._active_session = self.assign_course_to_chat(self._active_session.id, course_id)
         else:
             self._active_session.course_id = course_id
 
@@ -265,13 +313,12 @@ class SessionService:
         return matches[0]
 
     def rename_active_chat(self, title: str) -> ChatSession:
-        title = " ".join(title.split())
-        if not title:
-            raise SessionError("A chat title cannot be empty.")
-
         if self._active_persisted:
-            self._active_session = self._repository.rename_chat(self._active_session.id, title)
+            self._active_session = self.rename_chat(self._active_session.id, title)
         else:
+            title = " ".join(title.split())
+            if not title:
+                raise SessionError("A chat title cannot be empty.")
             self._active_session.title = title
         return self._active_session
 
@@ -287,7 +334,7 @@ class SessionService:
         deleted = self._active_session
         course_id = deleted.course_id
         if self._active_persisted:
-            self._repository.delete_chat(deleted.id)
+            self.delete_chat(deleted.id)
 
         if course_id is not None:
             remaining = self._repository.list_chats_by_course(course_id)
@@ -308,7 +355,7 @@ class SessionService:
         user/assistant turns are removed.
         """
         if self._active_persisted:
-            self._repository.clear_messages(self._active_session.id)
+            self.clear_chat(self._active_session.id)
         self._chat = ChatService(
             model=self._model,
             system_prompt=self._effective_system_prompt(
@@ -330,7 +377,7 @@ class SessionService:
         message is (or should be) added to conversation history for this.
         """
         if self._active_persisted:
-            self._active_session = self._repository.set_teaching_mode(self._active_session.id, mode)
+            self._active_session = self.set_teaching_mode_for_chat(self._active_session.id, mode)
         else:
             self._active_session.teaching_mode = mode
         self._rebuild_chat_service_preserving_history()
@@ -350,7 +397,7 @@ class SessionService:
         history for this.
         """
         if self._active_persisted:
-            self._active_session = self._repository.set_reasoning_mode(self._active_session.id, mode)
+            self._active_session = self.set_reasoning_mode_for_chat(self._active_session.id, mode)
         else:
             self._active_session.reasoning_mode = mode
         self._rebuild_chat_service_preserving_history()
@@ -408,10 +455,174 @@ class SessionService:
             )
             self._active_persisted = True
 
-        for message in messages:
-            self._repository.append_message(self._active_session.id, message.role, message.content)
-            if message.role is Role.USER and self._active_session.title is None:
-                title = generate_title(message.content)
-                self._active_session = self._repository.rename_chat(self._active_session.id, title)
+        self._active_session = self._persist_new_messages_for(
+            self._active_session.id, self._active_session, messages
+        )
 
-        self._active_session = self._repository.touch_chat(self._active_session.id)
+    def _persist_new_messages_for(
+        self, chat_id: str, session: ChatSession, messages: Sequence[Message]
+    ) -> ChatSession:
+        """Append newly generated messages to an *already-persisted* chat by
+        id, filling in the title from the first user turn if it doesn't
+        have one yet. Shared by the active-session convenience path above
+        (after it has ensured the chat has a row) and every explicit-by-id
+        send below (which, unlike the CLI's lazy chats, always starts from
+        an already-persisted chat — see `create_chat`)."""
+        if not messages:
+            return session
+
+        for message in messages:
+            self._repository.append_message(chat_id, message.role, message.content)
+            if message.role is Role.USER and session.title is None:
+                session = self._repository.rename_chat(chat_id, generate_title(message.content))
+
+        return self._repository.touch_chat(chat_id)
+
+    def _require_chat(self, chat_id: str) -> ChatSession:
+        session = self._repository.get_chat(chat_id)
+        if session is None:
+            raise ChatNotFoundError(f"No chat found with id '{chat_id}'.")
+        return session
+
+    def _chat_lock(self, chat_id: str) -> threading.Lock:
+        with self._chat_locks_guard:
+            lock = self._chat_locks.get(chat_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._chat_locks[chat_id] = lock
+            return lock
+
+    # --- explicit chat-id operations (Stage 5.8) --------------------------------
+    #
+    # Every method below takes a `chat_id` and operates on exactly that
+    # chat, loaded fresh from `self._repository` — never the active-chat
+    # cursor above. This is what the API layer (`api/routes/chats.py`,
+    # `api/websocket.py`) is built on: no operation here requires "opening"
+    # a chat first, and no two explicit operations for different chat ids
+    # can interfere with each other. See the module docstring for the full
+    # rationale.
+
+    def create_chat(self, course_id: str | None = None) -> ChatSession:
+        """Create a new, empty chat that is a real, persisted row the
+        instant this returns (API-facing).
+
+        Unlike `new_chat` (the CLI's lazy convenience creation, which only
+        writes a row once the first message arrives, so a terminal chat
+        opened and abandoned leaves no trace), an explicit chat must be
+        addressable by every method below immediately, even with zero
+        messages — an API client that creates two chats before messaging
+        either one must never lose the first. Never touches the CLI's
+        active-chat cursor. Course existence is the caller's
+        responsibility (the API route validates it before calling this,
+        matching how it already validated it before `new_chat`).
+        """
+        chat_id = str(uuid.uuid4())
+        return self._repository.create_chat(chat_id, None, course_id, DEFAULT_TEACHING_MODE, DEFAULT_REASONING_MODE)
+
+    def get_chat_history(self, chat_id: str) -> list[Message]:
+        """The model-ready message history for one chat by id (no system
+        message — same contract as `ChatRepository.load_messages`)."""
+        self._require_chat(chat_id)
+        return self._repository.load_messages(chat_id)
+
+    def rename_chat(self, chat_id: str, title: str) -> ChatSession:
+        self._require_chat(chat_id)
+        title = " ".join(title.split())
+        if not title:
+            raise SessionError("A chat title cannot be empty.")
+        return self._repository.rename_chat(chat_id, title)
+
+    def clear_chat(self, chat_id: str) -> ChatSession:
+        """Remove one chat's messages by id; the chat row itself is kept."""
+        session = self._require_chat(chat_id)
+        self._repository.clear_messages(chat_id)
+        return session
+
+    def delete_chat(self, chat_id: str) -> ChatSession:
+        """Delete one chat by id. Unlike `delete_active_chat`, this never
+        activates a replacement — there is no cursor here to move."""
+        session = self._require_chat(chat_id)
+        self._repository.delete_chat(chat_id)
+        return session
+
+    def assign_course_to_chat(self, chat_id: str, course_id: str | None) -> ChatSession:
+        """Reassign one chat's course by id (`None` = unassign to
+        General). `course_id` must be exact — unlike the CLI's
+        `move_active_chat_to_course`, there is no id-prefix resolution
+        here; API clients always send full ids."""
+        self._require_chat(chat_id)
+        if course_id is not None and self._course_repository.get_course(course_id) is None:
+            raise SessionError(f"No course found with id '{course_id}'.")
+        return self._repository.move_chat_to_course(chat_id, course_id)
+
+    def set_teaching_mode_for_chat(self, chat_id: str, mode: TeachingMode) -> ChatSession:
+        self._require_chat(chat_id)
+        return self._repository.set_teaching_mode(chat_id, mode)
+
+    def set_reasoning_mode_for_chat(self, chat_id: str, mode: ReasoningMode) -> ChatSession:
+        self._require_chat(chat_id)
+        return self._repository.set_reasoning_mode(chat_id, mode)
+
+    def send_to_chat(self, chat_id: str, user_input: str) -> Message:
+        """Send one message to a specific, already-persisted chat and
+        return the assistant's reply, without touching the active-chat
+        cursor or any other chat's state.
+
+        Builds a fresh `ChatService` from exactly this chat's own
+        persisted history, course, and teaching/reasoning mode — never
+        whatever happens to be cached for the active chat — so it is safe
+        to call for chat A right after (or interleaved with) creating or
+        messaging a completely different chat B. Raises `ChatBusyError`
+        instead of running if this chat already has a generation in
+        flight (see `_chat_lock`).
+        """
+        session = self._require_chat(chat_id)
+        lock = self._chat_lock(chat_id)
+        if not lock.acquire(blocking=False):
+            raise ChatBusyError(f"Chat '{chat_id}' already has a generation in progress.")
+        try:
+            history = self._repository.load_messages(chat_id)
+            chat = ChatService(
+                model=self._model,
+                system_prompt=self._effective_system_prompt(session.course_id, session.teaching_mode),
+                history=history,
+                reasoning_mode=session.reasoning_mode,
+            )
+            before = len(chat.history)
+            reply = chat.send(user_input)
+            self._persist_new_messages_for(chat_id, session, chat.history[before:])
+            return reply
+        finally:
+            lock.release()
+
+    def send_streaming_to_chat(self, chat_id: str, user_input: str) -> Iterator[str]:
+        """Like `send_to_chat`, but yields response content incrementally.
+
+        `chat_id` is resolved and the per-chat lock is acquired lazily, on
+        the caller's first `next()` — calling this function just builds
+        the generator, exactly like `send_streaming` already does; no
+        `ChatNotFoundError`/`ChatBusyError` is raised until iteration
+        actually begins. The lock is released exactly once, whether the
+        stream completes, raises, or is abandoned (`.close()`) partway
+        through — see `ChatService.send_streaming` for the matching
+        history-persistence guarantee this builds on.
+        """
+        session = self._require_chat(chat_id)
+        lock = self._chat_lock(chat_id)
+        if not lock.acquire(blocking=False):
+            raise ChatBusyError(f"Chat '{chat_id}' already has a generation in progress.")
+        try:
+            history = self._repository.load_messages(chat_id)
+            chat = ChatService(
+                model=self._model,
+                system_prompt=self._effective_system_prompt(session.course_id, session.teaching_mode),
+                history=history,
+                reasoning_mode=session.reasoning_mode,
+            )
+            before = len(chat.history)
+            try:
+                yield from chat.send_streaming(user_input)
+            finally:
+                self._persist_new_messages_for(chat_id, session, chat.history[before:])
+        finally:
+            lock.release()

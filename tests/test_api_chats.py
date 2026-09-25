@@ -54,13 +54,16 @@ def test_create_chat_with_unknown_course_is_rejected(client):
     assert response.json()["code"] == "COURSE_NOT_FOUND"
 
 
-def test_get_chat_not_found_before_first_message(client):
+def test_get_chat_found_immediately_after_creation(client):
+    # Stage 5.8: an API-created chat is a real, persisted row from the
+    # moment POST returns — it must never need a first message (or any
+    # other "activation") to become addressable. See API_CONTRACT.md.
     created = client.post("/api/v1/chats", json={}, headers=HEADERS).json()
 
     response = client.get(f"/api/v1/chats/{created['id']}", headers=HEADERS)
 
-    # Deliberate, documented lazy-persistence behavior — see API_CONTRACT.md.
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert response.json()["id"] == created["id"]
 
 
 def test_list_chats_all(client):
@@ -200,3 +203,44 @@ def test_assign_chat_to_unknown_course(client):
 
     assert response.status_code == 404
     assert response.json()["code"] == "COURSE_NOT_FOUND"
+
+
+# --- Stage 5.8: stateless multi-chat regressions --------------------------------------
+
+
+def test_creating_chat_b_does_not_break_addressing_chat_a(client):
+    """The exact real bug this stage fixes, at the HTTP layer: create A, do
+    NOT message it, create B, then operate on A by id — must not 404."""
+    chat_a = client.post("/api/v1/chats", json={}, headers=HEADERS).json()
+    client.post("/api/v1/chats", json={}, headers=HEADERS)  # chat B, never touched again
+
+    response = client.get(f"/api/v1/chats/{chat_a['id']}", headers=HEADERS)
+    assert response.status_code == 200
+
+    response = client.put(f"/api/v1/chats/{chat_a['id']}/rename", json={"title": "A"}, headers=HEADERS)
+    assert response.status_code == 200
+
+
+def test_restart_both_chats_remain_independently_addressable(tmp_path):
+    env = {"STUDYBOT_MODEL_PROVIDER": "mock", "STUDYBOT_DATA_DIR": str(tmp_path)}
+
+    with TestClient(create_app(settings=Settings.from_env(env=env), token=TOKEN)) as client1:
+        chat_a = client1.post("/api/v1/chats", json={}, headers=HEADERS).json()
+        chat_b = client1.post("/api/v1/chats", json={}, headers=HEADERS).json()
+        send(client1, chat_a["id"], "hello a")
+        client1.put(f"/api/v1/chats/{chat_b['id']}/reasoning-mode", json={"reasoningMode": "deep"}, headers=HEADERS)
+        send(client1, chat_b["id"], "hello b")
+
+    # A brand-new app/engine, same on-disk database — simulates a server restart.
+    with TestClient(create_app(settings=Settings.from_env(env=env), token=TOKEN)) as client2:
+        response_a = client2.get(f"/api/v1/chats/{chat_a['id']}", headers=HEADERS)
+        response_b = client2.get(f"/api/v1/chats/{chat_b['id']}", headers=HEADERS)
+
+        assert response_a.status_code == 200
+        assert response_b.status_code == 200
+        assert response_b.json()["reasoningMode"] == "deep"
+
+        messages_a = client2.get(f"/api/v1/chats/{chat_a['id']}/messages", headers=HEADERS).json()
+        messages_b = client2.get(f"/api/v1/chats/{chat_b['id']}/messages", headers=HEADERS).json()
+        assert [m["content"] for m in messages_a] == ["hello a", "[Mock] You said: hello a"]
+        assert [m["content"] for m in messages_b] == ["hello b", "[Mock] You said: hello b"]

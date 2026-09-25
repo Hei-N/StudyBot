@@ -99,6 +99,7 @@ Errors are JSON with a stable, machine-readable `code` and a human-readable
 | Code | HTTP status | Meaning |
 |---|---|---|
 | `CHAT_NOT_FOUND` | 404 | No chat with that id exists. |
+| `CHAT_BUSY` | — (WebSocket `error` event) | That chat already has a generation (`send_message`) in progress on some connection; this one was rejected rather than allowed to race it — see "Concurrency and chat identity" below. Retry once the first one finishes. |
 | `COURSE_NOT_FOUND` | 404 | No course with that id exists. |
 | `INVALID_MODE` | 422 | The `mode` string isn't a recognized teaching mode. |
 | `INVALID_REASONING_MODE` | 422 | The `reasoningMode` string isn't a recognized reasoning mode. |
@@ -239,7 +240,8 @@ PUT    /api/v1/chats/{id}/reasoning-mode <- {"reasoningMode": "deep"}  -> ModeIn
 - `POST /chats` with an omitted/`null` `courseId` always creates a
   **General** chat — unlike the CLI's `/new`, it never inherits "whatever
   course happens to be active" (there is no such ambient state from an API
-  client's point of view; see "Known limitations").
+  client's point of view — every chat-specific operation is addressed by
+  `chat_id` alone; see "Explicit chat-id semantics" below).
 - **Chat ids are full stable UUIDs.** The CLI's short-id-prefix convenience
   (`/open a3f1`) is a terminal-typing affordance and is *not* part of the
   API contract — always send the complete id you were given.
@@ -250,14 +252,29 @@ PUT    /api/v1/chats/{id}/reasoning-mode <- {"reasoningMode": "deep"}  -> ModeIn
   mode always starts at `"teach"` — a new chat never inherits whatever
   reasoning mode was active elsewhere.
 
-**Lazy persistence (important, and easy to be surprised by):** creating a
-chat does **not** write a database row — this mirrors the CLI's existing
-behavior (a chat launched and never used leaves no trace). A chat becomes
-retrievable via `GET` only *after* its first message completes. If your UI
-navigates straight to a newly created chat's detail screen, don't be
-surprised by a `404` from `GET /chats/{id}` until a message has actually
-been sent — use the `ChatOut` returned by the `POST` response for the
-initial render instead of immediately re-fetching.
+**Immediate persistence (Stage 5.8):** `POST /chats` writes a real database
+row before responding — the returned `id` is retrievable via `GET`, has an
+empty message history, and accepts every operation below immediately, with
+zero messages sent. This is deliberately *not* what the CLI's `/new` does
+(the CLI still defers writing a row until the first message, so a terminal
+chat opened and abandoned leaves no trace — see "Known limitations" in the
+main README for that CLI-only convenience); an API client has no such
+concept, and an earlier version of this API used to defer persistence the
+same way the CLI does, which caused a real bug: creating a second chat
+before the first had ever been messaged could silently make the first
+chat's id 404. It cannot anymore — see "Explicit chat-id semantics" below.
+
+**Explicit chat-id semantics:** every chat-specific endpoint above operates
+on exactly the `chat_id` in its URL, loaded fresh from storage on every
+call. There is no server-side "current chat" for the API to get out of
+sync with, no "open this chat first" step, and no ordering requirement
+between requests for different chat ids — creating, messaging, renaming,
+or reconfiguring one chat never affects any other chat's availability or
+state, no matter what order requests arrive in or how many other chats
+exist. (The CLI *does* still have a single current chat — `/open`, `/new`,
+etc. — but that's a terminal-only convenience built on top of the same
+explicit-by-id operations; it was never something the API needed and
+nothing here depends on it.)
 
 ### WebSocket streaming chat
 
@@ -277,18 +294,39 @@ messages, to any chat id, in sequence.
 **Server → client**, in order, for each `send_message`:
 ```json
 {"type": "message_started", "chatId": "..."}
-{"type": "delta", "content": "Accel"}
-{"type": "delta", "content": "eration"}
+{"type": "delta", "content": "Accel", "chatId": "..."}
+{"type": "delta", "content": "eration", "chatId": "..."}
 ...
-{"type": "message_completed", "message": {"id": 12, "role": "assistant", "content": "...", "createdAt": "..."}}
+{"type": "message_completed", "chatId": "...", "message": {"id": 12, "role": "assistant", "content": "...", "createdAt": "..."}}
 ```
 or, instead of the above, at any point:
 ```json
-{"type": "error", "code": "MODEL_ERROR", "message": "..."}
+{"type": "error", "code": "MODEL_ERROR", "message": "...", "chatId": "..."}
 ```
+
+**Every event carries `chatId`** (Stage 5.8) — since one connection can be
+reused for any number of chats in sequence, this lets a client attribute
+each event to the right chat without having to track "whichever chat I
+sent to last" itself. (`chatId` is omitted only for a malformed
+`send_message` payload that never named a valid chat id to begin with —
+e.g. a missing/non-string `chat_id` field.)
 
 An `error` event **does not close the connection** — send another
 `send_message` on the same socket to try again or move to a different chat.
+
+**Concurrency and chat identity (Stage 5.8):** `send_message` addresses its
+`chat_id` explicitly and independently every time — sending to chat A and
+then chat B on the same connection (or on two different connections) never
+mixes their history, course, or teaching/reasoning mode, and creating or
+messaging other chats in between has no effect. Within one chat, however,
+**only one generation may be in flight at a time**: if a `send_message` for
+a chat that already has a generation in progress arrives (from this or any
+other connection), the server rejects it immediately with a `CHAT_BUSY`
+error rather than letting two assistant replies race and append to that
+chat's history in a nondeterministic order. `message_started` is still
+sent first (the busy check happens once generation actually begins); retry
+once the first generation's `message_completed`/`error` arrives. A
+different chat id is entirely unaffected by another chat being busy.
 
 **Reasoning mode and streaming (Stage 5.7):** the chat's current reasoning
 mode (see "Reasoning modes" above) is applied automatically to every
@@ -302,9 +340,10 @@ expected, not a stall. **Whichever mode is active, only visible-answer
 "thinking" content, it is filtered out before reaching the WebSocket, never
 streamed and never included in the final `message_completed.message`.
 
-This reuses `SessionService.send_streaming()` exactly as the CLI does —
-there is no second streaming implementation. That means the existing
-Stage 2/3 guarantee carries through unchanged:
+This reuses `SessionService.send_streaming_to_chat()` (the explicit-by-id
+layer added in Stage 5.8) — there is no second streaming implementation,
+and no "activate this chat first" step. That means the existing Stage 2/3
+guarantee carries through unchanged:
 
 - **Success:** the user's message is persisted once; the complete assistant
   reply is persisted once, only after the stream finishes.
@@ -329,25 +368,49 @@ more complex cancellation plumbing in this stage.
 
 ## Known limitations (documented, not hacked around)
 
-**Single active-chat cursor.** `SessionService` — reused unchanged from the
-CLI — was built around one mutable "active chat" per process, not a
-request-scoped concept. Every API operation that needs a live model
-context (rename, clear, delete, move-course, mode change, and the
-WebSocket send) switches that cursor to the requested `chat_id` first, so
-each *individual* request is self-contained and explicit — a client never
-needs to call some separate "select this chat" endpoint first. What this
-does **not** make safe is *concurrently interleaved* requests targeting
-*different* chat ids against the *same running server process* (e.g. two
-requests for two different chats in flight at the same moment) — the
-cursor could be switched out from under one of them. For a single Flutter
-app instance talking to its own engine process, driving one chat's
-conversation at a time (the normal UI pattern — you're looking at one chat
-screen), this is a non-issue. It would need addressing before this API
-supports multiple simultaneous windows/devices against one engine process.
-Read-only endpoints (`GET /chats`, `GET /chats/{id}`, `GET
-/chats/{id}/messages`) are unaffected — they go through `SessionService`'s
-stateless `get_chat`/`get_chat_history_records` passthroughs and never
-touch the cursor.
+**~~Single active-chat cursor~~ — resolved in Stage 5.8.** Earlier versions
+of this API switched a single mutable "active chat" (reused unchanged from
+the CLI) to the requested `chat_id` before every write, which made two
+different chat ids unsafe to interleave against one running server process
+— creating a second chat before the first had ever been messaged could
+silently evict the first's not-yet-persisted in-memory state and make it
+404 afterward. `SessionService` now has a separate explicit-by-id layer
+(`send_to_chat`, `rename_chat`, `set_teaching_mode_for_chat`, ...) that
+every route and the WebSocket handler use instead: each call loads its
+chat fresh from storage by id, with no cursor to evict, and `POST /chats`
+persists immediately (see "Immediate persistence" above) so there is no
+window where a chat exists only in one request's memory. The CLI keeps its
+own active-chat cursor as a terminal-only convenience built on top of the
+same explicit operations — nothing about its behavior changed.
+
+**Per-chat generation exclusion, not true parallel inference.** Two
+different chat ids are now safe to *interleave* (in any order, from any
+number of connections) — but "safe" does not mean the actual model calls
+run in true OS-level parallel, because of the next limitation below
+(SQLite thread affinity): every call, for every chat, still funnels
+through one dedicated worker thread, so a long-running generation for chat
+A does temporarily delay a request for chat B that arrives while A's
+current chunk is being produced, exactly as it would delay any other
+request (a plain `GET`, say). What Stage 5.8 guarantees is *correctness*
+under that serialization, not concurrency the underlying engine doesn't
+have: chat B's state is never corrupted or mixed with chat A's regardless
+of arrival order, and within a single chat, a second generation attempt
+while one is already in flight gets `CHAT_BUSY` rather than racing it (see
+"Concurrency and chat identity" above) — enforced by a lock per chat id,
+not one process-wide lock.
+
+**SQLite thread affinity.** `StudyBotApp` (and its one `sqlite3.Connection`)
+is not designed to be touched from multiple threads. FastAPI dispatches
+route handlers to a worker pool, so every call into `StudyBotApp` — the
+constructor itself included — is routed through one dedicated
+single-worker executor (`api/engine.py`) rather than left to land on
+whatever thread FastAPI happens to pick. This was found and fixed during
+Stage 5.7's own testing (`sqlite3.ProgrammingError: SQLite objects created
+in a thread can only be used in that same thread`), not anticipated in
+advance. Increasing the executor's worker count would need a thread-safe
+connection strategy (e.g. one connection per worker, or a connection
+pool) — out of scope here; the single-worker executor is a deliberate,
+still-correct trade-off, not an oversight.
 
 **One `MODEL_ERROR` code for all generation failures.** The underlying
 `ModelError` domain exception doesn't currently distinguish "connection
@@ -359,16 +422,6 @@ doesn't structurally exist, every generation failure is `MODEL_ERROR`;
 unavailability check is exposed with its own boolean, since that comes
 from `ProviderStatus` (a real structured type), not from parsing an
 exception.
-
-**SQLite thread affinity.** `StudyBotApp` (and its one `sqlite3.Connection`)
-is not designed to be touched from multiple threads. FastAPI dispatches
-route handlers to a worker pool, so every call into `StudyBotApp` — the
-constructor itself included — is routed through one dedicated
-single-worker executor (`api/engine.py`) rather than left to land on
-whatever thread FastAPI happens to pick. This was found and fixed during
-this stage's own testing (`sqlite3.ProgrammingError: SQLite objects
-created in a thread can only be used in that same thread`), not
-anticipated in advance.
 
 ## Privacy
 
@@ -387,3 +440,6 @@ codebase. The API adds no exception to that. Specifically:
   anything.
 - The auth token is never logged (verified by test, including deliberately
   wrong tokens).
+- The per-chat generation lock (`CHAT_BUSY`, Stage 5.8) never logs prompt
+  or response content — only a chat id and lock/busy state are ever
+  eligible for debug-level logging, never message content.

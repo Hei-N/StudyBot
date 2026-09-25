@@ -1,6 +1,9 @@
+import threading
+import time
+
 import pytest
 
-from studybot.core.exceptions import ModelError, SessionError
+from studybot.core.exceptions import ChatBusyError, ChatNotFoundError, ModelError, SessionError
 from studybot.core.messages import Role
 from studybot.core.mode_prompts import get_mode_prompt
 from studybot.core.reasoning_mode import ReasoningMode
@@ -8,6 +11,7 @@ from studybot.core.session_service import SessionService
 from studybot.core.teaching_mode import TeachingMode
 from studybot.models.base import ModelResponse, ProviderStatus
 from studybot.models.mock import MockModel
+from studybot.storage.base import ChatSession
 from studybot.storage.database import open_database
 from studybot.storage.sqlite_course_repository import SQLiteCourseRepository
 from studybot.storage.sqlite_repository import SQLiteChatRepository
@@ -1182,3 +1186,471 @@ def test_different_chats_preserve_different_reasoning_modes_across_restart(repos
     service2 = make_service(repository, course_repository)
     assert service2.open_chat(chat_a).reasoning_mode is ReasoningMode.FAST
     assert service2.open_chat(chat_b).reasoning_mode is ReasoningMode.DEEP
+
+
+# =====================================================================================
+# Stage 5.8 — explicit chat-id operations (no active-chat cursor dependency)
+# =====================================================================================
+
+# --- critical regression: the exact real bug -----------------------------------------
+
+
+def test_creating_second_chat_does_not_break_sending_to_first(repository, course_repository):
+    """The exact real bug Stage 5.8 exists to fix: create A, do NOT message
+    it, create B, then send to A — A must not fail. On the old
+    `_activate()`/cursor-based implementation this failed because creating
+    B (while A was still an unpersisted, in-memory "pending" chat) silently
+    evicted A before it ever got a database row."""
+    service = make_service(repository, course_repository)
+
+    chat_a = service.create_chat()
+    chat_b = service.create_chat()
+
+    reply_a = service.send_to_chat(chat_a.id, "Remember ALPHA = 17")
+    assert reply_a.content == "[Mock] You said: Remember ALPHA = 17"
+
+    reply_b = service.send_to_chat(chat_b.id, "Remember BETA = 84")
+    assert reply_b.content == "[Mock] You said: Remember BETA = 84"
+
+    history_a = service.get_chat_history(chat_a.id)
+    history_b = service.get_chat_history(chat_b.id)
+    assert [m.content for m in history_a] == ["Remember ALPHA = 17", "[Mock] You said: Remember ALPHA = 17"]
+    assert [m.content for m in history_b] == ["Remember BETA = 84", "[Mock] You said: Remember BETA = 84"]
+
+
+# --- empty/new chats ------------------------------------------------------------------
+
+
+def test_create_chat_is_immediately_persisted(repository, course_repository):
+    service = make_service(repository, course_repository)
+
+    chat = service.create_chat()
+
+    assert repository.get_chat(chat.id) is not None
+    assert chat.title is None
+
+
+def test_create_chat_does_not_touch_the_active_cursor(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("active chat message")
+    active_id = service.active_session.id
+
+    service.create_chat()
+
+    assert service.active_session.id == active_id
+
+
+def test_two_empty_chats_both_remain_addressable(repository, course_repository):
+    service = make_service(repository, course_repository)
+
+    chat_a = service.create_chat()
+    chat_b = service.create_chat()
+
+    assert repository.get_chat(chat_a.id) is not None
+    assert repository.get_chat(chat_b.id) is not None
+    assert service.get_chat(chat_a.id) is not None
+    assert service.get_chat(chat_b.id) is not None
+    assert service.get_chat_history(chat_a.id) == []
+    assert service.get_chat_history(chat_b.id) == []
+
+
+# --- explicit operations work purely by id, without "opening" -------------------------
+
+
+def test_explicit_operations_work_without_switching_the_active_chat(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("stay active")
+    active_id = service.active_session.id
+
+    course = course_repository.create_course("c1", "Physics", None, None, None)
+    chat = service.create_chat()
+
+    service.rename_chat(chat.id, "Explicit Title")
+    service.set_teaching_mode_for_chat(chat.id, TeachingMode.HOMEWORK)
+    service.set_reasoning_mode_for_chat(chat.id, ReasoningMode.DEEP)
+    service.assign_course_to_chat(chat.id, course.id)
+    service.send_to_chat(chat.id, "hello")
+
+    updated = service.get_chat(chat.id)
+    assert updated.title == "Explicit Title"
+    assert updated.teaching_mode is TeachingMode.HOMEWORK
+    assert updated.reasoning_mode is ReasoningMode.DEEP
+    assert updated.course_id == course.id
+    # None of the above ever switched the active chat.
+    assert service.active_session.id == active_id
+
+
+def test_explicit_clear_works_by_id(repository, course_repository):
+    service = make_service(repository, course_repository)
+    chat = service.create_chat()
+    service.send_to_chat(chat.id, "hello")
+
+    service.clear_chat(chat.id)
+
+    assert service.get_chat_history(chat.id) == []
+    assert service.get_chat(chat.id) is not None  # chat itself survives
+
+
+def test_explicit_delete_works_by_id_and_does_not_touch_cursor(repository, course_repository):
+    service = make_service(repository, course_repository)
+    service.send("stay active")
+    active_id = service.active_session.id
+    chat = service.create_chat()
+
+    service.delete_chat(chat.id)
+
+    assert repository.get_chat(chat.id) is None
+    assert service.active_session.id == active_id
+
+
+def test_explicit_operations_on_unknown_chat_raise_chat_not_found(repository, course_repository):
+    service = make_service(repository, course_repository)
+
+    with pytest.raises(ChatNotFoundError):
+        service.rename_chat("does-not-exist", "X")
+    with pytest.raises(ChatNotFoundError):
+        service.clear_chat("does-not-exist")
+    with pytest.raises(ChatNotFoundError):
+        service.delete_chat("does-not-exist")
+    with pytest.raises(ChatNotFoundError):
+        service.assign_course_to_chat("does-not-exist", None)
+    with pytest.raises(ChatNotFoundError):
+        service.set_teaching_mode_for_chat("does-not-exist", TeachingMode.EXAM)
+    with pytest.raises(ChatNotFoundError):
+        service.set_reasoning_mode_for_chat("does-not-exist", ReasoningMode.DEEP)
+    with pytest.raises(ChatNotFoundError):
+        service.send_to_chat("does-not-exist", "hi")
+    with pytest.raises(ChatNotFoundError):
+        list(service.send_streaming_to_chat("does-not-exist", "hi"))
+
+
+def test_assign_course_to_chat_raises_plain_session_error_for_unknown_course(repository, course_repository):
+    """Distinguishable from chat-not-found: the API maps this to
+    COURSE_NOT_FOUND, not CHAT_NOT_FOUND."""
+    service = make_service(repository, course_repository)
+    chat = service.create_chat()
+
+    with pytest.raises(SessionError) as exc_info:
+        service.assign_course_to_chat(chat.id, "does-not-exist")
+    assert not isinstance(exc_info.value, ChatNotFoundError)
+
+
+# --- isolation across course / teaching mode / reasoning mode, interleaved ------------
+
+
+def test_two_courses_two_chats_full_isolation_interleaved(repository, course_repository):
+    """Course Physics/Chat A (Homework + Fast, history ALPHA) and Course
+    Calculus/Chat B (Exam + Deep, history BETA), addressed in an
+    A, B, A, B interleaving — histories, course context, teaching mode, and
+    reasoning mode must never cross."""
+    physics = course_repository.create_course("physics", "Physics", None, None, None)
+    calculus = course_repository.create_course("calc", "Calculus", None, None, None)
+    model = RecordingModel(reply="ack")
+    service = SessionService(
+        model=model, repository=repository, course_repository=course_repository, system_prompt="Baseline."
+    )
+
+    chat_a = service.create_chat(course_id=physics.id)
+    chat_b = service.create_chat(course_id=calculus.id)
+    service.set_teaching_mode_for_chat(chat_a.id, TeachingMode.HOMEWORK)
+    service.set_reasoning_mode_for_chat(chat_a.id, ReasoningMode.FAST)
+    service.set_teaching_mode_for_chat(chat_b.id, TeachingMode.EXAM)
+    service.set_reasoning_mode_for_chat(chat_b.id, ReasoningMode.DEEP)
+
+    service.send_to_chat(chat_a.id, "Remember ALPHA = 1")
+    service.send_to_chat(chat_b.id, "Remember BETA = 2")
+    service.send_to_chat(chat_a.id, "second A turn")
+    service.send_to_chat(chat_b.id, "second B turn")
+
+    history_a = service.get_chat_history(chat_a.id)
+    history_b = service.get_chat_history(chat_b.id)
+    assert [m.content for m in history_a] == ["Remember ALPHA = 1", "ack", "second A turn", "ack"]
+    assert [m.content for m in history_b] == ["Remember BETA = 2", "ack", "second B turn", "ack"]
+
+    final_a = service.get_chat(chat_a.id)
+    final_b = service.get_chat(chat_b.id)
+    assert final_a.course_id == physics.id
+    assert final_a.teaching_mode is TeachingMode.HOMEWORK
+    assert final_a.reasoning_mode is ReasoningMode.FAST
+    assert final_b.course_id == calculus.id
+    assert final_b.teaching_mode is TeachingMode.EXAM
+    assert final_b.reasoning_mode is ReasoningMode.DEEP
+
+    # Every model call for A carried Physics/Homework/Fast context; every
+    # call for B carried Calculus/Exam/Deep context — never mixed.
+    calls_and_modes = list(zip(model.received_calls, model.received_reasoning_modes))
+    a_calls = calls_and_modes[0::2]
+    b_calls = calls_and_modes[1::2]
+    for messages, reasoning_mode in a_calls:
+        system_content = messages[0].content
+        assert "Physics" in system_content
+        assert "Calculus" not in system_content
+        assert "Teaching mode: Homework" in system_content
+        assert reasoning_mode is ReasoningMode.FAST
+    for messages, reasoning_mode in b_calls:
+        system_content = messages[0].content
+        assert "Calculus" in system_content
+        assert "Physics" not in system_content
+        assert "Teaching mode: Exam" in system_content
+        assert reasoning_mode is ReasoningMode.DEEP
+
+
+def test_explicit_send_never_uses_the_active_chats_course_or_mode(repository, course_repository):
+    """A explicit send for chat A must derive context from chat A alone,
+    even while a completely different chat is the active (CLI) cursor."""
+    physics = course_repository.create_course("physics", "Physics", None, None, None)
+    model = RecordingModel(reply="ack")
+    service = SessionService(
+        model=model, repository=repository, course_repository=course_repository, system_prompt="Baseline."
+    )
+    # Active/CLI cursor sits on an unrelated, unassigned Exam+Deep chat.
+    service.send("active chat setup")
+    service.set_teaching_mode(TeachingMode.EXAM)
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+
+    chat_a = service.create_chat(course_id=physics.id)
+    service.send_to_chat(chat_a.id, "hello")
+
+    system_content = model.received_calls[-1][0].content
+    assert "Physics" in system_content
+    assert "Teaching mode: Teach" in system_content  # chat A's own default, not Exam
+    assert model.received_reasoning_modes[-1] is ReasoningMode.FAST  # chat A's own default, not Deep
+
+
+# --- streaming: no cross-chat corruption while a stream is in flight ------------------
+
+
+def test_operating_on_b_during_as_stream_does_not_affect_either(repository, course_repository):
+    model = RecordingModel(chunks=["chunk1", "chunk2"])
+    service = SessionService(model=model, repository=repository, course_repository=course_repository)
+    chat_a = service.create_chat()
+    chat_b = service.create_chat()
+    service.send_to_chat(chat_b.id, "existing B history")
+
+    gen = service.send_streaming_to_chat(chat_a.id, "streaming to A")
+    first_chunk = next(gen)  # A's generation is now in flight
+
+    # Safe operations against B while A's stream is suspended mid-flight.
+    service.rename_chat(chat_b.id, "B's title")
+    service.set_teaching_mode_for_chat(chat_b.id, TeachingMode.EXAM)
+    service.send_to_chat(chat_b.id, "another B turn")
+
+    remaining = list(gen)  # drain A's stream to completion
+
+    assert first_chunk == "chunk1"
+    assert remaining == ["chunk2"]
+    history_a = service.get_chat_history(chat_a.id)
+    assert [m.content for m in history_a] == ["streaming to A", "chunk1chunk2"]
+    history_b = service.get_chat_history(chat_b.id)
+    # "another B turn" went through send_to_chat (non-streaming), which
+    # uses RecordingModel.generate()'s default reply ("ok"), not `chunks`.
+    assert [m.content for m in history_b] == [
+        "existing B history",
+        "ok",
+        "another B turn",
+        "ok",
+    ]
+    assert service.get_chat(chat_b.id).title == "B's title"
+    assert service.get_chat(chat_b.id).teaching_mode is TeachingMode.EXAM
+
+
+# --- same-chat CHAT_BUSY ---------------------------------------------------------------
+
+
+def test_second_streaming_generation_for_same_chat_raises_chat_busy(repository, course_repository):
+    model = RecordingModel(chunks=["a", "b"])
+    service = SessionService(model=model, repository=repository, course_repository=course_repository)
+    chat = service.create_chat()
+
+    gen1 = service.send_streaming_to_chat(chat.id, "first")
+    next(gen1)  # gen1 now holds the per-chat lock
+
+    gen2 = service.send_streaming_to_chat(chat.id, "second")
+    with pytest.raises(ChatBusyError):
+        next(gen2)
+
+    list(gen1)  # drain gen1 to completion, releasing the lock
+
+    # The lock is available again afterward.
+    gen3 = service.send_streaming_to_chat(chat.id, "third")
+    assert list(gen3) == ["a", "b"]
+
+
+def test_send_to_chat_raises_chat_busy_while_a_stream_is_in_flight_for_the_same_chat(
+    repository, course_repository
+):
+    model = RecordingModel(chunks=["a", "b"])
+    service = SessionService(model=model, repository=repository, course_repository=course_repository)
+    chat = service.create_chat()
+
+    gen = service.send_streaming_to_chat(chat.id, "first")
+    next(gen)
+
+    with pytest.raises(ChatBusyError):
+        service.send_to_chat(chat.id, "second")
+
+    list(gen)  # release the lock
+    # No corruption: only the first turn was ever persisted.
+    history = service.get_chat_history(chat.id)
+    assert [m.content for m in history] == ["first", "ab"]
+
+
+def test_abandoning_a_stream_releases_the_lock_for_that_chat(repository, course_repository):
+    model = RecordingModel(chunks=["a", "b", "c"])
+    service = SessionService(model=model, repository=repository, course_repository=course_repository)
+    chat = service.create_chat()
+
+    gen = service.send_streaming_to_chat(chat.id, "first")
+    next(gen)
+    gen.close()  # abandoned, like a disconnected client
+
+    # The lock was released even though the stream never finished.
+    reply = service.send_to_chat(chat.id, "second")
+    assert reply.content == "ok"  # RecordingModel.generate()'s default reply (ignores `chunks`)
+
+
+def test_chat_busy_on_one_chat_does_not_block_a_different_chat(repository, course_repository):
+    model = RecordingModel(chunks=["a", "b"])
+    service = SessionService(model=model, repository=repository, course_repository=course_repository)
+    chat_a = service.create_chat()
+    chat_b = service.create_chat()
+
+    gen_a = service.send_streaming_to_chat(chat_a.id, "to A")
+    next(gen_a)  # A's lock is held
+
+    reply_b = service.send_to_chat(chat_b.id, "to B")  # unaffected by A's lock
+
+    assert reply_b.content == "ok"  # RecordingModel.generate()'s default reply
+    list(gen_a)
+
+
+class _InMemoryChatRepository:
+    """A minimal, dict-backed `ChatRepository` used only by
+    `test_chat_busy_lock_is_genuinely_thread_safe` below.
+
+    The real `SQLiteChatRepository` ties its connection to the thread that
+    created it (see `api/engine.py`'s module docstring) and cannot safely
+    be called from a second OS thread at all — that restriction is exactly
+    why the API routes every call through one dedicated executor thread.
+    This test wants to prove something different and more basic:
+    `SessionService._chat_lock` itself correctly serializes two *real*
+    concurrent threads for the same chat id, independent of whatever
+    repository or executor happens to sit underneath it. An in-memory fake
+    sidesteps the unrelated SQLite restriction so the test isolates the
+    one thing it's actually checking.
+    """
+
+    def __init__(self) -> None:
+        self._chats: dict[str, ChatSession] = {}
+        self._messages: dict[str, list] = {}
+
+    def create_chat(self, chat_id, title, course_id=None, teaching_mode=TeachingMode.TEACH, reasoning_mode=ReasoningMode.FAST):
+        session = ChatSession(
+            id=chat_id, title=title, course_id=course_id, teaching_mode=teaching_mode,
+            reasoning_mode=reasoning_mode, created_at="now", updated_at="now",
+        )
+        self._chats[chat_id] = session
+        self._messages[chat_id] = []
+        return session
+
+    def get_chat(self, chat_id):
+        return self._chats.get(chat_id)
+
+    def list_chats(self):
+        return list(self._chats.values())
+
+    def rename_chat(self, chat_id, title):
+        self._chats[chat_id].title = title
+        return self._chats[chat_id]
+
+    def touch_chat(self, chat_id):
+        return self._chats[chat_id]
+
+    def append_message(self, chat_id, role, content):
+        from studybot.core.messages import Message
+
+        self._messages[chat_id].append(Message(role, content))
+
+    def load_messages(self, chat_id):
+        return list(self._messages[chat_id])
+
+
+def test_chat_busy_lock_is_genuinely_thread_safe(course_repository):
+    """Same as the generator-interleaving tests above, but with two real OS
+    threads racing on the same chat's lock, to prove `_chat_lock` itself
+    (not just the generator-suspension trick) is what prevents the race."""
+
+    class BlockingModel:
+        name = "blocking"
+
+        def __init__(self, entered: threading.Event, release: threading.Event) -> None:
+            self._entered = entered
+            self._release = release
+
+        def generate(self, messages, *, reasoning_mode=None):
+            from studybot.models.base import ModelResponse
+
+            self._entered.set()
+            self._release.wait(timeout=5)
+            return ModelResponse(content="ok", model_name=self.name)
+
+        def stream(self, messages, *, reasoning_mode=None):
+            raise AssertionError("not used in this test")
+            yield  # pragma: no cover
+
+        def get_status(self):
+            raise AssertionError("not used in this test")
+
+    entered = threading.Event()
+    release = threading.Event()
+    service = SessionService(
+        model=BlockingModel(entered, release),
+        repository=_InMemoryChatRepository(),
+        course_repository=course_repository,
+    )
+    chat = service.create_chat()
+
+    results: dict[str, object] = {}
+
+    def first_call():
+        results["first"] = service.send_to_chat(chat.id, "first")
+
+    thread = threading.Thread(target=first_call)
+    thread.start()
+    assert entered.wait(timeout=5)  # first call is now inside generate(), lock held
+
+    # Give the second call every chance to (wrongly) slip in before asserting.
+    time.sleep(0.05)
+    with pytest.raises(ChatBusyError):
+        service.send_to_chat(chat.id, "second")
+
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert results["first"].content == "ok"
+
+
+# --- persistence across restart ---------------------------------------------------------
+
+
+def test_explicit_chats_remain_addressable_after_restart(repository, course_repository):
+    service1 = make_service(repository, course_repository)
+    chat_a = service1.create_chat()
+    chat_b = service1.create_chat()
+    service1.send_to_chat(chat_a.id, "hello a")
+    service1.set_reasoning_mode_for_chat(chat_b.id, ReasoningMode.DEEP)
+    service1.send_to_chat(chat_b.id, "hello b")
+
+    # A brand-new SessionService simulates the app/API server restarting —
+    # notably, without ever calling anything active-cursor-related.
+    service2 = make_service(repository, course_repository)
+
+    assert [m.content for m in service2.get_chat_history(chat_a.id)] == [
+        "hello a",
+        "[Mock] You said: hello a",
+    ]
+    assert [m.content for m in service2.get_chat_history(chat_b.id)] == [
+        "hello b",
+        "[Mock] You said: hello b",
+    ]
+    assert service2.get_chat(chat_b.id).reasoning_mode is ReasoningMode.DEEP

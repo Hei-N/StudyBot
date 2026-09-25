@@ -222,7 +222,7 @@ def test_disconnect_mid_stream_does_not_persist_incomplete_response(client_with_
         with client.websocket_connect("/api/v1/ws/chat", headers=HEADERS) as ws:
             ws.send_json({"type": "send_message", "chat_id": chat_id, "content": "hi"})
             assert ws.receive_json()["type"] == "message_started"
-            assert ws.receive_json() == {"type": "delta", "content": "chunk1"}
+            assert ws.receive_json() == {"type": "delta", "content": "chunk1", "chatId": chat_id}
             # Exiting the `with` block here disconnects the client while the
             # model is still "generating" (blocked on release_event).
 
@@ -248,6 +248,7 @@ def test_unknown_chat_id_produces_error_event_without_closing_connection(client)
             "type": "error",
             "code": "CHAT_NOT_FOUND",
             "message": "No chat found with id 'does-not-exist'.",
+            "chatId": "does-not-exist",
         }
 
         # The connection is still usable afterward.
@@ -262,20 +263,18 @@ def test_unauthenticated_connection_is_rejected(client):
 
 
 def test_histories_remain_isolated_between_chat_ids(client):
-    # chat_a is created *and sent its first message* (so it's actually
-    # persisted) before chat_b is created — creating a second unpersisted
-    # chat before the first ever gets a message would overwrite
-    # SessionService's single in-memory "active chat" slot and silently
-    # lose chat_a's (never-yet-saved) existence entirely. This is the
-    # documented active-session limitation (see chats.py's module
-    # docstring), not something this test is trying to exercise.
+    # Both chats are created up front, before either is ever messaged —
+    # this used to be exactly the sequence that broke (see Stage 5.8's
+    # `test_creating_second_chat_does_not_break_sending_to_first` below,
+    # the direct regression test for that bug). It's safe now: every chat
+    # is a real persisted row from the moment POST returns, and each
+    # `send_message` loads its own chat fresh by id.
     chat_a = _create_chat(client)
+    chat_b = _create_chat(client)
+
     with client.websocket_connect("/api/v1/ws/chat", headers=HEADERS) as ws:
         ws.send_json({"type": "send_message", "chat_id": chat_a, "content": "Remember ALPHA=1"})
         _drain_until_completed(ws)
-
-    chat_b = _create_chat(client)
-    with client.websocket_connect("/api/v1/ws/chat", headers=HEADERS) as ws:
         ws.send_json({"type": "send_message", "chat_id": chat_b, "content": "Remember BETA=2"})
         _drain_until_completed(ws)
 
@@ -299,6 +298,119 @@ def test_invalid_payload_produces_validation_error_event(client):
         event = ws.receive_json()
         assert event["type"] == "error"
         assert event["code"] == "VALIDATION_ERROR"
+
+
+def test_delta_and_message_completed_events_carry_the_chat_id(client_with_model):
+    """Stage 5.8: every streaming event carries `chatId`, not just
+    `message_started` — so a client juggling multiple chats/connections can
+    always attribute an event to the right one without guessing."""
+    app = client_with_model(lambda: ChunkedModel(["hi"]))
+    with TestClient(app) as client:
+        chat_id = _create_chat(client)
+        with client.websocket_connect("/api/v1/ws/chat", headers=HEADERS) as ws:
+            ws.send_json({"type": "send_message", "chat_id": chat_id, "content": "hi"})
+            started = ws.receive_json()
+            delta = ws.receive_json()
+            completed = ws.receive_json()
+
+    assert started["chatId"] == chat_id
+    assert delta["chatId"] == chat_id
+    assert completed["chatId"] == chat_id
+
+
+# --- Stage 5.8: stateless multi-chat regression --------------------------------------
+
+
+def test_creating_second_chat_does_not_break_sending_to_first(client):
+    """The exact real bug this stage exists to fix: create chat A, do NOT
+    message it, create chat B, then send to A — A must not 404. On the old
+    `_activate()`-based implementation this failed because creating B (an
+    unpersisted, in-memory "pending" chat) silently evicted A's own
+    unpersisted in-memory state before A ever got a database row."""
+    chat_a = _create_chat(client)
+    chat_b = _create_chat(client)
+
+    with client.websocket_connect("/api/v1/ws/chat", headers=HEADERS) as ws:
+        ws.send_json({"type": "send_message", "chat_id": chat_a, "content": "Remember ALPHA = 17"})
+        completed_a = _drain_until_completed(ws)
+
+        ws.send_json({"type": "send_message", "chat_id": chat_b, "content": "Remember BETA = 84"})
+        completed_b = _drain_until_completed(ws)
+
+    assert completed_a["message"]["content"] == "[Mock] You said: Remember ALPHA = 17"
+    assert completed_b["message"]["content"] == "[Mock] You said: Remember BETA = 84"
+
+    messages_a = client.get(f"/api/v1/chats/{chat_a}/messages", headers=HEADERS).json()
+    messages_b = client.get(f"/api/v1/chats/{chat_b}/messages", headers=HEADERS).json()
+    assert [m["content"] for m in messages_a] == ["Remember ALPHA = 17", "[Mock] You said: Remember ALPHA = 17"]
+    assert [m["content"] for m in messages_b] == ["Remember BETA = 84", "[Mock] You said: Remember BETA = 84"]
+
+
+def test_api_never_requires_opening_a_chat_before_addressing_it(client):
+    """Every chat-specific operation works purely by id, in any order,
+    without a preceding GET/open of any kind — proving there is no hidden
+    "activate this chat first" requirement anywhere in the route layer."""
+    chat_a = _create_chat(client)
+    chat_b = _create_chat(client)
+
+    # Touch B first via several different explicit operations, all before A
+    # has ever been addressed at all.
+    assert client.put(f"/api/v1/chats/{chat_b}/mode", json={"mode": "exam"}, headers=HEADERS).status_code == 200
+    assert (
+        client.put(f"/api/v1/chats/{chat_b}/reasoning-mode", json={"reasoningMode": "deep"}, headers=HEADERS).status_code
+        == 200
+    )
+    assert client.put(f"/api/v1/chats/{chat_b}/rename", json={"title": "B"}, headers=HEADERS).status_code == 200
+
+    # Now address A directly — none of the above should have any bearing on it.
+    response = client.get(f"/api/v1/chats/{chat_a}", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["teachingMode"] == "teach"
+    assert response.json()["reasoningMode"] == "fast"
+
+
+def test_websocket_send_works_for_a_chat_created_after_another_was_already_opened(client):
+    """A second WebSocket connection addressing a brand-new chat must work
+    even while an earlier connection already exists/has been used for a
+    different chat — no shared cursor between connections."""
+    chat_a = _create_chat(client)
+    with client.websocket_connect("/api/v1/ws/chat", headers=HEADERS) as ws_a:
+        ws_a.send_json({"type": "send_message", "chat_id": chat_a, "content": "hello a"})
+        _drain_until_completed(ws_a)
+
+        chat_b = _create_chat(client)  # created *during* connection A's lifetime
+        with client.websocket_connect("/api/v1/ws/chat", headers=HEADERS) as ws_b:
+            ws_b.send_json({"type": "send_message", "chat_id": chat_b, "content": "hello b"})
+            _drain_until_completed(ws_b)
+
+        # Connection A still works for chat A afterward.
+        ws_a.send_json({"type": "send_message", "chat_id": chat_a, "content": "hello a again"})
+        _drain_until_completed(ws_a)
+
+    messages_a = client.get(f"/api/v1/chats/{chat_a}/messages", headers=HEADERS).json()
+    messages_b = client.get(f"/api/v1/chats/{chat_b}/messages", headers=HEADERS).json()
+    assert [m["content"] for m in messages_a] == [
+        "hello a",
+        "[Mock] You said: hello a",
+        "hello a again",
+        "[Mock] You said: hello a again",
+    ]
+    assert [m["content"] for m in messages_b] == ["hello b", "[Mock] You said: hello b"]
+
+
+# --- Stage 5.8: same-chat CHAT_BUSY -----------------------------------------------------
+#
+# CHAT_BUSY itself (the per-chat generation lock in `SessionService`) is
+# covered deterministically at the service layer in
+# `test_session_service.py` — both via manual generator interleaving and
+# via real OS threads racing on the same lock. It is deliberately not
+# re-tested end-to-end over two WebSocket connections here: this API's
+# engine dispatches every call through one dedicated single-worker
+# executor (see `api/engine.py`), so whether a second connection's request
+# is even *submitted* while the first is mid-generation is a genuine race
+# against that executor's queue and the test model's own timing, not a
+# property of the busy-detection logic itself — a WS-level test for it
+# would be flaky (or slow) by construction rather than a meaningful check.
 
 
 def test_unknown_message_type_produces_validation_error_event(client):
