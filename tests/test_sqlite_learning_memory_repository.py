@@ -315,53 +315,9 @@ def test_unknown_stored_status_falls_back_to_active(connection, repository):
     memory = repository.get("mem-x")
     assert memory.status is MemoryStatus.ACTIVE
 
-
-# --- archive_for_course (Stage 6.1) -----------------------------------------------------
-
-
-def test_archive_for_course_archives_only_active_memories_in_that_course(repository, course_repository):
-    course = course_repository.create_course("c1", "Physics", None, None, None)
-    active = make(repository, "mem-active", course_id=course.id, topic="A")
-    already_archived = make(repository, "mem-archived", course_id=course.id, topic="B")
-    repository.archive(already_archived.id)
-
-    repository.archive_for_course(course.id)
-
-    assert repository.get(active.id).status is MemoryStatus.ARCHIVED
-    assert repository.get(already_archived.id).status is MemoryStatus.ARCHIVED
-
-
-def test_archive_for_course_does_not_touch_other_courses(repository, course_repository):
-    physics = course_repository.create_course("physics", "Physics", None, None, None)
-    calculus = course_repository.create_course("calc", "Calculus", None, None, None)
-    calc_memory = make(repository, "mem-calc", course_id=calculus.id, topic="Derivatives")
-
-    repository.archive_for_course(physics.id)
-
-    assert repository.get(calc_memory.id).status is MemoryStatus.ACTIVE
-
-
-def test_archive_for_course_does_not_touch_global_memories(repository, course_repository):
-    course = course_repository.create_course("c1", "Physics", None, None, None)
-    global_memory = make(repository, "mem-global", course_id=None, topic="Study habits")
-
-    repository.archive_for_course(course.id)
-
-    assert repository.get(global_memory.id).status is MemoryStatus.ACTIVE
-
-
-def test_archive_for_course_on_a_course_with_no_memories_does_not_error(repository, course_repository):
-    course = course_repository.create_course("c1", "Physics", None, None, None)
-
-    repository.archive_for_course(course.id)  # must not raise
-
-
-def test_archive_for_course_bumps_updated_at_for_archived_rows(repository, course_repository):
-    course = course_repository.create_course("c1", "Physics", None, None, None)
-    memory = make(repository, "mem-1", course_id=course.id, topic="A")
-
-    archived = repository.archive_for_course(course.id)
-    result = repository.get(memory.id)
-
-    assert result.updated_at >= memory.updated_at
-    assert archived is None  # archive_for_course has no return value
+# Course-deletion archiving moved to `SQLiteCourseRepository.
+# delete_course_archiving_memories` in Stage 6.2, for true SQLite
+# transaction-level atomicity (a single connection-scoped BEGIN/COMMIT
+# spanning both the archive and the delete) — see
+# tests/test_sqlite_course_repository.py for that coverage, including
+# rollback-on-failure, safe retry, and independent-connection visibility.

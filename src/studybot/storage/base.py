@@ -281,16 +281,6 @@ class LearningMemoryRepository(Protocol):
         from `archive` — normal retirement should archive, not delete."""
         ...
 
-    def archive_for_course(self, course_id: str) -> None:
-        """Archive every currently *active* memory belonging to
-        `course_id` (Stage 6.1). Used by `CourseService.delete_course` so a
-        course's memories are retired, not silently turned into active
-        global memories, when their course goes away — see that method's
-        docstring for the full policy. Never touches memories that are
-        already archived, or memories belonging to a different course (or
-        no course at all)."""
-        ...
-
 
 class CourseRepository(Protocol):
     """Durable storage for course metadata (not chats — see `ChatRepository`)."""
@@ -320,4 +310,29 @@ class CourseRepository(Protocol):
         """Delete a course. Its chats and their messages are preserved —
         implementations must use ON DELETE SET NULL on `chats.course_id`,
         never cascade a course deletion into its chats."""
+        ...
+
+    def delete_course_archiving_memories(self, course_id: str) -> None:
+        """Delete a course and, in the *same* SQLite transaction, archive
+        every currently-active learning memory that belongs to it (Stage
+        6.2). This is the one method `CourseService.delete_course` actually
+        calls — plain `delete_course` above is kept for callers (and
+        existing tests) that only care about the course/chat FK behavior
+        in isolation.
+
+        Why this lives here instead of being two separate calls (one to
+        this repository, one to `LearningMemoryRepository`): a SQLite
+        transaction is scoped to a connection, not to a repository object,
+        so getting a real `BEGIN ... COMMIT/ROLLBACK` around *both*
+        statements requires one method holding the connection for the
+        whole operation. This is a deliberate, narrow exception to "one
+        repository, one table" — not a general precedent — made because
+        `ON DELETE SET NULL` alone cannot express "and also flip this
+        other column"; only a hand-written statement pair can. If either
+        statement fails, both are rolled back: no course-deleted-but-
+        memories-still-active (or memories-archived-but-course-still-
+        there-forever) state is ever visible to any reader, on this
+        connection or any other. Memories that were already global, or
+        belong to a different course, are never touched.
+        """
         ...

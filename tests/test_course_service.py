@@ -29,15 +29,6 @@ def service(connection):
     )
 
 
-@pytest.fixture
-def service_with_memory(connection, memory_repository):
-    return CourseService(
-        course_repository=SQLiteCourseRepository(connection),
-        chat_repository=SQLiteChatRepository(connection),
-        memory_repository=memory_repository,
-    )
-
-
 def test_create_course_trims_and_stores_fields(service):
     course = service.create_course("  University Physics I  ", " PHY 215 ", " Fall 2026 ", "  desc  ")
 
@@ -184,29 +175,20 @@ def test_count_chats_for_course_starts_at_zero(service):
 
 
 # =====================================================================================
-# Stage 6.1 — deleting a course archives its memories instead of leaking them global
+# Stage 6.1/6.2 — deleting a course atomically archives its memories rather than
+# leaking them global (see test_sqlite_course_repository.py for the transaction-
+# level atomicity/rollback/independent-connection coverage of the repository
+# method this delegates to)
 # =====================================================================================
 
 
-def test_delete_course_without_memory_repository_still_works(service):
-    """Backward compatible: a `CourseService` built without a
-    `memory_repository` (the default) skips the archiving step entirely
-    rather than erroring — nothing in this stage requires every caller to
-    know about learning memory."""
-    course = service.create_course("Doomed")
-
-    deleted = service.delete_course(course.id)
-
-    assert deleted.id == course.id
-
-
-def test_delete_course_archives_its_active_memories(service_with_memory, memory_repository):
-    course = service_with_memory.create_course("Physics")
+def test_delete_course_archives_its_active_memories(service, memory_repository):
+    course = service.create_course("Physics")
     memory = memory_repository.create(
         "mem-1", course.id, None, "Vector components", MemoryKind.NEEDS_REVIEW, "Mixes x/y."
     )
 
-    service_with_memory.delete_course(course.id)
+    service.delete_course(course.id)
 
     survived = memory_repository.get(memory.id)
     assert survived is not None
@@ -215,73 +197,73 @@ def test_delete_course_archives_its_active_memories(service_with_memory, memory_
     assert survived.topic == "Vector components"  # content untouched
 
 
-def test_delete_course_does_not_archive_already_archived_memories_differently(service_with_memory, memory_repository):
+def test_delete_course_does_not_archive_already_archived_memories_differently(service, memory_repository):
     """An already-archived memory in the doomed course stays archived
     (obviously) and isn't touched in a way that would, say, reset its
-    `updated_at` unnecessarily — `archive_for_course` only targets active
-    rows."""
-    course = service_with_memory.create_course("Physics")
+    `updated_at` unnecessarily — the archiving statement only targets
+    active rows."""
+    course = service.create_course("Physics")
     memory = memory_repository.create("mem-1", course.id, None, "Topic", MemoryKind.LEARNING_GOAL, "s")
     memory_repository.archive(memory.id)
     before = memory_repository.get(memory.id).updated_at
 
-    service_with_memory.delete_course(course.id)
+    service.delete_course(course.id)
 
     after = memory_repository.get(memory.id)
     assert after.status is MemoryStatus.ARCHIVED
     assert after.updated_at == before
 
 
-def test_delete_course_never_touches_memories_already_global(service_with_memory, memory_repository):
-    course = service_with_memory.create_course("Physics")
+def test_delete_course_never_touches_memories_already_global(service, memory_repository):
+    course = service.create_course("Physics")
     global_memory = memory_repository.create("mem-global", None, None, "Study habits", MemoryKind.USEFUL_STRATEGY, "s")
 
-    service_with_memory.delete_course(course.id)
+    service.delete_course(course.id)
 
     still_active = memory_repository.get(global_memory.id)
     assert still_active.status is MemoryStatus.ACTIVE  # never archived — it was never in the deleted course
 
 
-def test_delete_course_never_touches_memories_in_a_different_course(service_with_memory, memory_repository):
-    physics = service_with_memory.create_course("Physics")
-    calculus = service_with_memory.create_course("Calculus")
+def test_delete_course_never_touches_memories_in_a_different_course(service, memory_repository):
+    physics = service.create_course("Physics")
+    calculus = service.create_course("Calculus")
     calc_memory = memory_repository.create("mem-calc", calculus.id, None, "Derivatives", MemoryKind.NEEDS_REVIEW, "s")
 
-    service_with_memory.delete_course(physics.id)
+    service.delete_course(physics.id)
 
     untouched = memory_repository.get(calc_memory.id)
     assert untouched.status is MemoryStatus.ACTIVE
     assert untouched.course_id == calculus.id
 
 
-def test_orphaned_memory_remains_editable_after_course_deletion(service_with_memory, memory_repository):
-    course = service_with_memory.create_course("Physics")
+def test_orphaned_memory_remains_editable_after_course_deletion(service, memory_repository):
+    course = service.create_course("Physics")
     memory = memory_repository.create("mem-1", course.id, None, "Vectors", MemoryKind.NEEDS_REVIEW, "s")
 
-    service_with_memory.delete_course(course.id)
+    service.delete_course(course.id)
 
     edited = memory_repository.update(memory.id, topic="Vector components (reviewed)")
     assert edited.topic == "Vector components (reviewed)"
     assert edited.status is MemoryStatus.ARCHIVED  # editing alone does not reactivate it
 
 
-def test_orphaned_memory_can_be_explicitly_restored_to_active_global(service_with_memory, memory_repository):
-    course = service_with_memory.create_course("Physics")
+def test_orphaned_memory_can_be_explicitly_restored_to_active_global(service, memory_repository):
+    course = service.create_course("Physics")
     memory = memory_repository.create("mem-1", course.id, None, "Vectors", MemoryKind.NEEDS_REVIEW, "s")
 
-    service_with_memory.delete_course(course.id)
+    service.delete_course(course.id)
     restored = memory_repository.restore(memory.id)
 
     assert restored.status is MemoryStatus.ACTIVE
     assert restored.course_id is None  # explicit choice: now global, not silently
 
 
-def test_orphaned_memory_can_be_explicitly_reassigned_to_a_different_course(service_with_memory, memory_repository):
-    physics = service_with_memory.create_course("Physics")
-    calculus = service_with_memory.create_course("Calculus")
+def test_orphaned_memory_can_be_explicitly_reassigned_to_a_different_course(service, memory_repository):
+    physics = service.create_course("Physics")
+    calculus = service.create_course("Calculus")
     memory = memory_repository.create("mem-1", physics.id, None, "Related topic", MemoryKind.LEARNING_GOAL, "s")
 
-    service_with_memory.delete_course(physics.id)
+    service.delete_course(physics.id)
     reassigned = memory_repository.update(memory.id, course_id=calculus.id)
     restored = memory_repository.restore(memory.id)
 
@@ -290,9 +272,9 @@ def test_orphaned_memory_can_be_explicitly_reassigned_to_a_different_course(serv
     assert reassigned.course_id == calculus.id  # the reassignment itself is independent of restore ordering
 
 
-def test_delete_course_with_no_memories_at_all_does_not_error(service_with_memory):
-    course = service_with_memory.create_course("Empty Course")
+def test_delete_course_with_no_memories_at_all_does_not_error(service):
+    course = service.create_course("Empty Course")
 
-    deleted = service_with_memory.delete_course(course.id)
+    deleted = service.delete_course(course.id)
 
     assert deleted.id == course.id

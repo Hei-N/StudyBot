@@ -8,6 +8,7 @@ from studybot.config.settings import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT,
     Settings,
+    default_data_dir,
 )
 from studybot.core.exceptions import ConfigurationError
 from studybot.core.prompts import DEFAULT_SYSTEM_PROMPT
@@ -74,7 +75,7 @@ def test_data_dir_default_is_evaluated_per_instance_not_at_class_definition_time
     """Regression test: the Stage 1 default was computed once at class-body
     evaluation time (a plain expression default), so every `Settings()`
     shared one frozen default no matter what `Path.home()` returned later.
-    A `default_factory` re-runs `_default_data_dir()` on each instantiation."""
+    A `default_factory` re-runs `default_data_dir()` on each instantiation."""
     monkeypatch.setattr(Path, "home", lambda: Path("/tmp/studybot-home-one"))
     first = Settings()
 
@@ -120,3 +121,33 @@ def test_mock_provider_still_works_without_any_ollama_configuration():
     assert settings.model_provider == "mock"
     # Ollama fields still get sensible defaults even though they're unused.
     assert settings.ollama_model == DEFAULT_OLLAMA_MODEL
+
+
+# --- default_data_dir() (Stage 6.2: public so verification tooling can compare against it) --
+
+
+def test_default_data_dir_is_public_and_matches_no_override_resolution():
+    settings_without_override = Settings.from_env(env={})
+
+    assert settings_without_override.data_dir == default_data_dir()
+
+
+def test_default_data_dir_is_under_application_support():
+    resolved = default_data_dir()
+
+    assert resolved.name == "StudyBot"
+    assert resolved.parent.name == "Application Support"
+
+
+def test_an_unrecognized_env_var_is_silently_ignored_not_an_error():
+    """Documents the exact failure mode Stage 6.2 found and fixed in
+    verification tooling: `Settings.from_env` has no way to detect/reject
+    an unrecognized key like the once-used (nonexistent) STUDYBOT_DB_PATH
+    — it's just absent from the returned `Settings`, so a typo'd env var
+    silently falls back to every default, including the real
+    `default_data_dir()`. This is exactly why
+    `studybot.config.verification_guard` exists: nothing in `Settings`
+    itself can catch this class of mistake."""
+    settings = Settings.from_env(env={"STUDYBOT_DB_PATH": "/tmp/totally-ignored.db"})
+
+    assert settings.data_dir == default_data_dir()  # the typo'd override had zero effect

@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 
 from studybot.core.exceptions import SessionError
-from studybot.storage.base import ChatRepository, Course, CourseRepository, LearningMemoryRepository
+from studybot.storage.base import ChatRepository, Course, CourseRepository
 
 _MAX_NAME_LENGTH = 200
 _MAX_CODE_LENGTH = 50
@@ -23,20 +23,9 @@ _MAX_TERM_LENGTH = 50
 class CourseService:
     """Create, look up, edit, and delete courses."""
 
-    def __init__(
-        self,
-        course_repository: CourseRepository,
-        chat_repository: ChatRepository,
-        memory_repository: LearningMemoryRepository | None = None,
-    ) -> None:
+    def __init__(self, course_repository: CourseRepository, chat_repository: ChatRepository) -> None:
         self._courses = course_repository
         self._chats = chat_repository
-        # Optional (Stage 6.1): `None` only in tests/call sites that don't
-        # care about learning memory at all — `delete_course` simply skips
-        # the archiving step below, matching pre-Stage-6.1 behavior (the
-        # database's own `ON DELETE SET NULL` still runs regardless, since
-        # that's enforced by the schema, not by this service).
-        self._memories = memory_repository
 
     def create_course(
         self,
@@ -94,19 +83,19 @@ class CourseService:
         """Delete a course. Its chats and their messages are untouched —
         `SQLiteCourseRepository` relies on ON DELETE SET NULL for that.
 
-        Learning memory (Stage 6.1): the database's `ON DELETE SET NULL`
-        on `learning_memories.course_id` would, by itself, turn every
-        *active* memory that belonged to this course into an active
-        *global* memory the instant the course disappears — silently
-        injecting that subject's context into every other course's chats.
-        To prevent that, every currently active memory in this course is
-        archived *first* (a separate, ordinary repository call — the two
-        calls are not one SQL transaction, but since every call into this
-        service already runs on the API's single dedicated engine thread,
-        or the CLI's single thread, no reader can ever observe the course
-        gone while an affected memory is still active; a crash between the
-        two calls leaves memories archived and the course still present,
-        which is safe to retry). Only memories with `course_id ==
+        Learning memory (Stage 6.1, made atomic in Stage 6.2): the
+        database's `ON DELETE SET NULL` on `learning_memories.course_id`
+        would, by itself, turn every *active* memory that belonged to this
+        course into an active *global* memory the instant the course
+        disappears — silently injecting that subject's context into every
+        other course's chats. `delete_course_archiving_memories` archives
+        every currently active memory in this course and deletes the
+        course as one atomic SQLite transaction (see
+        `CourseRepository.delete_course_archiving_memories`'s docstring):
+        either both happen or neither does — there is no window, on this
+        connection or any other, where the course is gone but an affected
+        memory is still active, or where memories are archived but the
+        course still exists forever. Only memories with `course_id ==
         course_id` are touched — memories that were already global, or
         belong to a different course, are never affected.
 
@@ -124,9 +113,7 @@ class CourseService:
         course = self._courses.get_course(course_id)
         if course is None:
             raise SessionError(f"No course found matching '{course_id}'.")
-        if self._memories is not None:
-            self._memories.archive_for_course(course_id)
-        self._courses.delete_course(course_id)
+        self._courses.delete_course_archiving_memories(course_id)
         return course
 
     def count_chats(self, course_id: str) -> int:

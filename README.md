@@ -1,4 +1,4 @@
-# Study Bot (v0.2, Stage 6.1 — Learning Memory Reliability Pass)
+# Study Bot (v0.2, Stage 6.2 — Storage Reliability)
 
 A local-first personal study assistant. **Stage 5.5** added a local HTTP +
 WebSocket API (`python -m studybot.api`) in front of the same engine the
@@ -15,15 +15,21 @@ chat, in any order. **Stage 6** added **learning memory** — durable,
 course-scoped learning facts ("needs review: vector components",
 "understands significant figures") that StudyBot retains independently of
 raw chat history, are fully user-visible and user-controlled, and are
-woven into future answers for the same course. **Stage 6.1** is a narrow
-reliability pass on top of that: deleting a course now archives its
-memories instead of silently turning them into active global ones (see
-"Learning memory" below), and the prompt guidance around using memory was
-refined after real-model testing surfaced a subtler failure mode (treating
-a memory as authoritative proof of current understanding, rather than a
-soft, overridable hint). The CLI (`python -m studybot`) is unchanged and
-keeps working exactly as before — these are two interfaces onto the same
-core, not a
+woven into future answers for the same course. **Stage 6.1** was a narrow
+reliability pass on top of that: deleting a course started archiving its
+memories instead of silently turning them into active global ones, and the
+prompt guidance around using memory was refined after real-model testing
+surfaced a subtler failure mode (treating a memory as authoritative proof
+of current understanding, rather than a soft, overridable hint). **Stage
+6.2** makes that course-deletion archiving genuinely atomic at the SQLite
+transaction level (previously two sequential calls; now one real
+`BEGIN`/`COMMIT`/`ROLLBACK`, verified with actual failure injection and a
+second independent connection — see "Learning memory" below), and fixes a
+real bug in this project's own verification tooling: several stages'
+real-model verification scripts silently ran against the real default
+database instead of a fresh one (see "Real-model verification scripts"
+below). The CLI (`python -m studybot`) is unchanged and keeps working
+exactly as before — these are two interfaces onto the same core, not a
 replacement. See **[API_CONTRACT.md](API_CONTRACT.md)** for the full API
 reference (endpoints, the WebSocket protocol, error codes, auth).
 
@@ -391,17 +397,25 @@ needs review on a topic) archives it — it stays visible under "Archived"
 and can be restored — rather than being erased. A separate, explicit hard
 delete is available for when a memory should genuinely be gone.
 
-**Deleting a course archives its memories first (Stage 6.1).** The
-database's `ON DELETE SET NULL` would, by itself, turn every active memory
-in a deleted course into an active *global* memory the instant the course
-disappears — silently injecting that subject's context into every other
-course from then on. Instead, `CourseService.delete_course` (used by both
-the API and the CLI's `/course delete` — one implementation, so both stay
-consistent) archives every active memory belonging to that course first,
-then deletes the course. Memories that were already global, or belong to a
-different course, are never touched. The archived memory keeps all its
-content and is fully visible/editable via the usual archive-listing and
-edit operations; recovering it into active use again is a **separate,
+**Deleting a course atomically archives its memories first (Stage 6.1,
+made a real SQLite transaction in Stage 6.2).** The database's `ON DELETE
+SET NULL` would, by itself, turn every active memory in a deleted course
+into an active *global* memory the instant the course disappears —
+silently injecting that subject's context into every other course from
+then on. Instead, `SQLiteCourseRepository.delete_course_archiving_memories`
+archives every active memory belonging to that course and deletes the
+course as **one atomic transaction** (`BEGIN`/`COMMIT`/`ROLLBACK` around
+both statements, on the shared connection) — either both happen or
+neither does, verified by actually injecting a failure between the two
+statements and confirming the archive rolls back too, that a retry
+afterward succeeds cleanly, and that a second, fully independent
+`sqlite3.Connection` to the same file never observes an in-between state.
+`CourseService.delete_course` (used by both the API and the CLI's
+`/course delete` — one implementation, so both stay consistent) is the
+only caller. Memories that were already global, or belong to a different
+course, are never touched. The archived memory keeps all its content and
+is fully visible/editable via the usual archive-listing and edit
+operations; recovering it into active use again is a **separate,
 explicit** choice — restore it (it becomes global, since its course is
 gone) or reassign its `courseId` to a different existing course first —
 never automatic.
@@ -503,6 +517,71 @@ rm ~/Library/Application Support/StudyBot/studybot.db
 
 This removes all chats, courses, and mode assignments — do it only if you
 actually want to lose your local history.
+
+**Inspecting the database safely (read-only):**
+
+```bash
+# A plain read-only look, no risk of writing anything:
+sqlite3 -readonly "~/Library/Application Support/StudyBot/studybot.db" \
+  "SELECT id, name FROM courses; SELECT COUNT(*) FROM chats; SELECT COUNT(*) FROM learning_memories;"
+```
+
+**Backing it up before anything risky** (upgrading, running a real-model
+verification script by hand, etc.) — a plain file copy is safe as long as
+Study Bot isn't actively running (SQLite's on-disk format has no special
+export step for a simple backup):
+
+```bash
+studybot_db="$HOME/Library/Application Support/StudyBot/studybot.db"
+cp "$studybot_db" "$studybot_db.bak-$(date +%Y%m%d-%H%M%S)"
+```
+
+To restore, quit Study Bot and copy the `.bak-...` file back over
+`studybot.db`. Nothing in this codebase ever deletes, resets, or writes to
+this file automatically as a side effect of development/testing — see
+"Real-model verification scripts" below for the guarantee that a
+verification script can't touch it either.
+
+### Real-model verification scripts
+
+A script that starts a real `studybot-server` (`STUDYBOT_MODEL_PROVIDER=
+ollama`) to check actual model behavior needs its own, disposable database
+— never the real one above. **`STUDYBOT_DATA_DIR` is the only environment
+variable that controls where that database lives** (`STUDYBOT_DB_PATH`,
+used in this project's own earlier verification scripts across several
+stages, is not a real setting — `Settings.from_env` silently ignores an
+unrecognized key and falls back to the real default directory; this was
+found and fixed in Stage 6.2, see `src/studybot/config/
+verification_guard.py`). Every real-model verification script should
+follow this exact pattern:
+
+```bash
+# 1. A fresh, unique, disposable directory — never a hardcoded /tmp path
+#    reused across runs, and never the real default.
+export STUDYBOT_DATA_DIR="$(mktemp -d -t studybot_verify)"
+
+# 2. Fail fast if it somehow still resolves to the real default directory
+#    (e.g. STUDYBOT_DATA_DIR wasn't actually exported, or was overridden
+#    again downstream) — this must pass before anything destructive runs.
+python3 scripts/check_verification_env.py || exit 1
+
+# 3. Only now start the real server against that confirmed-safe directory.
+STUDYBOT_MODEL_PROVIDER=ollama studybot-server &
+```
+
+`scripts/check_verification_env.py` prints the resolved database path and
+exits `0` when it's safe, or refuses (exit `1`, nothing printed that looks
+like a green light) when the resolved directory is, contains, or is
+contained by the real default — including when `STUDYBOT_DATA_DIR` was
+never set at all. `studybot.config.verification_guard.
+assert_safe_for_verification(settings)` is the same check, importable
+directly for a verification script that constructs `Settings` in-process
+instead of launching a subprocess. Neither this guard, `scripts/
+check_verification_env.py`, nor anything else in this codebase ever
+deletes, truncates, or modifies the real default database — the guard's
+only job is refusing to let a *verification script* proceed against it;
+resetting your own real data (see above) remains something only you do,
+by hand, on purpose.
 
 ## Running tests
 
@@ -674,12 +753,19 @@ Key modules:
 - `src/studybot/core/course_service.py` — `CourseService`: course
   validation (name required and length-limited; optional fields trimmed;
   full Unicode support) and CRUD, independent of `SessionService`.
-  `delete_course` optionally takes a `LearningMemoryRepository` (Stage
-  6.1) and archives a doomed course's active memories before deleting it —
-  see "Learning memory" above for why
-- `src/studybot/storage/sqlite_learning_memory_repository.py` gained
-  `archive_for_course(course_id)` (Stage 6.1) — a bulk status transition
-  `CourseService.delete_course` uses; not exposed as its own API endpoint
+  `delete_course` calls `CourseRepository.delete_course_archiving_memories`
+  (Stage 6.2) — see "Learning memory" above for why
+- `src/studybot/storage/sqlite_course_repository.py` —
+  `delete_course_archiving_memories` (Stage 6.2) archives a doomed
+  course's active memories and deletes the course as one real SQLite
+  transaction; the one deliberate, documented exception to "one
+  repository, one table" in this codebase, made because a transaction is
+  connection-scoped, not repository-scoped
+- `src/studybot/config/verification_guard.py` (Stage 6.2) —
+  `assert_safe_for_verification(settings)` refuses to let a real-model
+  verification script run against the real default data directory; see
+  "Real-model verification scripts" above and `scripts/
+  check_verification_env.py`, a thin CLI wrapper around it
 - `src/studybot/core/exceptions.py` — `StudyBotError` and subclasses:
   `SessionError` for chat/course navigation or validation problems (not
   found, ambiguous id prefix, empty name, ...); `ChatNotFoundError`/

@@ -31,11 +31,15 @@ DEFAULT_OLLAMA_MODEL = "qwen3:4b"
 DEFAULT_OLLAMA_TIMEOUT = 120.0
 
 
-def _default_data_dir() -> Path:
-    """The OS-appropriate location for this app's persistent data.
+def default_data_dir() -> Path:
+    """The OS-appropriate location for this app's *real* persistent data —
+    i.e. what `data_dir` resolves to when `STUDYBOT_DATA_DIR` is not set.
 
-    Nothing is written here yet in Stage 1/2 (no chats, memory, or indexes
-    are persisted) — this only establishes where future stages should write.
+    Public (Stage 6.2) specifically so verification tooling can compare a
+    resolved `Settings.data_dir` against this and refuse to run a
+    destructive operation if they match — see
+    `studybot.config.verification_guard`. Nothing else in the app should
+    need to call this directly; use `Settings.from_env().data_dir`.
     """
     return Path.home() / "Library" / "Application Support" / _APP_DIR_NAME
 
@@ -47,7 +51,7 @@ class Settings:
     environment: str = "development"
     log_level: str = "INFO"
     model_provider: str = "mock"
-    data_dir: Path = field(default_factory=_default_data_dir)
+    data_dir: Path = field(default_factory=default_data_dir)
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     # Ollama-specific. Read only when model_provider == "ollama", but kept
@@ -91,7 +95,7 @@ class Settings:
         model_provider = source.get(f"{_ENV_PREFIX}MODEL_PROVIDER", "mock")
 
         data_dir_override = source.get(f"{_ENV_PREFIX}DATA_DIR")
-        data_dir = Path(data_dir_override) if data_dir_override else _default_data_dir()
+        data_dir = Path(data_dir_override) if data_dir_override else default_data_dir()
 
         system_prompt = source.get(f"{_ENV_PREFIX}SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 

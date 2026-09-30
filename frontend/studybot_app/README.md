@@ -76,6 +76,38 @@ Tests use hand-written fakes (`test/support/`) for `StudyBotApi` and
 running Python server. Widget tests exercise the adaptive layout at all
 four breakpoints headlessly (no real window needed).
 
+**What automated tests can't confirm:** there is no graphical environment
+in this project's automated-testing/CI setup, so no automated report ever
+claims to have visually clicked through the real macOS app — only
+`flutter analyze`/`flutter test` results, which check widget structure and
+logic, not pixels. If you want to confirm the actual on-screen experience
+yourself (worth doing after any Stage 6.x learning-memory change), here's
+a short manual checklist:
+
+1. Start a real backend (`studybot-server`, `STUDYBOT_MODEL_PROVIDER=
+   ollama`) and run the app (`flutter run -d macos`).
+2. Create a course, open a chat in it, and use the composer's **"Save to
+   Learning Memory"** action on a real assistant reply — confirm the
+   dialog opens pre-filled with that course and chat, pick a kind, save.
+3. Confirm the new memory appears immediately in the **Study Panel**'s
+   "Learning memory" section (grouped under its kind), with no manual
+   refresh needed.
+4. Open the full management view (nav rail → the brain/psychology icon)
+   and confirm the same memory is listed; **edit** its topic and confirm
+   both the management view and the Study Panel reflect the new topic
+   after closing the dialog.
+5. **Archive** it from the management view; confirm it disappears from
+   the Study Panel's active summary and from the management view's
+   default ("Active") filter, then switch that filter to "Archived" and
+   confirm it's there with a **Restore** option.
+6. **Restore** it; confirm it reappears in the Study Panel.
+7. Delete the *course* that memory belongs to (not the memory itself) via
+   the courses list; reopen the management view, switch to "Archived", and
+   confirm the memory is still there, now archived and showing "General"
+   as its course — never silently vanished, never left active.
+8. **Delete** the memory itself (with confirmation) and confirm it's gone
+   from every view.
+
 ## What this app deliberately does not do yet
 
 Materials, notes, mastery tracking, progress, RAG/PDF ingestion, OCR,

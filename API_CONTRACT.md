@@ -347,16 +347,25 @@ completely intact and simply sets `sourceChatId` to `null` (`ON DELETE SET
 NULL`, like `chats.courseId` → `courses.id`). Neither foreign key ever
 cascades a delete into a memory.
 
-**Deleting a course archives its memories first (Stage 6.1).** The
-database's `ON DELETE SET NULL` on `learning_memories.courseId` would, on
-its own, turn every *active* memory in a deleted course into an active
-*global* one the instant the course disappears — silently injecting that
-subject's context into every other course's (and every General chat's)
-requests from then on. `DELETE /courses/{id}` prevents that: every
-currently active memory belonging to that course is archived first, then
-the course is deleted. Only that course's memories are touched — memories
-that were already global, or that belong to a different course, are
-completely unaffected. The archived memory keeps all its content (topic,
+**Deleting a course atomically archives its memories first (Stage 6.1,
+made a real SQLite transaction in Stage 6.2).** The database's `ON DELETE
+SET NULL` on `learning_memories.courseId` would, on its own, turn every
+*active* memory in a deleted course into an active *global* one the
+instant the course disappears — silently injecting that subject's context
+into every other course's (and every General chat's) requests from then
+on. `DELETE /courses/{id}` prevents that: every currently active memory
+belonging to that course is archived, and the course is deleted, as **one
+atomic SQLite transaction** — `BEGIN`/`COMMIT`/`ROLLBACK` around both
+statements on the shared connection, not two independent calls. If
+anything causes the delete to fail, the archiving is rolled back with
+it — verified by actually injecting a failure between the two statements,
+confirming a subsequent retry succeeds cleanly, and confirming a second,
+fully independent `sqlite3.Connection` to the same database file never
+observes an in-between state (course gone but a memory still active, or
+memories archived but the course still there). Only that course's
+memories are touched — memories that were already global, or that belong
+to a different course, are completely unaffected. The archived memory
+keeps all its content (topic,
 kind, summary) and is fully visible via `?status=archived` and editable —
 it is never hard-deleted by this. Its `courseId` still becomes `null` (the
 same `ON DELETE SET NULL` as before), so recovering it is a **separate,

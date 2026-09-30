@@ -1,11 +1,19 @@
 """SQLite-backed `CourseRepository`.
 
-This is one of two modules allowed to contain SQL (the other is
-`sqlite_repository.py`, for chats). Everything else — CLI, `CourseService`,
+This is one of three modules allowed to contain SQL (the others are
+`sqlite_repository.py` for chats and `sqlite_learning_memory_repository.py`
+for learning memory). Everything else — CLI, `CourseService`,
 `SessionService`, a future GUI — talks to the `CourseRepository` protocol.
 
 Schema creation and migration are handled by `storage.database`, which owns
 the shared `sqlite3.Connection` this repository is given.
+
+`delete_course_archiving_memories` is the one place this module reaches
+into the `learning_memories` table directly, rather than only `courses` —
+see its docstring in `storage.base.CourseRepository` for why that's a
+deliberate, narrow exception (SQLite transactions are connection-scoped,
+not repository-scoped) rather than a precedent for repositories reaching
+into each other's tables generally.
 """
 
 from __future__ import annotations
@@ -13,6 +21,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
+from studybot.core.learning_memory import MemoryStatus
 from studybot.storage.base import Course
 
 
@@ -80,4 +89,21 @@ class SQLiteCourseRepository:
         # the association on any chats that belonged to this course; the
         # chats and their messages are never touched by this statement.
         with self._conn:
+            self._conn.execute("DELETE FROM courses WHERE id = ?", (course_id,))
+
+    def delete_course_archiving_memories(self, course_id: str) -> None:
+        """Archive the course's active memories and delete the course, as
+        one atomic SQLite transaction — see the protocol docstring for the
+        full rationale. If the `DELETE` fails for any reason, the `UPDATE`
+        is rolled back too: `with self._conn:` commits only if the whole
+        block completes without raising, and rolls back everything in the
+        block otherwise (verified by test, including with a genuinely
+        independent second connection to the same database file).
+        """
+        now = _now()
+        with self._conn:
+            self._conn.execute(
+                "UPDATE learning_memories SET status = ?, updated_at = ? WHERE course_id = ? AND status = ?",
+                (MemoryStatus.ARCHIVED.value, now, course_id, MemoryStatus.ACTIVE.value),
+            )
             self._conn.execute("DELETE FROM courses WHERE id = ?", (course_id,))
