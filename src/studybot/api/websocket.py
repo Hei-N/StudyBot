@@ -103,7 +103,8 @@ async def _handle_message(websocket: WebSocket, engine: Engine, payload: Any) ->
     generator = await engine.call(engine.app.sessions.send_streaming_to_chat, chat_id, content)
     try:
         async for chunk in _iterate_in_thread(engine, generator):
-            await websocket.send_json({"type": "delta", "content": chunk, "chatId": chat_id})
+            if chunk:  # "" is a progress signal (see ModelProvider.stream): never sent
+                await websocket.send_json({"type": "delta", "content": chunk, "chatId": chat_id})
     except ChatNotFoundError as exc:
         await _send_error(websocket, CHAT_NOT_FOUND, str(exc), chat_id)
         return

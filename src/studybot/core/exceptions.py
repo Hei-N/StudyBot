@@ -20,6 +20,16 @@ class ModelError(StudyBotError):
     """Raised when a model provider fails to produce a response."""
 
 
+class UnsafeModelOutputError(ModelError):
+    """The model's output could not be safely separated into a user-facing
+    answer and internal reasoning (Stage 6.3), or contained no answer at
+    all. The generation fails closed: nothing further is streamed, nothing
+    is persisted as an assistant message. A `ModelError` subtype, so every
+    existing caller (WebSocket `MODEL_ERROR`, CLI error display, the
+    "persist only the user message on failure" guarantee) handles it with
+    no changes."""
+
+
 class SessionError(StudyBotError):
     """Raised for invalid chat/course navigation or validation: not found,
     an ambiguous id prefix, an empty/too-long name, and the like."""

@@ -1,4 +1,4 @@
-# Study Bot (v0.2, Stage 6.2 — Storage Reliability)
+# Study Bot (v0.2, Stage 6.3 — Response Reliability)
 
 A local-first personal study assistant. **Stage 5.5** added a local HTTP +
 WebSocket API (`python -m studybot.api`) in front of the same engine the
@@ -101,9 +101,10 @@ The product name is provisional; the internal Python package is `studybot`.
   layout; see [frontend/studybot_app/README.md](frontend/studybot_app/README.md)
   for how to run it
 - ✅ Two reasoning modes, one active per chat, independent of teaching mode:
-  **Fast** (`think=False` — the default for every new chat) and **Deep
-  Think** (`think=True`, for harder questions). Hidden model "thinking" is
-  never shown in the UI and never persisted — only the final answer is.
+  **Fast** (the default for every new chat) and **Deep Think** (for harder
+  questions). Hidden model "thinking" is never shown in the UI and never
+  persisted — only the final answer is (Stage 6.3 enforces this at the
+  model-provider boundary for every mode; see "Reasoning modes").
 - ❌ No Materials, Notes, Progress, RAG, mastery, or PDFs in the Flutter app
   — only what the API above actually exposes
 - ❌ No remote/network exposure, cloud deployment, or user accounts — the
@@ -334,28 +335,62 @@ any teaching mode with any reasoning mode.
 
 | Mode | `/reasoning` name | What it does |
 |------|-------------------|--------------|
-| Fast | `fast` | Answers immediately (`think=False`). **Default for every new chat.** |
-| Deep Think | `deep` | Reasons through the problem before answering (`think=True`) — slower, for harder questions. |
+| Fast | `fast` | Answers without extended reasoning, *if the model supports turning reasoning off*. **Default for every new chat.** |
+| Deep Think | `deep` | Reasons through the problem before answering — slower, for harder questions. |
 
 ```
 You > /reasoning
 Reasoning mode: Fast
 
 Available:
-  fast       Answers immediately, without extended step-by-step reasoning.
+  fast       Answers without extended reasoning when the model supports it — faster.
   deep       Reasons through the problem before answering — slower, for harder questions.
 
 You > /reasoning deep
 Reasoning mode changed to Deep Think.
 ```
 
-Measured against real `qwen3:4b` (five prompts each; see
-[API_CONTRACT.md](API_CONTRACT.md#reasoning-modes-stage-57) for the
-mechanism): median time to the first visible token was **~3.7s in Fast**
-vs **~21s in Deep** — Fast is the right default for a conversational feel;
-Deep is opt-in for problems that benefit from it. Whichever mode is active,
-the model's hidden reasoning/thinking text is never shown in the UI and
-never persisted to the database — only the final answer is.
+**With the default `qwen3:4b`, Fast and Deep behave the same.** That tag
+is Qwen3-4B-Thinking-2507, a *thinking-only* model: it always reasons
+before answering, and asking it not to (`think=False`) only stops Ollama
+from separating the reasoning from the answer — which is exactly how
+Stage 6.3's bug happened (the model's planning text streamed into the chat
+as if it were the reply, ending in a stray `</think>`). StudyBot now reads
+the model's capabilities from Ollama and always requests separated
+reasoning from a thinking-only model; Fast only gives a real speed-up with
+a *toggleable* model (a hybrid Qwen3 build), where it maps to
+`think=False`. The earlier "~3.7s to first token in Fast" figure (Stage
+5.7) was measuring the first token of *leaked reasoning*, not of the
+answer, and is withdrawn. See
+[API_CONTRACT.md](API_CONTRACT.md#reasoning-modes-stage-57) for the full
+mapping.
+
+Whichever mode is active, the model's reasoning is never shown in the UI
+and never persisted — only the final answer is. Every reply passes one
+filter at the model-provider boundary that strips a leading `<think>…
+</think>` span without ever displaying it, and **fails closed** (the reply
+is discarded with an error; only your message is saved) if reasoning
+can't be separated from the answer with confidence. Legitimate mentions of
+those tags inside code blocks are left alone.
+
+**Replies saved before Stage 6.3** may still contain leaked reasoning.
+StudyBot keeps confidently-identified reasoning in those old replies out
+of every new model request without modifying them. To see which chats are
+affected (read-only; prints ids and counts, never content):
+
+```bash
+python3 scripts/audit_reasoning_contamination.py
+```
+
+Rewriting the stored replies is optional and only happens if you ask for
+it — stop `studybot-server` first; a full backup is written before
+anything changes, and ambiguous replies are never touched:
+
+```bash
+python3 scripts/audit_reasoning_contamination.py --apply --backup-dir ~/studybot-backups --yes
+# undo:
+python3 scripts/audit_reasoning_contamination.py --rollback ~/studybot-backups/<name>.manifest.json --yes
+```
 
 ### Learning memory
 

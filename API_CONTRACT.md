@@ -108,7 +108,7 @@ Errors are JSON with a stable, machine-readable `code` and a human-readable
 | `INVALID_MEMORY_KIND` | 422 | The `kind` string isn't one of the five recognized learning-memory kinds. |
 | `INVALID_MEMORY_STATUS` | 422 | The `status` filter isn't `active` or `archived`. |
 | `MODEL_UNAVAILABLE` | — | Reported via `GET /health`'s `providerReachable: false`, not as an error response — see below. |
-| `MODEL_ERROR` | — (WebSocket `error` event) | The model failed to produce a response (connection issue, missing model, timeout, ...). Covers every generation-time failure uniformly; `message` carries the same user-safe detail text `OllamaModel` already produces for the CLI (e.g. the exact `ollama pull ...` command for a missing model). There is no finer-grained code because the underlying domain exception (`ModelError`) doesn't currently distinguish sub-cases either — see "Known limitations". |
+| `MODEL_ERROR` | — (WebSocket `error` event) | The model failed to produce a response (connection issue, missing model, timeout, reply whose reasoning couldn't be safely separated from the answer, no answer at all, ...). Covers every generation-time failure uniformly; `message` carries the same user-safe detail text `OllamaModel` already produces for the CLI (e.g. the exact `ollama pull ...` command for a missing model). There is no finer-grained code because the underlying domain exception (`ModelError`) doesn't currently distinguish sub-cases either — see "Known limitations". |
 | `VALIDATION_ERROR` | 422 | A business-rule validation failed (e.g. an empty course/chat name) or a WebSocket message was malformed. |
 | `UNAUTHORIZED` | 401 | Missing/invalid auth token. |
 | `INTERNAL_ERROR` | 500 | An unexpected server-side exception. The traceback is logged server-side (method + path only — never a request body) and never sent to the client. |
@@ -204,11 +204,35 @@ controls instructional behavior via the system prompt; reasoning mode
 latency and never touches the system prompt at all. A chat can be in any
 combination of the two, and changing one never affects the other.
 
-`fast` maps to Ollama's `think=False`; `deep` maps to `think=True` — see
-`models/ollama.py`. **Hidden reasoning/thinking text is never sent to a
-client and never persisted** — only the final, user-visible answer is
-ever included in a `delta` event, `MessageOut.content`, or a WebSocket
-`message_completed` payload, regardless of reasoning mode.
+How a mode maps to Ollama's `think` parameter depends on the configured
+model, which the engine reads once from Ollama's `/api/show` (Stage 6.3 —
+see `models/ollama.py`):
+
+| Model's thinking capability | `fast` | `deep` |
+|---|---|---|
+| Toggleable (hybrid, e.g. original Qwen3) | `think=False` | `think=True` |
+| Thinking-only (e.g. `qwen3:4b` = Qwen3-4B-Thinking-2507) | `think=True` | `think=True` |
+| Not a thinking model | not sent | not sent |
+| Unknown (probe failed) | `think=False`, output fully buffered and filtered | `think=True` |
+
+A thinking-only model reasons whether or not it's asked to, and
+`think=False` only stops Ollama from *separating* that reasoning from the
+answer — it then arrives inside the answer text (the Stage 6.3 leak). So
+for such a model Fast and Deep behave identically: **Fast offers no
+speed-up with `qwen3:4b`**; it does with a toggleable model.
+
+**Hidden reasoning/thinking text is never sent to a client and never
+persisted** — only the final, user-visible answer is ever included in a
+`delta` event, `MessageOut.content`, or a WebSocket `message_completed`
+payload, regardless of reasoning or teaching mode. Beyond using Ollama's
+structured separation, every response (streamed or not) passes through
+one reasoning filter at the provider boundary (`core/output_integrity.py`)
+that strips a leading `<think>…</think>` span — split across any number of
+chunks, never shown and then retracted — and **fails closed** with
+`MODEL_ERROR` when reasoning can't be separated confidently (an
+unterminated span, or a `</think>` marker in answer prose outside code) or
+when no answer remains. Mentions of the tags inside Markdown code (fenced
+blocks, inline code) are left alone.
 
 ### Chats
 
@@ -509,7 +533,14 @@ arrives quickly. In Deep mode, expect a materially longer gap between
 expected, not a stall. **Whichever mode is active, only visible-answer
 `delta` chunks are ever sent** — if the backend model produces hidden
 "thinking" content, it is filtered out before reaching the WebSocket, never
-streamed and never included in the final `message_completed.message`.
+streamed and never included in the final `message_completed.message`. With
+a thinking-only model (the default `qwen3:4b`) both modes reason first, so
+both show that longer gap (see "Reasoning modes"). If the reasoning filter
+fails closed partway through a stream, some answer `delta`s may already
+have been sent; the stream then ends with a `MODEL_ERROR` `error` event
+instead of `message_completed` and — as for any failure — nothing but the
+user's message is persisted, so clients must discard the partial text (the
+Flutter app already does).
 
 This reuses `SessionService.send_streaming_to_chat()` (the explicit-by-id
 layer added in Stage 5.8) — there is no second streaming implementation,

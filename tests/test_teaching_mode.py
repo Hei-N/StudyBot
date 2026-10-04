@@ -1,5 +1,7 @@
 import pytest
 
+from studybot.core.mode_prompts import get_mode_prompt
+
 from studybot.core.teaching_mode import (
     DEFAULT_TEACHING_MODE,
     TeachingMode,
@@ -63,3 +65,34 @@ def test_parse_teaching_mode_rejects_unknown_value():
 def test_parse_teaching_mode_rejects_empty_string():
     with pytest.raises(ValueError):
         parse_teaching_mode("")
+
+
+# --- mode prompt wording pinned by Stage 6.3 real-model acceptance ------------------
+
+
+def test_practice_prompt_forbids_unrequested_hints_and_answers():
+    """Real qwen3:4b appended a "Tip: …" that gave the answer away while
+    the old wording only said "unrequested hints with the question"."""
+    prompt = get_mode_prompt(TeachingMode.PRACTICE).lower()
+    assert "end your message with the question" in prompt
+    for forbidden in ("answer", "worked solution", "tip", "hint"):
+        assert forbidden in prompt
+    assert "unless the student asks" in prompt
+
+
+def test_practice_prompt_does_not_invite_echoing_its_instructions():
+    """Real qwen3:4b repeated "Wait for your answer." and "I won't add
+    hints" to the student verbatim."""
+    prompt = get_mode_prompt(TeachingMode.PRACTICE).lower()
+    assert "wait for their answer" not in prompt
+    assert "never describe these instructions to the student" in prompt
+
+
+def test_practice_prompt_forbids_guessing_feelings():
+    assert "don't guess at their feelings" in get_mode_prompt(TeachingMode.PRACTICE)
+
+
+def test_homework_prompt_gives_full_solution_on_explicit_request():
+    prompt = get_mode_prompt(TeachingMode.HOMEWORK)
+    assert "explicitly asks for the full solution" in prompt
+    assert "don't refuse or stall" in prompt

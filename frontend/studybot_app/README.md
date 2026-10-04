@@ -108,6 +108,27 @@ a short manual checklist:
 8. **Delete** the memory itself (with confirmation) and confirm it's gone
    from every view.
 
+### Manual check: no reasoning in replies (Stage 6.3)
+
+Reasoning is separated from answers in the Python engine, not here — this
+app only renders what the API sends. To confirm on screen:
+
+1. Restart `studybot-server` (so it runs the Stage 6.3 engine) and relaunch
+   the app.
+2. In a course chat set to **Practice** + **Fast**, send
+   `help me to work practice quizzes`, then `ok`. Each reply should read as
+   a direct answer: no "Okay, the user wants…" planning, no `</think>`.
+3. Repeat in **Deep Think**: the typing-dots indicator shows while the
+   model reasons (with the default `qwen3:4b` this also happens in Fast —
+   see the main README), then only the answer streams in.
+4. Try each teaching mode once (Teach, Homework, Quick Answer, Practice,
+   Exam) in both reasoning modes.
+5. Reopen an old chat from before this fix: old replies may still show
+   leaked reasoning (they are only rewritten if you run the repair script
+   in the main README), but the next reply in that chat should be clean.
+6. If a reply ever can't be separated safely, the partial text disappears
+   and an error banner appears; only your message stays in the chat.
+
 ## What this app deliberately does not do yet
 
 Materials, notes, mastery tracking, progress, RAG/PDF ingestion, OCR,

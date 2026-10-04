@@ -70,3 +70,77 @@ class FakeOllamaClient:
         if self._list_exception is not None:
             raise self._list_exception
         return self._list_response
+
+
+# Sentinel reasoning text: tests assert it never reaches any visible,
+# persisted or re-sent surface.
+REASONING_SENTINEL = "SECRET-REASONING-7f3a"
+
+
+class FakeThinkingModelClient:
+    """Imitates how Ollama serves a *thinking* Qwen3 model, decided per
+    request by the `think` parameter — the Stage 6.3 leak, reproduced
+    deterministically:
+
+    * `think=True`: reasoning arrives in the separate `thinking` field,
+      `content` holds only the answer (Ollama's structured separation).
+    * `think=False` with `thinking_only=True` (Qwen3-4B-Thinking-2507): the
+      model reasons anyway; its template pre-opened `<think>`, so `content`
+      carries the reasoning, a bare `</think>` line, then the answer.
+    * `think=False` with `thinking_only=False` (a hybrid model), or
+      `think=None`: `content` is just the answer.
+    * `inline_tags=True`: `content` wraps reasoning in an explicit
+      `<think>…</think>` span regardless of `think`.
+
+    Streams are split into `chunk_size`-character pieces (so tags are split
+    across chunks), with empty chunks interleaved. `answer_for` builds the
+    answer from the request messages, so tests can see what the model was
+    given.
+    """
+
+    def __init__(
+        self,
+        *,
+        thinking_only: bool = True,
+        inline_tags: bool = False,
+        chunk_size: int = 3,
+        answer_for: Callable[[list[dict]], str] | None = None,
+        reasoning: str = f"Okay, the user wants help. {REASONING_SENTINEL} Let me plan the reply.",
+    ) -> None:
+        self.thinking_only = thinking_only
+        self.inline_tags = inline_tags
+        self.chunk_size = chunk_size
+        self.answer_for = answer_for or (lambda messages: "Here is the answer.")
+        self.reasoning = reasoning
+        self.chat_calls: list[dict] = []
+
+    def _parts(self, messages, think) -> tuple[str, str]:
+        """(content, thinking) for this request."""
+        answer = self.answer_for(messages)
+        if self.inline_tags:
+            return f"<think>\n{self.reasoning}\n</think>\n\n{answer}", ""
+        if think is True:
+            return answer, self.reasoning
+        if think is False and self.thinking_only:
+            return f"{self.reasoning}\n</think>\n\n{answer}", ""
+        return answer, ""
+
+    def chat(self, model, messages, stream=False, think=None, keep_alive=None):
+        self.chat_calls.append(
+            {"model": model, "messages": messages, "stream": stream, "think": think, "keep_alive": keep_alive}
+        )
+        content, thinking = self._parts(messages, think)
+        if not stream:
+            return FakeChatResponse(content, thinking or None)
+        return self._stream(content, thinking)
+
+    def _stream(self, content: str, thinking: str) -> Iterator[FakeChatResponse]:
+        size = self.chunk_size
+        for i in range(0, len(thinking), size):
+            yield FakeChatResponse("", thinking[i : i + size])
+        for i in range(0, len(content), size):
+            yield FakeChatResponse("")
+            yield FakeChatResponse(content[i : i + size])
+
+    def list(self):
+        return FakeListResponse(["qwen3:4b"])

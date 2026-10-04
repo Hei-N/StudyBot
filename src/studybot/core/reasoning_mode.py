@@ -42,7 +42,7 @@ class ReasoningModeInfo:
 
 _MODE_INFO: dict[ReasoningMode, ReasoningModeInfo] = {
     ReasoningMode.FAST: ReasoningModeInfo(
-        ReasoningMode.FAST, "Fast", "Answers immediately, without extended step-by-step reasoning."
+        ReasoningMode.FAST, "Fast", "Answers without extended reasoning when the model supports it — faster."
     ),
     ReasoningMode.DEEP: ReasoningModeInfo(
         ReasoningMode.DEEP,

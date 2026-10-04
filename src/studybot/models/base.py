@@ -87,6 +87,14 @@ class ModelProvider(Protocol):
         backend-specific exceptions escape. Hidden reasoning/thinking
         chunks, if the backend emits them, must never be yielded here —
         only user-visible content.
+
+        An empty string is a *progress signal*, not content: providers may
+        yield `""` while the model is working without producing visible
+        text yet (e.g. reasoning). Callers that display or send chunks
+        skip empty ones. It exists because the API runs each `next()` on
+        its single engine thread (`api/websocket.py`): a provider that sat
+        silently inside one `next()` for a minute of reasoning would block
+        every other request — health checks included — for that long.
         """
         ...
 

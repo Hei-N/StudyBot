@@ -10,11 +10,19 @@ from __future__ import annotations
 import logging
 from typing import Iterator, Sequence
 
-from studybot.core.messages import Message
+from studybot.core.messages import Message, Role
+from studybot.core.output_integrity import strip_confident_reasoning
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.models.base import ModelProvider, ProviderStatus
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_restored(message: Message) -> Message:
+    if message.role is not Role.ASSISTANT:
+        return message
+    cleaned = strip_confident_reasoning(message.content)
+    return message if cleaned is message.content else Message.assistant(cleaned)
 
 
 class ChatService:
@@ -31,6 +39,14 @@ class ChatService:
         persistence) after the system prompt, without re-sending it to the
         model until the next `send`/`send_streaming` call.
 
+        Assistant turns in `history` are passed through
+        `strip_confident_reasoning` first (Stage 6.3): a reply persisted
+        before reasoning was separated at the provider boundary may still
+        hold the model's leaked chain-of-thought, which must not be fed
+        back to the model as if the assistant had said it. Storage is never
+        touched — only this in-memory copy — and a reply is only changed
+        when the reasoning portion is identified with confidence.
+
         `reasoning_mode` is fixed for this service instance's lifetime, like
         `system_prompt` — callers (`SessionService`) that need to change it
         for an existing chat rebuild the `ChatService`, the same way they
@@ -41,7 +57,7 @@ class ChatService:
         self._history: list[Message] = []
         if system_prompt:
             self._history.append(Message.system(system_prompt))
-        self._history.extend(history)
+        self._history.extend(_sanitize_restored(m) for m in history)
 
     @property
     def history(self) -> Sequence[Message]:

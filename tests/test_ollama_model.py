@@ -5,12 +5,17 @@ import pytest
 from studybot.core.exceptions import ModelError
 from studybot.core.messages import Message
 from studybot.core.reasoning_mode import ReasoningMode
-from studybot.models.ollama import OllamaModel
+from studybot.models.ollama import OllamaModel, ThinkingCapability
 from tests.fake_ollama import FakeChatResponse, FakeListResponse, FakeOllamaClient
 
 
-def make_model(client: FakeOllamaClient, model: str = "qwen3:4b") -> OllamaModel:
-    return OllamaModel(model=model, host="http://localhost:11434", client=client)
+def make_model(
+    client: FakeOllamaClient,
+    model: str = "qwen3:4b",
+    capability: ThinkingCapability = ThinkingCapability.TOGGLEABLE,
+) -> OllamaModel:
+    # Capability is always pinned: a test must never probe a real Ollama.
+    return OllamaModel(model=model, host="http://localhost:11434", client=client, thinking_capability=capability)
 
 
 # --- message conversion -----------------------------------------------------
@@ -165,7 +170,7 @@ def test_stream_yields_each_chunk_of_content():
     assert chunks == ["Hello", " world"]
 
 
-def test_stream_skips_empty_or_none_content_chunks():
+def test_stream_turns_empty_or_none_content_into_progress_signals():
     def stream_factory():
         yield FakeChatResponse("Hello")
         yield FakeChatResponse(None)
@@ -177,7 +182,9 @@ def test_stream_skips_empty_or_none_content_chunks():
 
     chunks = list(model.stream([Message.user("hi")]))
 
-    assert chunks == ["Hello", " world"]
+    # One yield per Ollama chunk; chunks with no visible text become ""
+    # progress signals (see ModelProvider.stream), never None.
+    assert chunks == ["Hello", "", "", " world"]
 
 
 def test_stream_never_yields_hidden_thinking_chunks():
@@ -196,7 +203,8 @@ def test_stream_never_yields_hidden_thinking_chunks():
 
     chunks = list(model.stream([Message.user("hi")], reasoning_mode=ReasoningMode.DEEP))
 
-    assert chunks == ["The answer is 42."]
+    # Thinking-only chunks surface as "" progress signals, never as text.
+    assert chunks == ["", "", "The answer is 42."]
     assert not any("reasoning step" in c for c in chunks)
 
 

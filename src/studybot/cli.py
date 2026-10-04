@@ -123,6 +123,8 @@ def _send_and_print(app: StudyBotApp, text: str) -> None:
     prefix_printed = False
     try:
         for chunk in app.sessions.send_streaming(text):
+            if not chunk:
+                continue  # a progress signal (model still reasoning), not text
             if not prefix_printed:
                 print("Bot > ", end="", flush=True)
                 prefix_printed = True
