@@ -12,7 +12,7 @@ from studybot.core.mode_prompts import get_mode_prompt
 from studybot.core.reasoning_mode import ReasoningMode
 from studybot.core.session_service import SessionService
 from studybot.core.teaching_mode import TeachingMode
-from studybot.models.base import ModelResponse, ProviderStatus
+from studybot.models.base import ModelCapabilities, ModelResponse, ProviderStatus
 from studybot.models.mock import MockModel
 from studybot.storage.base import ChatSession
 from studybot.storage.database import open_database
@@ -1807,3 +1807,35 @@ def test_memory_context_appears_before_teaching_mode_instructions(repository, co
 
     system_message = model.received_calls[-1][0].content
     assert system_message.index("Background on this student") < system_message.index("Teaching mode:")
+
+
+class CapabilitiesRecordingModel(RecordingModel):
+    CAPABILITIES = ModelCapabilities(False, True, True, True, 32768)
+
+    def get_capabilities(self) -> ModelCapabilities:
+        return self.CAPABILITIES
+
+
+def test_get_model_capabilities_returns_provider_capabilities_without_side_effects(repository, course_repository):
+    course = course_repository.create_course("course-phy", "Physics", "PHY101", None, None)
+    model = CapabilitiesRecordingModel()
+    service = make_service(repository, course_repository, model=model)
+    service.open_course_context(course.id)
+    service.set_teaching_mode(TeachingMode.EXAM)
+    service.set_reasoning_mode(ReasoningMode.DEEP)
+    service.send("hello")
+    session_before = service.active_session
+    history_before = service.history
+    stored_before = repository.load_messages(session_before.id)
+    calls_before = len(model.received_calls)
+
+    capabilities = service.get_model_capabilities()
+
+    assert capabilities is CapabilitiesRecordingModel.CAPABILITIES
+    assert service.active_session == session_before
+    assert service.history == history_before
+    assert repository.load_messages(session_before.id) == stored_before
+    assert service.get_teaching_mode() is TeachingMode.EXAM
+    assert service.get_reasoning_mode() is ReasoningMode.DEEP
+    assert service.active_session.course_id == course.id
+    assert len(model.received_calls) == calls_before  # no generation happened

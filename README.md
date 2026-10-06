@@ -1,4 +1,4 @@
-# Study Bot (v0.2, Stage 6.3 — Response Reliability)
+# Study Bot (v0.2, Stage 6.4 — AI Core Foundation)
 
 A local-first personal study assistant. **Stage 5.5** added a local HTTP +
 WebSocket API (`python -m studybot.api`) in front of the same engine the
@@ -527,6 +527,51 @@ The model name is entirely configuration-driven — swapping in `qwen3:8b`,
 `qwen3:14b`, a Gemma or Llama model, or any other model already pulled into
 Ollama is just an environment variable change; nothing in the code is tied
 to Qwen specifically.
+
+### Choosing and benchmarking a local model (Stage 6.4)
+
+**The default is `qwen3:4b`.** Stage 6.4 benchmarked it against `qwen3.5:4b` and
+`gemma3:4b` on an 8 GB M3 Mac, through the real StudyBot stack with identical
+prompts, and **no upgrade was justified**: both candidates failed hard gates
+(`qwen3.5:4b` intermittently ran out of its 4,096-token context while
+reasoning in Deep mode and, in Practice, revealed answers before the learner
+tried; `gemma3:4b` revealed Practice answers and wrongly marked incorrect
+answers correct). To try another model, install it (`ollama pull <tag>`) and
+override it — no code changes:
+
+```bash
+STUDYBOT_MODEL_PROVIDER=ollama STUDYBOT_OLLAMA_MODEL=qwen3.5:4b studybot-server
+```
+
+What a model can do is **discovered at runtime** from Ollama's local metadata
+(`/api/show`), never assumed from its name: vision, tools, thinking, whether
+Fast and Deep genuinely differ, and its advertised context length. Fast and
+Deep only differ for a model whose thinking can be switched off; an
+always-thinking model (like the default) runs both the same way. A model may
+report **vision or tool support that StudyBot does not use yet** — the message
+pipeline is text-only and there is no tool loop; capabilities are recorded for
+future stages, not wired in.
+
+> **8 GB machines:** don't raise Ollama's context length (`num_ctx` /
+> `OLLAMA_CONTEXT_LENGTH`) casually. A model's *advertised* context (often
+> 128K+) is not what Ollama actually uses (check `ollama ps`; currently 4,096
+> here), and a longer one costs memory you may not have. A thinking model
+> that spends the whole window reasoning produces no answer, which StudyBot
+> reports as an error rather than showing partial reasoning.
+
+To compare models yourself (development tool; uses a throwaway database per
+model, guarded so it can never touch your real data, and prints answers only
+with `--show-answers`):
+
+```bash
+python scripts/benchmark_local_models.py \
+  --models qwen3:4b qwen3.5:4b gemma3:4b --output results.json
+python scripts/benchmark_local_models.py --score-from results.json --grades grades.json
+```
+
+Saved results hold scenario ids, timings, lengths and capability values —
+never prompts or answers. See [AI_ARCHITECTURE.md](AI_ARCHITECTURE.md) for how
+the AI boundary is structured and what is deliberately not built yet.
 
 ## Where chats and courses are stored
 

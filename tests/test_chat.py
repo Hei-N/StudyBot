@@ -6,7 +6,7 @@ from studybot.core.chat import ChatService
 from studybot.core.exceptions import ModelError
 from studybot.core.messages import Message, Role
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
-from studybot.models.base import ModelResponse, ProviderStatus
+from studybot.models.base import ModelCapabilities, ModelResponse, ProviderStatus
 from studybot.models.mock import MockModel
 
 
@@ -278,3 +278,35 @@ def test_streaming_failure_propagates_and_does_not_record_assistant_message():
 
     assert received == ["partial ", "output"]
     assert [m.role for m in chat.history] == [Role.USER]
+
+
+class CapabilitiesModel:
+    """Returns a distinctive capabilities object and records how often it
+    was asked — to prove `ChatService` is a pure pass-through."""
+
+    name = "capabilities"
+    CAPABILITIES = ModelCapabilities(True, False, True, False, 4096)
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_capabilities(self) -> ModelCapabilities:
+        self.calls += 1
+        return self.CAPABILITIES
+
+
+def test_get_capabilities_delegates_exactly_to_the_model_provider():
+    model = CapabilitiesModel()
+    chat = ChatService(model)
+
+    assert chat.get_capabilities() is CapabilitiesModel.CAPABILITIES
+    assert model.calls == 1
+
+
+def test_get_capabilities_does_not_touch_history():
+    chat = ChatService(CapabilitiesModel(), system_prompt="sys", history=[Message.user("hi")])
+    before = chat.history
+
+    chat.get_capabilities()
+
+    assert chat.history == before

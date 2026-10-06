@@ -92,7 +92,7 @@ from studybot.core.mode_prompts import get_mode_prompt
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
 from studybot.core.titles import generate_title
-from studybot.models.base import ModelProvider, ProviderStatus
+from studybot.models.base import ModelCapabilities, ModelProvider, ProviderStatus
 from studybot.storage.base import ChatRepository, ChatSession, Course, CourseRepository, MessageRecord
 
 logger = logging.getLogger(__name__)
@@ -427,6 +427,12 @@ class SessionService:
 
     def get_status(self) -> ProviderStatus:
         return self._chat.get_status()
+
+    def get_model_capabilities(self) -> ModelCapabilities:
+        """What the configured model reports it supports. A read-only
+        delegation: it never touches the active chat, messages, course, or
+        either mode. Internal for now — not exposed through the API."""
+        return self._chat.get_capabilities()
 
     # --- internal --------------------------------------------------------------
 

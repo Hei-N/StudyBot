@@ -8,12 +8,18 @@ its callers should know which concrete model backend is in use.
 from __future__ import annotations
 
 import logging
-from typing import Iterator, Sequence
+from typing import TYPE_CHECKING, Iterator, Sequence
 
 from studybot.core.messages import Message, Role
 from studybot.core.output_integrity import strip_confident_reasoning
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
-from studybot.models.base import ModelProvider, ProviderStatus
+
+if TYPE_CHECKING:
+    # Annotation-only. Importing the model boundary at runtime here would make
+    # `studybot.models` and `studybot.core` import each other, so importing
+    # `studybot.models.ollama` first in a fresh interpreter failed — a
+    # blocker for ever reusing the model layer on its own.
+    from studybot.models.base import ModelCapabilities, ModelProvider, ProviderStatus
 
 logger = logging.getLogger(__name__)
 
@@ -114,3 +120,8 @@ class ChatService:
     def get_status(self) -> ProviderStatus:
         """Check the underlying model provider's current health."""
         return self._model.get_status()
+
+    def get_capabilities(self) -> ModelCapabilities:
+        """What the underlying model reports it supports (see
+        `ModelCapabilities`) — a pure delegation, no StudyBot logic."""
+        return self._model.get_capabilities()

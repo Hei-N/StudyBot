@@ -19,7 +19,7 @@ from studybot.core.exceptions import ModelError
 from studybot.core.output_integrity import ReasoningOutputFilter
 from studybot.core.messages import Message, Role
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
-from studybot.models.base import ModelResponse, ProviderStatus
+from studybot.models.base import ModelCapabilities, ModelResponse, ProviderStatus
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,65 @@ def parse_thinking_capability(show_payload: dict[str, Any]) -> ThinkingCapabilit
         return ThinkingCapability.UNKNOWN
     return ThinkingCapability.TOGGLEABLE if False in values else ThinkingCapability.ALWAYS_ON
 
+
+def _capability_flag(show_payload: dict[str, Any], name: str) -> bool | None:
+    """True/False if `/api/show` carries a valid `capabilities` list (the
+    flag is present / absent), None if that list is missing or malformed."""
+    capabilities = show_payload.get("capabilities")
+    if not isinstance(capabilities, list):
+        return None
+    return name in capabilities
+
+
+def _context_window(show_payload: dict[str, Any]) -> int | None:
+    """The largest positive integer under a `*.context_length` key of
+    `model_info`, or None. Model families name this key differently
+    (`qwen3.context_length`, `gemma3.context_length`, ...), hence the suffix
+    match rather than a per-family table."""
+    model_info = show_payload.get("model_info")
+    if not isinstance(model_info, dict):
+        return None
+    lengths = [
+        value
+        for key, value in model_info.items()
+        if isinstance(key, str)
+        and key.endswith(".context_length")
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and value > 0
+    ]
+    return max(lengths) if lengths else None
+
+
+def _thinking_flags(capability: ThinkingCapability) -> tuple[bool | None, bool | None]:
+    """(supports_thinking, reasoning_modes_distinct) for a classification."""
+    if capability is ThinkingCapability.TOGGLEABLE:
+        return True, True
+    if capability is ThinkingCapability.ALWAYS_ON:
+        return True, False  # Fast and Deep must both reason (output integrity)
+    if capability is ThinkingCapability.NONE:
+        return False, False
+    return None, None
+
+
+def capabilities_from_show(
+    show_payload: dict[str, Any] | None, thinking: ThinkingCapability
+) -> ModelCapabilities:
+    """Provider-neutral `ModelCapabilities` from a raw `/api/show` payload
+    (None = the lookup failed) and the thinking classification to use —
+    normally parsed from the same payload, but a constructor-pinned value
+    wins for reasoning behavior (see `OllamaModel.get_capabilities`)."""
+    supports_thinking, modes_distinct = _thinking_flags(thinking)
+    if show_payload is None:
+        return ModelCapabilities(None, None, supports_thinking, modes_distinct, None)
+    return ModelCapabilities(
+        supports_vision=_capability_flag(show_payload, "vision"),
+        supports_tools=_capability_flag(show_payload, "tools"),
+        supports_thinking=supports_thinking,
+        reasoning_modes_distinct=modes_distinct,
+        context_window=_context_window(show_payload),
+    )
+
 _MODEL_NOT_FOUND_STATUS = 404
 
 # The `ollama` package wraps a refused/unreachable connection as a plain
@@ -131,27 +190,65 @@ class OllamaModel:
         self._timeout = timeout
         self._keep_alive = keep_alive
         self._client = client if client is not None else ollama.Client(host=host, timeout=timeout)
-        self._capability = thinking_capability
+        self._pinned_thinking = thinking_capability
         self._show_fetcher = show_fetcher if show_fetcher is not None else self._fetch_show_payload
-        self._capability_lock = threading.Lock()
+        # One plain (non-reentrant) lock guards one cached `/api/show`
+        # payload. Everything derived from it (thinking class, vision,
+        # tools, context) is computed from that payload *outside* the lock
+        # by pure functions, so no code path ever re-acquires it — and
+        # because a fetch happens while holding it, concurrent first calls
+        # wait for one fetch instead of issuing duplicates.
+        self._show_lock = threading.Lock()
+        self._show_payload: dict[str, Any] | None = None
 
     @property
     def name(self) -> str:
         return "ollama"
 
-    def thinking_capability(self) -> ThinkingCapability:
-        """The model's thinking behavior, probing Ollama once if needed."""
-        with self._capability_lock:
-            if self._capability is not None:
-                return self._capability
+    def _show_metadata(self) -> dict[str, Any] | None:
+        """The model's `/api/show` payload, fetched lazily. Only a
+        successful fetch is cached; a failure returns None and is retried
+        on the next call, so a request made while Ollama is down doesn't
+        pin the model to "unknown" forever."""
+        with self._show_lock:
+            if self._show_payload is not None:
+                return self._show_payload
             try:
-                capability = parse_thinking_capability(self._show_fetcher())
+                payload = self._show_fetcher()
             except Exception as exc:  # any failure: stay safe, retry next time
-                logger.debug("Could not read model capabilities from Ollama", exc_info=exc)
-                return ThinkingCapability.UNKNOWN
-            logger.info("Model %s thinking capability: %s", self._model, capability.value)
-            self._capability = capability
-            return capability
+                logger.debug("Could not read model metadata from Ollama", exc_info=exc)
+                return None
+            if not isinstance(payload, dict):
+                logger.debug("Ollama model metadata had an unexpected shape")
+                return None
+            self._show_payload = payload
+            logger.info(
+                "Model %s thinking capability: %s",
+                self._model,
+                parse_thinking_capability(payload).value,
+            )
+            return payload
+
+    def thinking_capability(self) -> ThinkingCapability:
+        """The model's thinking behavior. A constructor-pinned value is
+        authoritative and never triggers a lookup; otherwise it's derived
+        from the (lazily fetched, cached) `/api/show` metadata."""
+        if self._pinned_thinking is not None:
+            return self._pinned_thinking
+        payload = self._show_metadata()
+        return ThinkingCapability.UNKNOWN if payload is None else parse_thinking_capability(payload)
+
+    def get_capabilities(self) -> ModelCapabilities:
+        """Provider-neutral capabilities, discovered from local `/api/show`
+        metadata — never from the model's name. If the lookup fails the
+        metadata-only fields (vision, tools, context) are None; a pinned
+        thinking classification still determines the thinking fields."""
+        payload = self._show_metadata()
+        if self._pinned_thinking is not None:
+            thinking = self._pinned_thinking
+        else:
+            thinking = ThinkingCapability.UNKNOWN if payload is None else parse_thinking_capability(payload)
+        return capabilities_from_show(payload, thinking)
 
     def _fetch_show_payload(self) -> dict[str, Any]:
         response = httpx.post(

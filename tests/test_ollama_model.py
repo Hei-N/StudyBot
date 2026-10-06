@@ -1,3 +1,6 @@
+import threading
+import time
+
 import httpx
 import ollama
 import pytest
@@ -5,6 +8,7 @@ import pytest
 from studybot.core.exceptions import ModelError
 from studybot.core.messages import Message
 from studybot.core.reasoning_mode import ReasoningMode
+from studybot.models.base import ModelCapabilities
 from studybot.models.ollama import OllamaModel, ThinkingCapability
 from tests.fake_ollama import FakeChatResponse, FakeListResponse, FakeOllamaClient
 
@@ -341,3 +345,287 @@ def test_status_does_not_raise_on_unexpected_error():
 
     assert status.server_reachable is False
     assert status.model_available is None
+
+
+# --- Stage 6.4: provider-neutral capabilities ---------------------------------------
+
+
+def show_payload(
+    capabilities=("completion", "tools", "thinking"),
+    thinking_values=(True,),
+    model_info=None,
+):
+    """A realistic `/api/show` payload; pass None to omit a field."""
+    payload = {}
+    if capabilities is not None:
+        payload["capabilities"] = list(capabilities)
+    if thinking_values is not None:
+        payload["thinking"] = {"values": list(thinking_values), "default": True}
+    if model_info is not None:
+        payload["model_info"] = model_info
+    return payload
+
+
+def capability_model(payload, **kwargs):
+    """An OllamaModel whose `/api/show` is a counting stub (never a network)."""
+    calls = []
+
+    def fetch():
+        calls.append(1)
+        if isinstance(payload, Exception):
+            raise payload
+        return payload
+
+    model = OllamaModel(model="m", client=FakeOllamaClient(), show_fetcher=fetch, **kwargs)
+    return model, calls
+
+
+@pytest.mark.parametrize(
+    ("capabilities", "vision", "tools"),
+    [
+        (["completion", "vision", "tools"], True, True),
+        (["completion", "vision"], True, False),
+        (["completion", "tools"], False, True),
+        (["completion"], False, False),
+        ([], False, False),
+    ],
+)
+def test_vision_and_tools_follow_the_capabilities_list(capabilities, vision, tools):
+    model, _ = capability_model(show_payload(capabilities=capabilities, thinking_values=None))
+    result = model.get_capabilities()
+    assert result.supports_vision is vision
+    assert result.supports_tools is tools
+
+
+@pytest.mark.parametrize("bad", [None, "vision", 7, {"vision": True}])
+def test_malformed_or_missing_capabilities_list_gives_unknown_not_false(bad):
+    payload = show_payload(capabilities=None, thinking_values=None)
+    if bad is not None:
+        payload["capabilities"] = bad
+    result = capability_model(payload)[0].get_capabilities()
+    assert result.supports_vision is None
+    assert result.supports_tools is None
+    assert result.supports_thinking is None
+    assert result.reasoning_modes_distinct is None
+
+
+@pytest.mark.parametrize(
+    ("capabilities", "values", "classification", "thinking", "distinct"),
+    [
+        (["thinking"], [True], ThinkingCapability.ALWAYS_ON, True, False),
+        (["thinking"], [True, False], ThinkingCapability.TOGGLEABLE, True, True),
+        (["completion"], None, ThinkingCapability.NONE, False, False),
+        (["thinking"], None, ThinkingCapability.UNKNOWN, None, None),
+    ],
+)
+def test_thinking_classification_maps_to_neutral_flags(capabilities, values, classification, thinking, distinct):
+    model, _ = capability_model(show_payload(capabilities=capabilities, thinking_values=values))
+    result = model.get_capabilities()
+    assert model.thinking_capability() is classification
+    assert result.supports_thinking is thinking
+    assert result.reasoning_modes_distinct is distinct
+
+
+@pytest.mark.parametrize(
+    ("model_info", "expected"),
+    [
+        ({"qwen3.context_length": 262144, "qwen3.block_count": 36}, 262144),
+        ({"gemma3.context_length": 131072}, 131072),
+        ({"a.context_length": 4096, "b.context_length": 8192}, 8192),  # maximum wins
+        ({"qwen3.block_count": 36}, None),
+        ({}, None),
+        ({"x.context_length": 0}, None),
+        ({"x.context_length": -5}, None),
+        ({"x.context_length": "4096"}, None),
+        ({"x.context_length": 4096.0}, None),
+        ({"x.context_length": True}, None),
+        ({"x.context_length": None, "y.context_length": 2048}, 2048),
+        ({"context_length": 4096}, None),  # must be a `.context_length` suffix
+        ({"x.context_length_scaling": 9999}, None),
+    ],
+)
+def test_context_window_extraction(model_info, expected):
+    model, _ = capability_model(show_payload(model_info=model_info))
+    assert model.get_capabilities().context_window == expected
+
+
+@pytest.mark.parametrize("bad", [None, [], "info", 3])
+def test_malformed_model_info_gives_no_context_window(bad):
+    payload = show_payload()
+    payload["model_info"] = bad
+    result = capability_model(payload)[0].get_capabilities()
+    assert result.context_window is None
+    assert result.supports_tools is True  # the rest of the payload is still used
+
+
+def test_failed_show_request_returns_unknowns_safely():
+    model, calls = capability_model(ConnectionError("down"))
+    assert model.get_capabilities() == ModelCapabilities(None, None, None, None, None)
+    assert model.thinking_capability() is ThinkingCapability.UNKNOWN
+    assert len(calls) == 2  # nothing was cached from the failures
+
+
+def test_non_dict_show_payload_is_treated_as_a_failed_lookup():
+    model, _ = capability_model(["not", "a", "dict"])
+    assert model.get_capabilities() == ModelCapabilities(None, None, None, None, None)
+
+
+def test_failed_lookup_is_retried_and_success_is_then_cached():
+    outcomes = [ConnectionError("down"), show_payload(capabilities=["vision", "thinking"], thinking_values=[True, False])]
+    calls = []
+
+    def fetch():
+        calls.append(1)
+        outcome = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    model = OllamaModel(model="m", client=FakeOllamaClient(), show_fetcher=fetch)
+
+    assert model.get_capabilities().supports_vision is None  # first: failed
+    second = model.get_capabilities()  # retried: succeeds
+    assert second.supports_vision is True and second.reasoning_modes_distinct is True
+    for _ in range(5):
+        model.get_capabilities()
+        model.thinking_capability()
+    assert len(calls) == 2  # exactly one failure + one success, then cached
+
+
+def test_capabilities_and_thinking_share_one_cached_fetch():
+    model, calls = capability_model(show_payload(model_info={"m.context_length": 8192}))
+    model.get_capabilities()
+    model.thinking_capability()
+    model.get_capabilities()
+    assert len(calls) == 1
+
+
+def test_concurrent_callers_cause_exactly_one_fetch():
+    calls = []
+    gate = threading.Event()
+
+    def slow_fetch():
+        calls.append(1)
+        gate.wait(5)
+        return show_payload(model_info={"m.context_length": 4096})
+
+    model = OllamaModel(model="m", client=FakeOllamaClient(), show_fetcher=slow_fetch)
+    results = []
+
+    def worker(use_capabilities):
+        results.append(model.get_capabilities() if use_capabilities else model.thinking_capability())
+
+    threads = [threading.Thread(target=worker, args=(i % 2 == 0,)) for i in range(12)]
+    for thread in threads:
+        thread.start()
+    time.sleep(0.2)  # let every thread reach the lock
+    gate.set()
+    for thread in threads:
+        thread.join(5)
+
+    assert not any(t.is_alive() for t in threads)  # no deadlock
+    assert len(results) == 12
+    assert len(calls) == 1
+
+
+def test_lock_is_not_held_after_a_fetch_raises():
+    model, _ = capability_model(RuntimeError("boom"))
+    model.get_capabilities()
+    done = []
+    thread = threading.Thread(target=lambda: done.append(model.get_capabilities()))
+    thread.start()
+    thread.join(5)
+    assert done  # a second call after a failure did not deadlock
+
+
+def test_construction_performs_zero_network_calls(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("network access during construction")
+
+    monkeypatch.setattr(httpx, "post", forbidden)
+    monkeypatch.setattr(httpx.Client, "send", forbidden)
+    fetcher_calls = []
+    client = FakeOllamaClient()
+
+    OllamaModel(model="m", client=client, show_fetcher=lambda: fetcher_calls.append(1) or {})
+    OllamaModel(model="m")  # builds a real ollama.Client, which must stay lazy
+
+    assert fetcher_calls == []
+    assert client.chat_calls == [] and client.list_call_count == 0
+
+
+def test_default_fetcher_posts_to_api_show_with_the_model_tag(monkeypatch):
+    seen = {}
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return show_payload()
+
+    def fake_post(url, json, timeout):
+        seen.update(url=url, json=json, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    model = OllamaModel(model="qwen3.5:4b", host="http://example.local:11434/", timeout=7.0)
+
+    assert model.get_capabilities().supports_tools is True
+    assert seen == {"url": "http://example.local:11434/api/show", "json": {"model": "qwen3.5:4b"}, "timeout": 7.0}
+
+
+def test_pinned_thinking_capability_wins_but_metadata_still_fills_other_fields():
+    payload = show_payload(
+        capabilities=["vision", "tools", "thinking"], thinking_values=[True, False], model_info={"m.context_length": 8192}
+    )
+    model, calls = capability_model(payload, thinking_capability=ThinkingCapability.ALWAYS_ON)
+
+    result = model.get_capabilities()
+
+    assert model.thinking_capability() is ThinkingCapability.ALWAYS_ON  # not the payload's TOGGLEABLE
+    assert result == ModelCapabilities(True, True, True, False, 8192)
+    assert len(calls) == 1
+
+
+def test_pinned_thinking_survives_a_failed_metadata_lookup():
+    model, _ = capability_model(ConnectionError("down"), thinking_capability=ThinkingCapability.TOGGLEABLE)
+    assert model.get_capabilities() == ModelCapabilities(None, None, True, True, None)
+
+
+def test_pinned_thinking_never_triggers_a_lookup_for_reasoning_requests():
+    def forbidden():
+        raise AssertionError("must not probe")
+
+    fake = FakeOllamaClient(chat_response=FakeChatResponse("hi"))
+    model = OllamaModel(
+        model="m", client=fake, show_fetcher=forbidden, thinking_capability=ThinkingCapability.TOGGLEABLE
+    )
+    model.generate([Message.user("x")], reasoning_mode=ReasoningMode.FAST)
+    assert fake.chat_calls[0]["think"] is False
+
+
+def test_get_capabilities_makes_no_chat_request():
+    fake = FakeOllamaClient()
+    model = OllamaModel(model="m", client=fake, show_fetcher=lambda: show_payload())
+    model.get_capabilities()
+    assert fake.chat_calls == []
+
+
+def test_stage_6_3_reasoning_filtering_is_unaffected_by_the_metadata_refactor():
+    def stream_factory():
+        yield FakeChatResponse("<think>secret plan</thi")
+        yield FakeChatResponse("nk>The ans")
+        yield FakeChatResponse("wer is 4.")
+
+    fake = FakeOllamaClient(
+        stream_factory=stream_factory, chat_response=FakeChatResponse("<think>secret</think>Four.")
+    )
+    model, _ = capability_model(show_payload(thinking_values=[True, False]))
+    model._client = fake
+
+    streamed = "".join(model.stream([Message.user("x")], reasoning_mode=ReasoningMode.FAST))
+
+    assert streamed == "The answer is 4."
+    assert fake.chat_calls[0]["think"] is False  # TOGGLEABLE + Fast
+    assert model.generate([Message.user("x")]).content == "Four."

@@ -46,6 +46,35 @@ class ProviderStatus:
     """Optional human-readable elaboration, e.g. a connection error hint."""
 
 
+@dataclass(frozen=True, slots=True)
+class ModelCapabilities:
+    """What a provider's *model* reports it can do (Stage 6.4).
+
+    Each flag is three-valued: `True` = the provider positively reports
+    support, `False` = it positively reports a lack of support, `None` =
+    it couldn't be safely determined (metadata unavailable or malformed).
+
+    This describes the MODEL, not StudyBot. `supports_vision=True` means
+    the model can accept visual input — NOT that StudyBot's text-only
+    `Message` pipeline can send it an image today. Likewise for tools.
+    Nothing in the application changes behavior because of these values
+    yet; they exist so future stages (vision, tools, model selection) can
+    be designed against measured facts instead of model-family guesses.
+    """
+
+    supports_vision: bool | None
+    supports_tools: bool | None
+    supports_thinking: bool | None
+    reasoning_modes_distinct: bool | None
+    """Whether Fast and Deep genuinely differ for this model. False for an
+    always-thinking model (both must reason so the reasoning can be kept
+    out of the answer) and for a model without thinking; None if unknown."""
+    context_window: int | None
+    """The model's advertised maximum context length in tokens, when safely
+    discoverable. Not the context a server is currently configured to
+    use — that is a separate, smaller runtime setting."""
+
+
 class ModelProvider(Protocol):
     """Interface implemented by every model backend."""
 
@@ -102,4 +131,11 @@ class ModelProvider(Protocol):
         """Check current health: is the backend reachable, is the
         configured model available. Call only when status is actually
         needed (e.g. a `/status` command) — not on a timer."""
+        ...
+
+    def get_capabilities(self) -> ModelCapabilities:
+        """What the configured model reports it supports. Discovered, never
+        assumed from a model's name; unknowns are `None`. May perform a
+        lazy, cached metadata lookup — never on every request, and never
+        raises for an unreachable backend (returns unknowns instead)."""
         ...

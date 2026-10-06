@@ -7,7 +7,7 @@ from typing import Iterator, Sequence
 from studybot.core.exceptions import ModelError
 from studybot.core.messages import Message, Role
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
-from studybot.models.base import ModelResponse, ProviderStatus
+from studybot.models.base import ModelCapabilities, ModelResponse, ProviderStatus
 
 
 class MockModel:
@@ -54,4 +54,13 @@ class MockModel:
             server_reachable=True,
             model_name=self._name,
             model_available=True,
+        )
+
+    def get_capabilities(self) -> ModelCapabilities:
+        return ModelCapabilities(
+            supports_vision=False,
+            supports_tools=False,
+            supports_thinking=False,
+            reasoning_modes_distinct=False,
+            context_window=None,
         )

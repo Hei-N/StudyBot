@@ -3,6 +3,7 @@ import pytest
 from studybot.core.exceptions import ModelError
 from studybot.core.messages import Message
 from studybot.core.reasoning_mode import ReasoningMode
+from studybot.models.base import ModelCapabilities
 from studybot.models.mock import MockModel
 
 
@@ -80,3 +81,13 @@ def test_mock_model_stream_accepts_and_ignores_reasoning_mode():
     deep_chunks = list(model.stream(messages, reasoning_mode=ReasoningMode.DEEP))
 
     assert fast_chunks == deep_chunks
+
+
+def test_mock_model_capabilities_are_exactly_the_specified_constants():
+    assert MockModel().get_capabilities() == ModelCapabilities(
+        supports_vision=False,
+        supports_tools=False,
+        supports_thinking=False,
+        reasoning_modes_distinct=False,
+        context_window=None,
+    )

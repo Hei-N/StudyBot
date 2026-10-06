@@ -53,3 +53,33 @@ def test_factory_raises_configuration_error_for_unknown_provider():
 
     with pytest.raises(ConfigurationError):
         create_model(settings)
+
+
+@pytest.mark.parametrize(
+    "tag",
+    ["qwen3:4b", "qwen3.5:4b", "gemma3:4b", "some-future-yourai:1b", "registry.example/org/custom:Q4_K_M", "x"],
+)
+def test_factory_accepts_any_ollama_model_tag_without_a_whitelist(tag):
+    settings = Settings.from_env(env={"STUDYBOT_MODEL_PROVIDER": "ollama", "STUDYBOT_OLLAMA_MODEL": tag})
+
+    model = create_model(settings)
+
+    assert isinstance(model, OllamaModel)
+    assert model._model == tag
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["studybot.models.base", "studybot.models.ollama", "studybot.models.mock", "studybot.models", "studybot.core", "studybot.app"],
+)
+def test_every_boundary_module_imports_first_in_a_fresh_interpreter(module):
+    """The model layer must be importable on its own, in any order — a
+    circular import used to break `import studybot.models.ollama` unless
+    `studybot.core` happened to be imported first (tests always did)."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-W", "error", "-c", f"import {module}"], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
