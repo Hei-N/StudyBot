@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../../core/models/message.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_radii.dart';
 import '../../core/theme/app_spacing.dart';
+import 'studybot_markdown.dart';
 
 /// One message turn. User messages are right-aligned in a tinted surface;
 /// assistant messages are left-aligned, full-width, selectable Markdown.
@@ -63,17 +63,7 @@ class MessageBubble extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
               child: message.content.isEmpty && isStreaming
                   ? const _TypingIndicator()
-                  : MarkdownBody(
-                      data: message.content,
-                      selectable: true,
-                      styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                        p: theme.textTheme.bodyMedium,
-                        code: theme.textTheme.bodyMedium?.copyWith(
-                          fontFamily: 'monospace',
-                          backgroundColor: theme.colorScheme.surfaceContainerHighest,
-                        ),
-                      ),
-                    ),
+                  : StudyBotMarkdown(data: message.content, isStreaming: isStreaming),
             ),
             if (onSaveToMemory != null) _SaveToMemoryAction(onPressed: onSaveToMemory!),
           ],

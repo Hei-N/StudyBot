@@ -56,6 +56,22 @@ The packaged app bundles its own engine and does not use this exception; see
 prefers the bundled engine and only falls back to the repository `.venv` in
 non-release builds.
 
+## Message rendering
+
+Assistant messages render as GitHub-flavored Markdown with LaTeX math
+(`lib/features/conversation/studybot_markdown.dart`, using `flutter_markdown_plus`
+and `flutter_math_fork`). Supported math: `$...$` and `\(...\)` inline,
+`$$...$$` and `\[...\]` display. Rendering is display-only; stored message text
+is never changed.
+
+- Code spans and fences stay literal.
+- Currency (`$5`, `$5 or $10`) stays text: a `$` pair only becomes math when the
+  closing `$` is not followed by a letter or digit.
+- Incomplete (still streaming) or invalid math shows its source text, never an
+  error. A display block is recognised only once its closing delimiter arrives.
+- Wide display equations and matrices scroll horizontally.
+- Limitation: rendered equations are not part of the text selection range.
+
 ## Structure
 
 ```
