@@ -420,3 +420,110 @@ def test_unknown_message_type_produces_validation_error_event(client):
         event = ws.receive_json()
         assert event["type"] == "error"
         assert event["code"] == "VALIDATION_ERROR"
+
+
+# --- generation budget failures through the real provider ----------------------------
+
+from tests.fake_ollama import REASONING_SENTINEL, flaky_budget_model
+
+
+def _send_and_collect(client, chat_id, content):
+    """All events for one send, up to and including message_completed/error."""
+    events = []
+    with client.websocket_connect("/api/v1/ws/chat", headers=HEADERS) as ws:
+        ws.send_json({"type": "send_message", "chat_id": chat_id, "content": content})
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["type"] in ("message_completed", "error"):
+                return events
+
+
+def _roles_and_contents(client, chat_id):
+    messages = client.get(f"/api/v1/chats/{chat_id}/messages", headers=HEADERS).json()
+    return [(m["role"], m["content"]) for m in messages]
+
+
+@pytest.mark.parametrize("kind", ["deadline", "token_limit"])
+def test_budget_failure_sends_model_error_and_never_message_completed(client_with_model, kind):
+    model, streams = flaky_budget_model(kind)
+    app = client_with_model(lambda: model)
+    with TestClient(app) as client:
+        chat_id = _create_chat(client)
+
+        events = _send_and_collect(client, chat_id, "hello")
+
+        assert events[0]["type"] == "message_started"
+        assert events[-1]["type"] == "error" and events[-1]["code"] == "MODEL_ERROR"
+        assert events[-1]["chatId"] == chat_id
+        assert all(e["type"] != "message_completed" for e in events)
+        assert REASONING_SENTINEL not in events[-1]["message"]
+        assert "partial text" not in events[-1]["message"]  # numbers only: no answer text in the error
+        assert streams[0].close_calls == 1
+
+
+@pytest.mark.parametrize("kind", ["deadline", "token_limit"])
+def test_budget_failure_persists_only_the_user_message_once(client_with_model, kind):
+    model, _ = flaky_budget_model(kind)
+    app = client_with_model(lambda: model)
+    with TestClient(app) as client:
+        chat_id = _create_chat(client)
+
+        _send_and_collect(client, chat_id, "hello")
+
+        assert _roles_and_contents(client, chat_id) == [("user", "hello")]
+
+
+@pytest.mark.parametrize("kind", ["deadline", "token_limit"])
+def test_the_partial_text_streamed_before_a_budget_failure_is_never_persisted(client_with_model, kind):
+    model, _ = flaky_budget_model(kind)
+    app = client_with_model(lambda: model)
+    with TestClient(app) as client:
+        chat_id = _create_chat(client)
+
+        events = _send_and_collect(client, chat_id, "hello")
+
+        deltas = [e["content"] for e in events if e["type"] == "delta"]
+        assert deltas == ["partial text"]  # clients see it, then the error tells them to discard it
+        assert all("partial text" not in content for _, content in _roles_and_contents(client, chat_id))
+
+
+@pytest.mark.parametrize("kind", ["deadline", "token_limit"])
+def test_engine_recovers_after_a_budget_failure(client_with_model, kind):
+    model, streams = flaky_budget_model(kind)
+    app = client_with_model(lambda: model)
+    with TestClient(app) as client:
+        chat_a, chat_b = _create_chat(client), _create_chat(client)
+
+        failed = _send_and_collect(client, chat_a, "first")
+        health = client.get("/api/v1/health", headers=HEADERS)
+        retried = _send_and_collect(client, chat_a, "retry")  # same chat: its lock must be free
+        other = _send_and_collect(client, chat_b, "other chat")
+
+        assert failed[-1]["type"] == "error"
+        assert health.status_code == 200 and health.json()["status"] == "ok"
+        assert retried[-1]["type"] == "message_completed"
+        assert retried[-1]["message"]["content"] == "A good answer."
+        assert other[-1]["type"] == "message_completed"
+        assert all(e.get("code") != "CHAT_BUSY" for e in retried + other)
+        assert _roles_and_contents(client, chat_a) == [
+            ("user", "first"),
+            ("user", "retry"),
+            ("assistant", "A good answer."),
+        ]
+        assert _roles_and_contents(client, chat_b) == [("user", "other chat"), ("assistant", "A good answer.")]
+        assert all(stream.close_calls == 1 for stream in streams)  # no stream left dangling
+
+
+@pytest.mark.parametrize("kind", ["deadline", "token_limit"])
+def test_empty_progress_signals_never_reach_the_websocket_or_storage(client_with_model, kind):
+    model, _ = flaky_budget_model(kind)
+    app = client_with_model(lambda: model)
+    with TestClient(app) as client:
+        chat_id = _create_chat(client)
+        _send_and_collect(client, chat_id, "first")
+
+        events = _send_and_collect(client, chat_id, "second")
+
+        assert all(e["content"] != "" for e in events if e["type"] == "delta")
+        assert all(content != "" for _, content in _roles_and_contents(client, chat_id))

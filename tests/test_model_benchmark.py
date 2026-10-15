@@ -924,3 +924,122 @@ def test_a_runaway_warmup_marks_the_model_not_evaluated(models):
 def test_cli_exposes_max_turn_seconds():
     assert bench._build_parser().parse_args(["--max-turn-seconds", "99"]).max_turn_seconds == 99.0
     assert bench._build_parser().parse_args([]).max_turn_seconds == bench.DEFAULT_MAX_TURN_SECONDS
+
+
+# --- harness watchdog vs product budgets, and what is recorded -----------------------------
+
+
+def test_the_harness_watchdog_outlasts_the_production_deep_deadline():
+    from studybot.models.generation import DEFAULT_DEEP_GENERATION_DEADLINE_SECONDS
+
+    assert bench.DEFAULT_MAX_TURN_SECONDS == 330.0
+    assert bench.DEFAULT_MAX_TURN_SECONDS > DEFAULT_DEEP_GENERATION_DEADLINE_SECONDS
+    assert bench._build_parser().parse_args([]).max_turn_seconds == 330.0
+
+
+@pytest.mark.parametrize(
+    ("error", "kind"),
+    [
+        (None, "success"),
+        ("GenerationDeadlineExceededError", "deadline"),
+        ("GenerationTokenLimitExceededError", "token_limit"),
+        ("TurnTimeout", "harness_timeout"),
+        ("ModelError", "model_error"),
+        ("UnsafeModelOutputError", "model_error"),
+        ("RuntimeError", "model_error"),
+    ],
+)
+def test_termination_kind_classification(error, kind):
+    assert bench.termination_kind(error) == kind
+    assert kind in bench.TERMINATION_KINDS
+
+
+def test_a_successful_turn_records_mode_budget_and_success():
+    from studybot.models.generation import GenerationBudget
+
+    measurement, _ = measure(["ok"], reasoning_mode=ReasoningMode.DEEP, budget=GenerationBudget(3072, 300.0))
+    assert measurement.reasoning_mode == "deep"
+    assert measurement.configured_max_generated_tokens == 3072
+    assert measurement.configured_deadline_seconds == 300.0
+    assert measurement.termination_kind == "success"
+
+
+def test_product_budget_failures_are_recorded_by_kind_not_as_harness_timeouts():
+    from studybot.core.exceptions import GenerationDeadlineExceededError, GenerationTokenLimitExceededError
+
+    deadline, _ = measure(["x"], raise_after=GenerationDeadlineExceededError(120.0))
+    token_limit, _ = measure(["x"], raise_after=GenerationTokenLimitExceededError(2048))
+    other, _ = measure(["x"], raise_after=ModelError("backend"))
+    assert [m.termination_kind for m in (deadline, token_limit, other)] == ["deadline", "token_limit", "model_error"]
+    assert deadline.error == "GenerationDeadlineExceededError"
+
+
+def test_the_harness_watchdog_is_recorded_as_harness_timeout():
+    clock = Clock()
+    measurement, _ = bench.measure_turn(
+        EndlessSessions(clock), "c", "p", scenario_id="s", turn_number=1, clock=clock, max_seconds=5.0
+    )
+    assert measurement.termination_kind == "harness_timeout"
+
+
+def test_the_product_budget_fires_before_the_harness_watchdog():
+    """A provider that raises the deadline error at 300 s is recorded as a product
+    ``deadline``: 300 < 330, so the watchdog never fires.
+    """
+    from studybot.core.exceptions import GenerationDeadlineExceededError
+
+    class Sessions(FakeSessions):
+        def send_streaming_to_chat(self, chat_id, prompt):
+            self.history.append(Message.user(prompt))
+            self.clock.now += 300.0
+            raise GenerationDeadlineExceededError(300.0)
+            yield  # pragma: no cover
+
+    clock = Clock()
+    measurement, _ = bench.measure_turn(
+        Sessions(clock, []), "c", "p", scenario_id="s", turn_number=1, clock=clock
+    )
+    assert measurement.termination_kind == "deadline"
+
+
+def test_scenario_runs_record_the_settings_budget_per_mode(models):
+    models["m1"] = ScriptedModel()
+    scenarios = (
+        BenchmarkScenario("fast_one", None, None, TeachingMode.QUICK, ReasoningMode.FAST, ("hi",)),
+        BenchmarkScenario("deep_one", None, None, TeachingMode.QUICK, ReasoningMode.DEEP, ("hi",)),
+    )
+    summary = run_benchmark(models, scenarios=scenarios)
+    by_id = {m.scenario_id: m for m in summary.measurements}
+    assert by_id["fast_one"].reasoning_mode == "fast"
+    assert (by_id["fast_one"].configured_max_generated_tokens, by_id["fast_one"].configured_deadline_seconds) == (4096, 120.0)
+    assert by_id["deep_one"].reasoning_mode == "deep"
+    assert (by_id["deep_one"].configured_max_generated_tokens, by_id["deep_one"].configured_deadline_seconds) == (6144, 300.0)
+    assert {m.termination_kind for m in summary.measurements} == {"success"}
+
+
+def test_saved_output_carries_the_new_fields_and_still_no_text(models, tmp_path):
+    models["m1"] = ScriptedModel(lambda messages, n: f"{SECRET_ANSWER} #{n}")
+    scenarios = (
+        BenchmarkScenario("tiny_quick", None, None, TeachingMode.QUICK, ReasoningMode.DEEP, (f"{SECRET_PROMPT} hi",)),
+    )
+    summary = run_benchmark(models, scenarios=scenarios)
+    document = bench.results_document([summary])
+    text = json.dumps(document)
+
+    row = document["models"][0]["measurements"][0]
+    assert row["reasoning_mode"] == "deep"
+    assert row["configured_max_generated_tokens"] == 6144
+    assert row["configured_deadline_seconds"] == 300.0
+    assert row["termination_kind"] == "success"
+    assert SECRET_ANSWER not in text and SECRET_PROMPT not in text
+
+
+def test_older_result_files_without_the_new_fields_still_load():
+    old_row = {
+        "scenario_id": "a", "turn_number": 1, "first_visible_seconds": 1.0, "total_seconds": 2.0,
+        "visible_characters": 3, "integrity_pass": True, "persistence_match": True,
+        "error": None, "used_fallback_answer": False,
+    }
+    summary = bench.summary_from_dict({"model_name": "m", "measurements": [old_row]})
+    assert summary.measurements[0].termination_kind == "success"
+    assert summary.measurements[0].reasoning_mode is None

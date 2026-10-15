@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 
@@ -5,12 +6,33 @@ import httpx
 import ollama
 import pytest
 
-from studybot.core.exceptions import ModelError
+from studybot.core.exceptions import (
+    GenerationDeadlineExceededError,
+    GenerationTokenLimitExceededError,
+    ModelError,
+    UnsafeModelOutputError,
+)
 from studybot.core.messages import Message
 from studybot.core.reasoning_mode import ReasoningMode
 from studybot.models.base import ModelCapabilities
-from studybot.models.ollama import OllamaModel, ThinkingCapability
-from tests.fake_ollama import FakeChatResponse, FakeListResponse, FakeOllamaClient
+from studybot.models.generation import (
+    DEFAULT_GENERATION_BUDGET_POLICY,
+    GenerationBudget,
+    GenerationBudgetPolicy,
+)
+from studybot.models.ollama import OllamaModel, ThinkingCapability, _close_stream_safely, _merge_options
+from tests.fake_ollama import (
+    REASONING_SENTINEL,
+    FakeChatResponse,
+    FakeListResponse,
+    FakeOllamaClient,
+    FakeThinkingModelClient,
+    TickingClock,
+    TrackedStream,
+    final,
+    reasoning,
+    visible,
+)
 
 
 def make_model(
@@ -628,4 +650,471 @@ def test_stage_6_3_reasoning_filtering_is_unaffected_by_the_metadata_refactor():
 
     assert streamed == "The answer is 4."
     assert fake.chat_calls[0]["think"] is False  # TOGGLEABLE + Fast
-    assert model.generate([Message.user("x")]).content == "Four."
+    # generate() consumes the same streamed, filtered path as stream(), so it
+        # returns exactly what stream() produced.
+    assert model.generate([Message.user("x")]).content == streamed
+    assert fake.chat_calls[1]["stream"] is True
+
+
+# --- generation budgets --------------------------------------------------------------------
+
+MODES = [ReasoningMode.FAST, ReasoningMode.DEEP]
+EXPECTED_TOKENS = {ReasoningMode.FAST: 4096, ReasoningMode.DEEP: 6144}
+EXPECTED_DEADLINE = {ReasoningMode.FAST: 120.0, ReasoningMode.DEEP: 300.0}
+
+
+def budget_model(client, clock=None, *, capability=ThinkingCapability.TOGGLEABLE, policy=None, model="qwen3:4b"):
+    return OllamaModel(
+        model=model,
+        client=client,
+        thinking_capability=capability,
+        generation_budget_policy=policy or DEFAULT_GENERATION_BUDGET_POLICY,
+        clock=clock or TickingClock(),
+    )
+
+
+def stream_client(clock, items, **stream_kwargs):
+    """A fake client whose every streamed request returns a fresh
+    `TrackedStream` (kept in `.streams`)."""
+    client = FakeOllamaClient(chat_response=FakeChatResponse(""))
+    client.streams = []
+
+    def factory():
+        tracked = TrackedStream(clock, items, **stream_kwargs)
+        client.streams.append(tracked)
+        return tracked
+
+    client._stream_factory = factory
+    return client
+
+
+# num_predict -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_stream_sends_the_mode_budget_as_num_predict(mode):
+    client = FakeOllamaClient(stream_factory=lambda: iter([FakeChatResponse("hi", None, "stop")]))
+    list(budget_model(client).stream([Message.user("x")], reasoning_mode=mode))
+    assert client.chat_calls[0]["options"] == {"num_predict": EXPECTED_TOKENS[mode]}
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_generate_sends_the_same_num_predict(mode):
+    client = FakeOllamaClient(chat_response=FakeChatResponse("hi", None, "stop"))
+    budget_model(client).generate([Message.user("x")], reasoning_mode=mode)
+    assert client.chat_calls[0]["options"] == {"num_predict": EXPECTED_TOKENS[mode]}
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_num_ctx_and_sampling_options_are_never_added(mode):
+    client = FakeOllamaClient(chat_response=FakeChatResponse("hi", None, "stop"))
+    budget_model(client).generate([Message.user("x")], reasoning_mode=mode)
+    options = client.chat_calls[0]["options"]
+    assert set(options) == {"num_predict"}
+    for forbidden in ("num_ctx", "temperature", "top_p", "top_k"):
+        assert forbidden not in options
+
+
+def test_every_production_request_is_streamed_even_for_generate():
+    client = FakeOllamaClient(chat_response=FakeChatResponse("hi", None, "stop"))
+    budget_model(client).generate([Message.user("x")])
+    assert client.chat_calls[0]["stream"] is True
+
+
+def test_existing_options_are_preserved_and_the_budget_wins_for_num_predict():
+    existing = {"temperature": 0.2, "num_predict": 1, "stop": ["x"]}
+    merged = _merge_options(existing, GenerationBudget(2048, 120.0))
+    assert merged == {"temperature": 0.2, "num_predict": 2048, "stop": ["x"]}
+
+
+def test_merging_options_never_mutates_the_callers_dict():
+    existing = {"temperature": 0.2, "num_predict": 1}
+    snapshot = dict(existing)
+    merged = _merge_options(existing, GenerationBudget(2048, 120.0))
+    assert existing == snapshot
+    assert merged is not existing
+
+
+def test_merging_with_no_existing_options_yields_only_num_predict():
+    assert _merge_options(None, GenerationBudget(7, 1.0)) == {"num_predict": 7}
+    assert _merge_options({}, GenerationBudget(7, 1.0)) == {"num_predict": 7}
+
+
+@pytest.mark.parametrize("model", ["qwen3:4b", "qwen3.5:4b", "gemma3:4b", "custom-finetune:1b"])
+@pytest.mark.parametrize("mode", MODES)
+def test_the_budget_depends_only_on_the_reasoning_mode_never_the_model(model, mode):
+    client = FakeOllamaClient(chat_response=FakeChatResponse("hi", None, "stop"))
+    budget_model(client, model=model).generate([Message.user("x")], reasoning_mode=mode)
+    assert client.chat_calls[0]["options"]["num_predict"] == EXPECTED_TOKENS[mode]
+
+
+def test_a_custom_policy_is_honoured():
+    policy = GenerationBudgetPolicy(GenerationBudget(32, 2.0), GenerationBudget(64, 4.0))
+    client = FakeOllamaClient(stream_factory=lambda: iter([FakeChatResponse("hi", None, "stop")]))
+    model = budget_model(client, policy=policy)
+    list(model.stream([Message.user("x")], reasoning_mode=ReasoningMode.FAST))
+    list(model.stream([Message.user("x")], reasoning_mode=ReasoningMode.DEEP))
+    assert [c["options"]["num_predict"] for c in client.chat_calls] == [32, 64]
+
+
+def test_the_private_budget_selector_delegates_to_the_policy():
+    policy = GenerationBudgetPolicy(GenerationBudget(5, 1.0), GenerationBudget(6, 2.0))
+    model = budget_model(FakeOllamaClient(), policy=policy)
+    assert model._generation_budget(ReasoningMode.FAST) is policy.fast
+    assert model._generation_budget(ReasoningMode.DEEP) is policy.deep
+
+
+def test_the_default_policy_is_used_when_none_is_given():
+    model = OllamaModel(model="m", client=FakeOllamaClient(), thinking_capability=ThinkingCapability.NONE)
+    assert model._generation_budget_policy is DEFAULT_GENERATION_BUDGET_POLICY
+
+
+def test_budget_requests_do_not_change_capability_lookup_behaviour():
+    calls = []
+
+    def fetch():
+        calls.append(1)
+        return {"capabilities": ["thinking"], "thinking": {"values": [True, False]}}
+
+    client = FakeOllamaClient(chat_response=FakeChatResponse("hi", None, "stop"))
+    model = OllamaModel(model="m", client=client, show_fetcher=fetch)
+    model.generate([Message.user("a")])
+    model.generate([Message.user("b")], reasoning_mode=ReasoningMode.DEEP)
+    assert len(calls) == 1  # still one cached lookup
+    assert [c["think"] for c in client.chat_calls] == [False, True]
+
+
+# deadline (deterministic: injected clock, never sleeping) ---------------------------------------
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_chunks_flow_until_the_deadline_then_the_generation_fails(mode):
+    deadline = EXPECTED_DEADLINE[mode]
+    clock = TickingClock()
+    client = stream_client(
+        clock,
+        [visible("a", deadline * 0.25), visible("b", deadline * 0.25), visible("c", deadline * 0.5), visible("d")],
+    )
+    model = budget_model(client, clock)
+    received = []
+
+    with pytest.raises(GenerationDeadlineExceededError) as info:
+        for chunk in model.stream([Message.user("x")], reasoning_mode=mode):
+            received.append(chunk)
+
+    assert received == ["a", "b"]  # the chunk that reached the deadline is never exposed
+    assert info.value.deadline_seconds == deadline
+    assert isinstance(info.value, ModelError)
+    stream = client.streams[0]
+    assert stream.consumed == 3  # "d" was never consumed
+    assert stream.close_calls == 1
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_just_before_the_deadline_still_succeeds(mode):
+    deadline = EXPECTED_DEADLINE[mode]
+    clock = TickingClock()
+    client = stream_client(clock, [visible("ok", deadline - 0.001), final("stop")])
+    assert "".join(budget_model(client, clock).stream([Message.user("x")], reasoning_mode=mode)) == "ok"
+
+
+def test_reaching_the_deadline_exactly_counts_as_exceeded():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("ok", 120.0), final("stop")])
+    with pytest.raises(GenerationDeadlineExceededError):
+        list(budget_model(client, clock).stream([Message.user("x")], reasoning_mode=ReasoningMode.FAST))
+
+
+def test_progress_chunks_do_not_reset_the_deadline():
+    clock = TickingClock()
+    client = stream_client(clock, [reasoning(50), reasoning(50), reasoning(50), visible("never", 1)])
+    yielded = []
+    with pytest.raises(GenerationDeadlineExceededError):
+        for chunk in budget_model(client, clock).stream([Message.user("x")]):
+            yielded.append(chunk)
+    assert yielded == ["", ""]  # two progress signals, then the third chunk crossed 120 s
+    assert all(c == "" for c in yielded)
+    assert client.streams[0].consumed == 3
+
+
+def test_a_stream_of_only_progress_signals_cannot_run_forever():
+    clock = TickingClock()
+    client = stream_client(clock, [reasoning(10)] * 10_000)
+    with pytest.raises(GenerationDeadlineExceededError):
+        for _ in budget_model(client, clock).stream([Message.user("x")]):
+            pass
+    assert client.streams[0].consumed == 12  # 12 x 10 s reaches 120 s
+
+
+def test_receiving_visible_tokens_does_not_extend_the_deadline():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("t", 30)] * 100)
+    with pytest.raises(GenerationDeadlineExceededError):
+        for _ in budget_model(client, clock).stream([Message.user("x")]):
+            pass
+    assert client.streams[0].consumed == 4  # 4 x 30 s = 120 s: a total limit, not an inactivity one
+
+
+def test_the_deadline_also_bounds_generate():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("a", 100), visible("b", 100), final("stop")])
+    with pytest.raises(GenerationDeadlineExceededError):
+        budget_model(client, clock).generate([Message.user("x")], reasoning_mode=ReasoningMode.FAST)
+    assert client.streams[0].close_calls == 1
+
+
+def test_fast_and_deep_have_different_deadlines_for_identical_timing():
+    def run(mode):
+        clock = TickingClock()
+        client = stream_client(clock, [visible("a", 200), final("stop")])
+        return "".join(budget_model(client, clock).stream([Message.user("x")], reasoning_mode=mode))
+
+    with pytest.raises(GenerationDeadlineExceededError):
+        run(ReasoningMode.FAST)  # 200 s > 120 s
+    assert run(ReasoningMode.DEEP) == "a"  # 200 s < 300 s
+
+
+def test_the_deadline_is_measured_from_the_start_of_each_generation():
+    clock = TickingClock(start=1_000_000.0)  # any monotonic origin
+    client = stream_client(clock, [visible("ok", 10), final("stop")])
+    model = budget_model(client, clock)
+    assert "".join(model.stream([Message.user("x")])) == "ok"
+    clock.now += 5_000  # a long idle gap between requests must not count
+    assert "".join(model.stream([Message.user("x")])) == "ok"
+
+
+def test_nothing_visible_is_discarded_into_a_successful_response_on_deadline():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("partial answer", 10), visible("more", 200)])
+    with pytest.raises(GenerationDeadlineExceededError):
+        budget_model(client, clock).generate([Message.user("x")])  # no ModelResponse is ever produced
+
+
+def test_deadline_failure_logs_numbers_only(caplog):
+    caplog.set_level(logging.DEBUG)
+    clock = TickingClock()
+    client = stream_client(
+        clock, [visible("PRIVATE-ANSWER-TEXT", 10), (200.0, FakeChatResponse(None, REASONING_SENTINEL))]
+    )
+    with pytest.raises(GenerationDeadlineExceededError):
+        list(budget_model(client, clock).stream([Message.user("PRIVATE-PROMPT-TEXT")]))
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "kind=deadline" in text and "mode=fast" in text and "max_generated_tokens=4096" in text
+    assert "deadline_seconds=120" in text and "elapsed_ms=" in text and "visible_chars=" in text
+    for secret in ("PRIVATE-ANSWER-TEXT", "PRIVATE-PROMPT-TEXT", REASONING_SENTINEL):
+        assert secret not in text
+
+
+def test_deadline_error_message_has_no_content():
+    error = GenerationDeadlineExceededError(120.0, 130.5)
+    assert "120" in str(error)
+    assert error.elapsed_seconds == 130.5
+
+
+# token limit (done_reason) ----------------------------------------------------------------------
+
+
+def test_done_reason_length_after_visible_content_is_a_failure_not_a_response():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("some partial text"), final("length")])
+    model = budget_model(client, clock)
+    received = []
+    with pytest.raises(GenerationTokenLimitExceededError) as info:
+        for chunk in model.stream([Message.user("x")], reasoning_mode=ReasoningMode.FAST):
+            received.append(chunk)
+    assert "".join(received) == "some partial text"  # streamed, but the stream then ends in an error
+    assert info.value.max_generated_tokens == 4096
+    assert isinstance(info.value, ModelError)
+    assert client.streams[0].close_calls == 1
+
+
+def test_done_reason_length_makes_generate_raise_instead_of_returning_truncated_text():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("some partial text"), final("length")])
+    with pytest.raises(GenerationTokenLimitExceededError):
+        budget_model(client, clock).generate([Message.user("x")], reasoning_mode=ReasoningMode.DEEP)
+
+
+def test_the_token_limit_error_reports_the_modes_configured_cap():
+    for mode in MODES:
+        clock = TickingClock()
+        client = stream_client(clock, [visible("x"), final("length")])
+        with pytest.raises(GenerationTokenLimitExceededError) as info:
+            list(budget_model(client, clock).stream([Message.user("x")], reasoning_mode=mode))
+        assert info.value.max_generated_tokens == EXPECTED_TOKENS[mode]
+
+
+def test_length_after_only_hidden_reasoning_is_a_token_limit_not_an_empty_answer():
+    """A model that spends its whole allowance reasoning (no visible content) is
+    reported as a token limit, not an empty answer.
+    """
+    clock = TickingClock()
+    client = stream_client(clock, [reasoning(), reasoning(), final("length")])
+    with pytest.raises(GenerationTokenLimitExceededError):
+        list(budget_model(client, clock).stream([Message.user("x")]))
+
+
+def test_done_reason_stop_is_a_normal_success():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("Hello "), visible("world"), final("stop")])
+    model = budget_model(client, clock)
+    assert "".join(model.stream([Message.user("x")])) == "Hello world"
+    client = stream_client(clock, [visible("Hello world"), final("stop")])
+    assert budget_model(client, clock).generate([Message.user("x")]).content == "Hello world"
+
+
+def test_a_missing_done_reason_is_a_normal_success():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("fine")])  # a client/fake that never sets done_reason
+    assert "".join(budget_model(client, clock).stream([Message.user("x")])) == "fine"
+
+
+def test_done_reason_on_the_same_chunk_as_the_last_text_is_honoured():
+    clock = TickingClock()
+    client = stream_client(clock, [(1.0, FakeChatResponse("tail", None, "length"))])
+    with pytest.raises(GenerationTokenLimitExceededError):
+        list(budget_model(client, clock).stream([Message.user("x")]))
+
+
+def test_stop_with_no_visible_answer_is_still_the_integrity_failure():
+    clock = TickingClock()
+    client = stream_client(clock, [reasoning(), final("stop")])
+    with pytest.raises(UnsafeModelOutputError):
+        list(budget_model(client, clock).stream([Message.user("x")]))
+
+
+def test_token_limit_failure_logs_numbers_only(caplog):
+    caplog.set_level(logging.DEBUG)
+    clock = TickingClock()
+    client = stream_client(clock, [visible("PRIVATE-ANSWER-TEXT"), final("length")])
+    with pytest.raises(GenerationTokenLimitExceededError):
+        list(budget_model(client, clock).stream([Message.user("PRIVATE-PROMPT-TEXT")], reasoning_mode=ReasoningMode.DEEP))
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "kind=token_limit" in text and "mode=deep" in text and "max_generated_tokens=6144" in text
+    assert "PRIVATE-ANSWER-TEXT" not in text and "PRIVATE-PROMPT-TEXT" not in text
+
+
+# generate / stream parity -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("chunk_size", [1, 3, 7, 1000])
+@pytest.mark.parametrize("inline_tags", [False, True])
+@pytest.mark.parametrize("capability", [ThinkingCapability.ALWAYS_ON, ThinkingCapability.TOGGLEABLE])
+def test_generate_equals_the_concatenated_stream_for_identical_provider_output(
+    mode, chunk_size, inline_tags, capability
+):
+    def run(use_stream):
+        client = FakeThinkingModelClient(
+            thinking_only=capability is ThinkingCapability.ALWAYS_ON,
+            inline_tags=inline_tags,
+            chunk_size=chunk_size,
+            answer_for=lambda messages: "Line one.\n\nSecond `code` line with **markdown**.",
+        )
+        model = budget_model(client, capability=capability)
+        if use_stream:
+            return "".join(model.stream([Message.user("x")], reasoning_mode=mode))
+        return model.generate([Message.user("x")], reasoning_mode=mode).content
+
+    assert run(use_stream=True) == run(use_stream=False) == "Line one.\n\nSecond `code` line with **markdown**."
+
+
+def test_generate_ignores_empty_progress_chunks():
+    clock = TickingClock()
+    client = stream_client(clock, [reasoning(), visible("A"), reasoning(), visible("B"), final("stop")])
+    assert budget_model(client, clock).generate([Message.user("x")]).content == "AB"
+
+
+def test_generate_and_stream_apply_the_same_token_and_deadline_policy():
+    for use_stream in (True, False):
+        clock = TickingClock()
+        client = stream_client(clock, [visible("a"), final("length")])
+        model = budget_model(client, clock)
+        call = (lambda: list(model.stream([Message.user("x")]))) if use_stream else (lambda: model.generate([Message.user("x")]))
+        with pytest.raises(GenerationTokenLimitExceededError):
+            call()
+        clock = TickingClock()
+        client = stream_client(clock, [visible("a", 500)])
+        model = budget_model(client, clock)
+        call = (lambda: list(model.stream([Message.user("x")]))) if use_stream else (lambda: model.generate([Message.user("x")]))
+        with pytest.raises(GenerationDeadlineExceededError):
+            call()
+
+
+# stream cleanup -----------------------------------------------------------------------------------
+
+
+def test_the_stream_is_closed_after_a_normal_completion():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("ok"), final("stop")])
+    list(budget_model(client, clock).stream([Message.user("x")]))
+    assert client.streams[0].close_calls == 1
+
+
+def test_the_stream_is_closed_when_the_filter_fails_closed():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("planning\n</think>\nanswer"), final("stop")])
+    with pytest.raises(UnsafeModelOutputError):
+        list(budget_model(client, clock, capability=ThinkingCapability.TOGGLEABLE).stream([Message.user("x")]))
+    assert client.streams[0].close_calls == 1
+
+
+def test_the_stream_is_closed_when_the_consumer_abandons_the_generator_early():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("a"), visible("b"), visible("c"), final("stop")])
+    generator = budget_model(client, clock).stream([Message.user("x")])
+    assert next(generator) == "a"
+    generator.close()
+    assert client.streams[0].close_calls == 1
+    assert client.streams[0].consumed == 1  # nothing further was pulled
+
+
+def test_a_stream_without_a_close_method_is_handled_safely():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("ok", 500)], has_close=False)
+    with pytest.raises(GenerationDeadlineExceededError):
+        list(budget_model(client, clock).stream([Message.user("x")]))
+    client = stream_client(clock, [visible("ok"), final("stop")], has_close=False)
+    assert "".join(budget_model(client, clock).stream([Message.user("x")])) == "ok"
+
+
+def test_a_failing_close_never_masks_the_primary_error():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("a"), final("length")], close_raises=True)
+    with pytest.raises(GenerationTokenLimitExceededError):
+        list(budget_model(client, clock).stream([Message.user("x")]))
+    clock = TickingClock()
+    client = stream_client(clock, [visible("a", 500)], close_raises=True)
+    with pytest.raises(GenerationDeadlineExceededError):
+        list(budget_model(client, clock).stream([Message.user("x")]))
+
+
+def test_a_failing_close_after_success_does_not_fail_the_generation():
+    clock = TickingClock()
+    client = stream_client(clock, [visible("fine"), final("stop")], close_raises=True)
+    assert "".join(budget_model(client, clock).stream([Message.user("x")])) == "fine"
+
+
+def test_close_stream_safely_tolerates_odd_objects(caplog):
+    _close_stream_safely(None)
+    _close_stream_safely(object())
+
+    class NotCallable:
+        close = "nope"
+
+    _close_stream_safely(NotCallable())
+
+    class Boom:
+        def close(self):
+            raise RuntimeError("PRIVATE-DETAIL")
+
+    caplog.set_level(logging.DEBUG)
+    _close_stream_safely(Boom())
+    assert "PRIVATE-DETAIL" not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_connection_errors_still_translate_and_need_no_stream_to_close():
+    model = budget_model(FakeOllamaClient(chat_exception=ConnectionError("down")))
+    with pytest.raises(ModelError) as info:
+        list(model.stream([Message.user("x")]))
+    assert not isinstance(info.value, (GenerationDeadlineExceededError, GenerationTokenLimitExceededError))

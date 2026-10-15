@@ -30,6 +30,32 @@ class UnsafeModelOutputError(ModelError):
     no changes."""
 
 
+class GenerationDeadlineExceededError(ModelError):
+    """A generation exceeded its total time limit. The message contains numbers only."""
+
+    def __init__(self, deadline_seconds: float, elapsed_seconds: float | None = None) -> None:
+        self.deadline_seconds = deadline_seconds
+        self.elapsed_seconds = elapsed_seconds
+        super().__init__(
+            f"The model took longer than the {deadline_seconds:g}-second limit to answer, so the "
+            "reply was cancelled. Please try again."
+        )
+
+
+class GenerationTokenLimitExceededError(ModelError):
+    """A generation hit its token cap before finishing; partial text is discarded.
+
+    The message contains numbers only.
+    """
+
+    def __init__(self, max_generated_tokens: int) -> None:
+        self.max_generated_tokens = max_generated_tokens
+        super().__init__(
+            f"The model reached its {max_generated_tokens}-token limit before finishing its answer, "
+            "so the reply was discarded. Please try again."
+        )
+
+
 class SessionError(StudyBotError):
     """Raised for invalid chat/course navigation or validation: not found,
     an ambiguous id prefix, an empty/too-long name, and the like."""

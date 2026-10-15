@@ -9,17 +9,27 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from enum import Enum
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import httpx
 import ollama
 
-from studybot.core.exceptions import ModelError
+from studybot.core.exceptions import (
+    GenerationDeadlineExceededError,
+    GenerationTokenLimitExceededError,
+    ModelError,
+)
 from studybot.core.output_integrity import ReasoningOutputFilter
 from studybot.core.messages import Message, Role
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.models.base import ModelCapabilities, ModelResponse, ProviderStatus
+from studybot.models.generation import (
+    DEFAULT_GENERATION_BUDGET_POLICY,
+    GenerationBudget,
+    GenerationBudgetPolicy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +161,35 @@ _MODEL_NOT_FOUND_STATUS = 404
 _CONNECTION_ERRORS = (ConnectionError, httpx.ConnectError)
 
 
+# `done_reason` on the final chunk when generation stopped at the
+# `num_predict` cap rather than finishing ("stop").
+_DONE_REASON_LENGTH = "length"
+
+
+def _merge_options(existing: Mapping[str, Any] | None, budget: GenerationBudget) -> dict[str, Any]:
+    """Return request options with the token cap applied as ``num_predict``.
+
+    Never mutates the caller's dict and adds nothing else (notably not ``num_ctx``).
+    """
+    merged = dict(existing) if existing else {}
+    merged["num_predict"] = budget.max_generated_tokens
+    return merged
+
+
+def _close_stream_safely(stream: object) -> None:
+    """Close a stream if it has ``close()``.
+
+    Never raises, so cleanup cannot mask the original error; logs only the
+    exception type.
+    """
+    close = getattr(stream, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception as exc:
+            logger.debug("Error while closing the model stream (%s)", type(exc).__name__)
+
+
 def _to_ollama_messages(messages: Sequence[Message]) -> list[dict[str, str]]:
     """Convert our typed messages to Ollama's chat message dicts, in order."""
     return [{"role": _ROLE_TO_OLLAMA[m.role], "content": m.content} for m in messages]
@@ -173,6 +212,8 @@ class OllamaModel:
         client: ollama.Client | None = None,
         thinking_capability: ThinkingCapability | None = None,
         show_fetcher: Callable[[], dict[str, Any]] | None = None,
+        generation_budget_policy: GenerationBudgetPolicy = DEFAULT_GENERATION_BUDGET_POLICY,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """`client` is an injection seam for tests (a fake with `.chat`/`.list`
         methods) — application code should leave it unset so a real
@@ -184,7 +225,12 @@ class OllamaModel:
         test seam; by default a plain HTTP call — the `ollama` package's
         own `show()` drops the `thinking` field this needs). Only a
         successful read is cached, so a request made while Ollama is down
-        is retried next time instead of being stuck on UNKNOWN."""
+        is retried next time instead of being stuck on UNKNOWN.
+
+        `generation_budget_policy` bounds every request (token cap + total
+        deadline, chosen by reasoning mode only). `clock` is used solely to
+        measure the generation deadline; it is a test seam, and must be
+        monotonic."""
         self._model = model
         self._host = host
         self._timeout = timeout
@@ -198,6 +244,8 @@ class OllamaModel:
         # by pure functions, so no code path ever re-acquires it — and
         # because a fetch happens while holding it, concurrent first calls
         # wait for one fetch instead of issuing duplicates.
+        self._generation_budget_policy = generation_budget_policy
+        self._clock = clock
         self._show_lock = threading.Lock()
         self._show_payload: dict[str, Any] | None = None
 
@@ -265,65 +313,82 @@ class OllamaModel:
         implicit_open = capability is ThinkingCapability.UNKNOWN and think is False
         return think, implicit_open
 
+    def _generation_budget(self, reasoning_mode: ReasoningMode) -> GenerationBudget:
+        return self._generation_budget_policy.for_mode(reasoning_mode)
+
     def generate(
         self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
     ) -> ModelResponse:
-        think, implicit_open = self._request_plan(reasoning_mode)
-        try:
-            response = self._client.chat(
-                model=self._model,
-                messages=_to_ollama_messages(messages),
-                stream=False,
-                think=think,
-                keep_alive=self._keep_alive,
-            )
-        except _CONNECTION_ERRORS as exc:
-            raise self._connection_error(exc) from exc
-        except ollama.ResponseError as exc:
-            raise self._response_error(exc) from exc
-        except httpx.TimeoutException as exc:
-            raise self._timeout_error(exc) from exc
-        except Exception as exc:
-            raise self._unexpected_error(exc) from exc
-
-        # `response.message.thinking` (present when `think` is truthy) is
-        # deliberately never read here — hidden reasoning text must never
-        # reach ChatService/persistence, only the final visible content.
-        # `content` itself still goes through the same reasoning filter the
-        # streaming path uses: a model can put reasoning there too.
-        output_filter = ReasoningOutputFilter(implicit_open=implicit_open)
-        content = output_filter.feed(response.message.content or "") + output_filter.finish()
-        self._log_filter_stats(output_filter)
+        # Same primitive as stream(), so budget, deadline, filter and
+        # done_reason handling cannot drift. "" chunks are progress signals.
+        content = "".join(chunk for chunk in self._generate_visible(messages, reasoning_mode) if chunk)
         return ModelResponse(content=content, model_name=self._model)
 
     def stream(
         self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
     ) -> Iterator[str]:
+        yield from self._generate_visible(messages, reasoning_mode)
+
+    def _generate_visible(self, messages: Sequence[Message], reasoning_mode: ReasoningMode) -> Iterator[str]:
+        """Yield filtered visible text (and ``""`` progress signals) under the generation budget.
+
+        Per raw chunk: reasoning filtering, then the deadline check, then exposure.
+        A ``done_reason`` of "length" is checked before the filter's "no answer"
+        check, so a model that spent its whole token allowance reasoning is reported
+        as a token-limit failure rather than an empty answer. The ``thinking`` field
+        is never read.
+        """
         think, implicit_open = self._request_plan(reasoning_mode)
+        budget = self._generation_budget(reasoning_mode)
         output_filter = ReasoningOutputFilter(implicit_open=implicit_open)
+        started = self._clock()
+        deadline = started + budget.deadline_seconds
+        raw_chunks = 0
+        visible_chars = 0
+        done_reason: str | None = None
+        stream: object = None
+
+        def check_deadline() -> None:
+            if self._clock() >= deadline:
+                raise GenerationDeadlineExceededError(budget.deadline_seconds, self._clock() - started)
+
         try:
-            chunks = self._client.chat(
+            stream = self._client.chat(
                 model=self._model,
                 messages=_to_ollama_messages(messages),
                 stream=True,
                 think=think,
                 keep_alive=self._keep_alive,
+                options=_merge_options(None, budget),
             )
-            for chunk in chunks:
-                # As in `generate`, `chunk.message.thinking` is deliberately
-                # never read/yielded — only user-visible content streams,
-                # and only once the filter has released it as answer text.
+            for chunk in stream:
+                raw_chunks += 1
+                check_deadline()  # before processing the newly received chunk
+                reason = getattr(chunk, "done_reason", None)
+                if reason:
+                    done_reason = reason
                 content = chunk.message.content
                 visible = output_filter.feed(content) if content else ""
-                # Yield even when nothing is visible yet (reasoning, or text
-                # the filter is still holding back): "" is a progress signal
-                # that lets the caller's thread service other work between
-                # tokens — see `ModelProvider.stream`.
+                check_deadline()  # again, before anything becomes visible
+                visible_chars += len(visible)
+                # Yield "" progress signals so the engine thread can serve
+                # other requests while the model reasons. They never reset the
+                # deadline.
                 yield visible
+            if done_reason == _DONE_REASON_LENGTH:
+                raise GenerationTokenLimitExceededError(budget.max_generated_tokens)
+            check_deadline()
             tail = output_filter.finish()
             if tail:
+                visible_chars += len(tail)
                 yield tail
             self._log_filter_stats(output_filter)
+        except GenerationDeadlineExceededError:
+            self._log_budget_failure("deadline", reasoning_mode, budget, started, visible_chars, raw_chunks)
+            raise
+        except GenerationTokenLimitExceededError:
+            self._log_budget_failure("token_limit", reasoning_mode, budget, started, visible_chars, raw_chunks)
+            raise
         except ModelError:
             raise  # e.g. UnsafeModelOutputError from the filter: already user-facing
         except _CONNECTION_ERRORS as exc:
@@ -334,6 +399,33 @@ class OllamaModel:
             raise self._timeout_error(exc) from exc
         except Exception as exc:
             raise self._unexpected_error(exc) from exc
+        finally:
+            # Always close, including when the consumer abandons the
+            # generator; closing makes Ollama stop generating.
+            _close_stream_safely(stream)
+
+    def _log_budget_failure(
+        self,
+        kind: str,
+        reasoning_mode: ReasoningMode,
+        budget: GenerationBudget,
+        started: float,
+        visible_chars: int,
+        raw_chunks: int,
+    ) -> None:
+        # Safe metadata only: no prompt, answer or reasoning text.
+        logger.warning(
+            "Generation stopped: kind=%s model=%s mode=%s max_generated_tokens=%d deadline_seconds=%g "
+            "elapsed_ms=%d visible_chars=%d chunks=%d",
+            kind,
+            self._model,
+            reasoning_mode.value,
+            budget.max_generated_tokens,
+            budget.deadline_seconds,
+            int((self._clock() - started) * 1000),
+            visible_chars,
+            raw_chunks,
+        )
 
     def get_status(self) -> ProviderStatus:
         try:

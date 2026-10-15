@@ -56,6 +56,52 @@ always-thinking model both modes must request reasoning (so the reasoning can
 be separated from the answer), so it is `False`; for a model whose thinking can
 be switched off it is `True`.
 
+### Generation budgets
+
+Every model request is bounded. `models/generation.py` defines two small,
+provider-neutral value types: `GenerationBudget` (a token cap and a total
+deadline) and `GenerationBudgetPolicy` (one budget for Fast, one for Deep).
+The policy is chosen by **reasoning mode only** (never by model, course or
+teaching mode) and is built once from `Settings` by the factory.
+
+| Mode | Max generated tokens | Total deadline |
+|---|---|---|
+| Fast | 4096 | 120 s |
+| Deep | 6144 | 300 s |
+
+* **Token cap.** `max_generated_tokens` is the *total* the model may generate
+  for the request; for a thinking model that includes hidden reasoning, not
+  just the visible answer. `OllamaModel` sends it as `num_predict`. It does not
+  touch `num_ctx` (the active context window is a separate server setting).
+  If the model stops because it hit the cap (`done_reason == "length"`) the
+  generation fails with `GenerationTokenLimitExceededError`, even if some text
+  was already produced: a silently truncated answer is never saved as a
+  successful reply. A model that spends its whole allowance reasoning is
+  reported the same way (not as an "empty answer").
+* **Deadline.** A *total* wall-clock limit for the provider call (reasoning,
+  answer and streaming together), measured with an injectable monotonic clock.
+  Receiving tokens or `""` progress signals does not extend it. It is checked
+  before each received chunk is processed and again before anything becomes
+  visible, and raises `GenerationDeadlineExceededError`.
+* **One path.** `generate()` consumes the same internal stream as `stream()`,
+  so budget, deadline, reasoning filter and `done_reason` handling cannot drift
+  apart. The underlying stream is always closed (safely, tolerating iterators
+  with no `close()`), which also makes Ollama stop generating.
+* **Failure behaviour.** Both errors are ordinary `ModelError`s: the API sends
+  the existing `MODEL_ERROR`, never `message_completed`; only the user's message
+  is persisted; the chat's lock is released and the engine stays responsive, so
+  the same or another chat works immediately. Text streamed before the failure
+  is for the client to discard (the Flutter app already does). Logs carry only
+  numbers and enums (model, mode, kind, limits, elapsed ms, character and chunk
+  counts), never prompt, answer or reasoning text.
+* **Limitation.** The deadline can only be checked when the client iterator
+  hands control back. If a network call blocks without yielding anything, the
+  lower-level HTTP timeout (`STUDYBOT_OLLAMA_TIMEOUT`) is the protection; no
+  extra thread is used to kill it.
+
+These are safety limits, not quality settings. There is no user-facing Stop
+button yet.
+
 ## 3. What belongs in StudyBot
 
 Courses, teaching modes (Teach / Homework / Quick / Practice / Exam), learning
@@ -139,3 +185,4 @@ application** needs to consume it, or when it must be deployed independently
    outside `models/ollama.py`.
 8. All candidate models receive the same StudyBot prompts; per-model prompt
    tuning is not allowed.
+9. Generation budgets depend only on the reasoning mode, never on the model.

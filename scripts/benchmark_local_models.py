@@ -57,6 +57,7 @@ from studybot.core.messages import Role
 from studybot.core.reasoning_mode import ReasoningMode
 from studybot.core.teaching_mode import TeachingMode
 from studybot.models.base import ModelCapabilities
+from studybot.models.generation import DEFAULT_DEEP_GENERATION_DEADLINE_SECONDS, GenerationBudget
 
 DEFAULT_MODELS = ("qwen3:4b", "qwen3.5:4b", "gemma3:4b")
 BASELINE_MODEL = "qwen3:4b"
@@ -69,11 +70,26 @@ FALLBACK_LEARNER_ANSWER = "I'm not sure, but my best guess is the first thing th
 
 WARMUP_PROMPT = "Reply with one short sentence."
 
-DEFAULT_MAX_TURN_SECONDS = 420.0
-"""Longest a single turn may run before it is abandoned. Real turns took at
-most ~165 s on the slowest candidate; a generation that never ends (Ollama's
-default has no token cap and shifts context, so it can run forever) is
-cut off here and recorded as a `TurnTimeout` failure."""
+DEFAULT_MAX_TURN_SECONDS = 330.0
+"""Last-resort watchdog for one turn, deliberately longer than the production
+Deep deadline (300 s) so the product's own budget ends a runaway turn first
+(recorded as ``deadline`` or ``token_limit``). It fires only on a harness or
+provider failure and is recorded as ``harness_timeout``."""
+assert DEFAULT_MAX_TURN_SECONDS > DEFAULT_DEEP_GENERATION_DEADLINE_SECONDS
+
+TERMINATION_KINDS = ("success", "deadline", "token_limit", "model_error", "harness_timeout")
+_ERROR_TO_TERMINATION = {
+    "GenerationDeadlineExceededError": "deadline",
+    "GenerationTokenLimitExceededError": "token_limit",
+    "TurnTimeout": "harness_timeout",
+}
+
+
+def termination_kind(error: str | None) -> str:
+    """Classify how a turn ended from the exception class name (None = success)."""
+    if error is None:
+        return "success"
+    return _ERROR_TO_TERMINATION.get(error, "model_error")
 
 
 # --- data types ---------------------------------------------------------------------
@@ -101,6 +117,11 @@ class TurnMeasurement:
     error: str | None = None
     """Exception class name if the turn failed (never a message)."""
     used_fallback_answer: bool = False
+    reasoning_mode: str | None = None
+    configured_max_generated_tokens: int | None = None
+    configured_deadline_seconds: float | None = None
+    termination_kind: str = "success"
+    """One of `TERMINATION_KINDS`. Never raw text."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +269,8 @@ def measure_turn(
     clock: Callable[[], float] = time.perf_counter,
     used_fallback_answer: bool = False,
     max_seconds: float | None = DEFAULT_MAX_TURN_SECONDS,
+    reasoning_mode: ReasoningMode | None = None,
+    budget: GenerationBudget | None = None,
 ) -> tuple[TurnMeasurement, str]:
     """Run one turn through `SessionService` and measure it. Returns the
     measurement and the final visible text (for optional terminal display).
@@ -305,6 +328,10 @@ def measure_turn(
         persistence_match=persistence_match,
         error=error,
         used_fallback_answer=used_fallback_answer,
+        reasoning_mode=None if reasoning_mode is None else reasoning_mode.value,
+        configured_max_generated_tokens=None if budget is None else budget.max_generated_tokens,
+        configured_deadline_seconds=None if budget is None else budget.deadline_seconds,
+        termination_kind=termination_kind(error),
     )
     return measurement, visible
 
@@ -324,6 +351,7 @@ def run_scenario(
     courses: dict | None = None,
     answer_provider: Callable[[str, int, str], str | None] | None = None,
     max_turn_seconds: float | None = DEFAULT_MAX_TURN_SECONDS,
+    budget_for: Callable[[ReasoningMode], GenerationBudget] | None = None,
 ) -> list[TurnMeasurement]:
     """One attempt at a scenario in a brand-new chat.
 
@@ -364,6 +392,8 @@ def run_scenario(
             clock=clock,
             used_fallback_answer=fallback,
             max_seconds=max_turn_seconds,
+            reasoning_mode=scenario.reasoning_mode,
+            budget=None if budget_for is None else budget_for(scenario.reasoning_mode),
         )
         measurements.append(measurement)
         last_visible = visible
@@ -590,10 +620,24 @@ def benchmark_model(
         unload(model_name)  # only this benchmark model
 
 
+def budget_for_settings(settings: Settings) -> Callable[[ReasoningMode], GenerationBudget]:
+    """Return the budget the product enforces per mode, read from the same
+    ``Settings`` the app was built with.
+    """
+
+    def budget_for(mode: ReasoningMode) -> GenerationBudget:
+        if mode is ReasoningMode.FAST:
+            return GenerationBudget(settings.fast_max_generated_tokens, settings.fast_generation_deadline_seconds)
+        return GenerationBudget(settings.deep_max_generated_tokens, settings.deep_generation_deadline_seconds)
+
+    return budget_for
+
+
 def _benchmark_in_app(
     app, model_name, scenarios, learner_answers, show, clock, runner, answer_provider=None,
     max_turn_seconds=DEFAULT_MAX_TURN_SECONDS,
 ) -> ModelBenchmarkSummary:
+    budget_for = budget_for_settings(app.settings)
     status = app.sessions.get_status()
     if not status.server_reachable:
         return summarize(model_name, (), not_evaluated_reason="Ollama server not reachable")
@@ -616,6 +660,8 @@ def _benchmark_in_app(
         turn_number=1,
         clock=clock,
         max_seconds=max_turn_seconds,
+        reasoning_mode=ReasoningMode.FAST,
+        budget=budget_for(ReasoningMode.FAST),
     )
     if warm.error is not None:
         return summarize(
@@ -644,6 +690,7 @@ def _benchmark_in_app(
             courses=courses,
             answer_provider=answer_provider,
             max_turn_seconds=max_turn_seconds,
+            budget_for=budget_for,
         )
         failed = next((m for m in attempt if m.error is not None), None)
         if failed is not None:  # exactly one clean retry, in a fresh chat
@@ -659,6 +706,7 @@ def _benchmark_in_app(
                 courses=courses,
                 answer_provider=answer_provider,
                 max_turn_seconds=max_turn_seconds,
+                budget_for=budget_for,
             )
         measurements.extend(attempt)
 

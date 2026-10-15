@@ -70,7 +70,17 @@ def test_factory_accepts_any_ollama_model_tag_without_a_whitelist(tag):
 
 @pytest.mark.parametrize(
     "module",
-    ["studybot.models.base", "studybot.models.ollama", "studybot.models.mock", "studybot.models", "studybot.core", "studybot.app"],
+    [
+        "studybot.models.base",
+        "studybot.models.generation",
+        "studybot.models.ollama",
+        "studybot.models.mock",
+        "studybot.models.factory",
+        "studybot.models",
+        "studybot.config.settings",
+        "studybot.core",
+        "studybot.app",
+    ],
 )
 def test_every_boundary_module_imports_first_in_a_fresh_interpreter(module):
     """The model layer must be importable on its own, in any order — a

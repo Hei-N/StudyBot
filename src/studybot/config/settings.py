@@ -8,6 +8,7 @@ from the environment ad hoc throughout the codebase.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,12 @@ from typing import Mapping
 
 from studybot.core.exceptions import ConfigurationError
 from studybot.core.prompts import DEFAULT_SYSTEM_PROMPT
+from studybot.models.generation import (
+    DEFAULT_DEEP_GENERATION_DEADLINE_SECONDS,
+    DEFAULT_DEEP_MAX_GENERATED_TOKENS,
+    DEFAULT_FAST_GENERATION_DEADLINE_SECONDS,
+    DEFAULT_FAST_MAX_GENERATED_TOKENS,
+)
 
 _ENV_PREFIX = "STUDYBOT_"
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -61,6 +68,24 @@ class Settings:
     ollama_model: str = DEFAULT_OLLAMA_MODEL
     ollama_timeout: float = DEFAULT_OLLAMA_TIMEOUT
     ollama_keep_alive: str | None = None
+
+    # Generation budgets: safety limits per reasoning mode (defaults live in
+    # studybot.models.generation).
+    fast_max_generated_tokens: int = DEFAULT_FAST_MAX_GENERATED_TOKENS
+    deep_max_generated_tokens: int = DEFAULT_DEEP_MAX_GENERATED_TOKENS
+    fast_generation_deadline_seconds: float = DEFAULT_FAST_GENERATION_DEADLINE_SECONDS
+    deep_generation_deadline_seconds: float = DEFAULT_DEEP_GENERATION_DEADLINE_SECONDS
+
+    def __post_init__(self) -> None:
+        # Invalid budgets fail at construction; they are never clamped.
+        for name in ("fast_max_generated_tokens", "deep_max_generated_tokens"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ConfigurationError(f"{name} must be a positive integer, got {value!r}")
+        for name in ("fast_generation_deadline_seconds", "deep_generation_deadline_seconds"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ConfigurationError(f"{name} must be a finite number > 0, got {value!r}")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -114,6 +139,21 @@ class Settings:
                     f"Invalid {_ENV_PREFIX}OLLAMA_TIMEOUT {timeout_raw!r}; must be a number"
                 ) from exc
 
+        def parse(name: str, default, kind):
+            raw = source.get(f"{_ENV_PREFIX}{name}")
+            if raw is None:
+                return default
+            try:
+                return kind(raw)
+            except ValueError as exc:
+                what = "an integer" if kind is int else "a number"
+                raise ConfigurationError(f"Invalid {_ENV_PREFIX}{name} {raw!r}; must be {what}") from exc
+
+        fast_tokens = parse("FAST_MAX_GENERATED_TOKENS", DEFAULT_FAST_MAX_GENERATED_TOKENS, int)
+        deep_tokens = parse("DEEP_MAX_GENERATED_TOKENS", DEFAULT_DEEP_MAX_GENERATED_TOKENS, int)
+        fast_deadline = parse("FAST_GENERATION_DEADLINE_SECONDS", DEFAULT_FAST_GENERATION_DEADLINE_SECONDS, float)
+        deep_deadline = parse("DEEP_GENERATION_DEADLINE_SECONDS", DEFAULT_DEEP_GENERATION_DEADLINE_SECONDS, float)
+
         return cls(
             environment=environment,
             log_level=log_level,
@@ -124,6 +164,10 @@ class Settings:
             ollama_model=ollama_model,
             ollama_timeout=ollama_timeout,
             ollama_keep_alive=ollama_keep_alive,
+            fast_max_generated_tokens=fast_tokens,
+            deep_max_generated_tokens=deep_tokens,
+            fast_generation_deadline_seconds=fast_deadline,
+            deep_generation_deadline_seconds=deep_deadline,
         )
 
     @property

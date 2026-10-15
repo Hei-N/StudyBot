@@ -310,3 +310,98 @@ def test_get_capabilities_does_not_touch_history():
     chat.get_capabilities()
 
     assert chat.history == before
+
+
+# --- generation budget failures ------------------------------------------------------
+
+from studybot.core.exceptions import GenerationDeadlineExceededError, GenerationTokenLimitExceededError
+
+BUDGET_ERRORS = [GenerationDeadlineExceededError(120.0), GenerationTokenLimitExceededError(2048)]
+
+
+class BudgetFailingThenOkModel:
+    """Streams some text and then fails with a budget error on the first
+    call; every later call succeeds."""
+
+    name = "budget-flaky"
+
+    def __init__(self, error):
+        self.error = error
+        self.calls = 0
+
+    def generate(self, messages, *, reasoning_mode=DEFAULT_REASONING_MODE):
+        self.calls += 1
+        if self.calls == 1:
+            raise self.error
+        return ModelResponse(content="recovered", model_name=self.name)
+
+    def stream(self, messages, *, reasoning_mode=DEFAULT_REASONING_MODE):
+        self.calls += 1
+        if self.calls == 1:
+            yield "partial "
+            yield "text"
+            raise self.error
+        yield "recov"
+        yield "ered"
+
+
+@pytest.mark.parametrize("error", BUDGET_ERRORS, ids=lambda e: type(e).__name__)
+def test_a_budget_failure_during_streaming_keeps_only_the_user_message(error):
+    chat = ChatService(BudgetFailingThenOkModel(error))
+    received = []
+
+    with pytest.raises(type(error)):
+        for chunk in chat.send_streaming("hello"):
+            received.append(chunk)
+
+    assert received == ["partial ", "text"]  # what the model streamed is the caller's to discard
+    assert [(m.role, m.content) for m in chat.history] == [(Role.USER, "hello")]
+
+
+@pytest.mark.parametrize("error", BUDGET_ERRORS, ids=lambda e: type(e).__name__)
+def test_a_budget_failure_in_send_keeps_only_the_user_message(error):
+    chat = ChatService(BudgetFailingThenOkModel(error))
+
+    with pytest.raises(type(error)):
+        chat.send("hello")
+
+    assert [(m.role, m.content) for m in chat.history] == [(Role.USER, "hello")]
+
+
+@pytest.mark.parametrize("error", BUDGET_ERRORS, ids=lambda e: type(e).__name__)
+def test_the_chat_stays_usable_after_a_budget_failure(error):
+    chat = ChatService(BudgetFailingThenOkModel(error))
+    with pytest.raises(type(error)):
+        list(chat.send_streaming("first"))
+
+    reply = "".join(chat.send_streaming("second"))
+
+    assert reply == "recovered"
+    assert [m.role for m in chat.history] == [Role.USER, Role.USER, Role.ASSISTANT]
+    assert chat.history[-1].content == "recovered"
+
+
+@pytest.mark.parametrize("error", BUDGET_ERRORS, ids=lambda e: type(e).__name__)
+def test_budget_errors_are_ordinary_model_errors_for_every_existing_handler(error):
+    assert isinstance(error, ModelError)
+    with pytest.raises(ModelError):
+        ChatService(BudgetFailingThenOkModel(error)).send("hello")
+
+
+def test_empty_progress_chunks_never_enter_chat_history():
+    class ProgressModel:
+        name = "progress"
+
+        def generate(self, messages, *, reasoning_mode=DEFAULT_REASONING_MODE):
+            raise NotImplementedError
+
+        def stream(self, messages, *, reasoning_mode=DEFAULT_REASONING_MODE):
+            yield ""
+            yield "Hel"
+            yield ""
+            yield "lo"
+            yield ""
+
+    chat = ChatService(ProgressModel())
+    assert "".join(chat.send_streaming("hi")) == "Hello"
+    assert chat.history[-1].content == "Hello"

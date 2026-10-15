@@ -16,8 +16,13 @@ class FakeMessage:
 
 
 class FakeChatResponse:
-    def __init__(self, content: str | None, thinking: str | None = None) -> None:
+    def __init__(
+        self, content: str | None, thinking: str | None = None, done_reason: str | None = None
+    ) -> None:
         self.message = FakeMessage(content, thinking)
+        # Ollama sets `done_reason` ("stop" / "length") only on the final chunk.
+        self.done_reason = done_reason
+        self.done = done_reason is not None
 
 
 class FakeModelEntry:
@@ -54,15 +59,25 @@ class FakeOllamaClient:
         self.chat_calls: list[dict] = []
         self.list_call_count = 0
 
-    def chat(self, model, messages, stream=False, think=None, keep_alive=None):
+    def chat(self, model, messages, stream=False, think=None, keep_alive=None, options=None):
         self.chat_calls.append(
-            {"model": model, "messages": messages, "stream": stream, "think": think, "keep_alive": keep_alive}
+            {
+                "model": model,
+                "messages": messages,
+                "stream": stream,
+                "think": think,
+                "keep_alive": keep_alive,
+                "options": options,
+            }
         )
         if self._chat_exception is not None:
             raise self._chat_exception
         if stream:
-            assert self._stream_factory is not None, "stream_factory not configured"
-            return self._stream_factory()
+            if self._stream_factory is not None:
+                return self._stream_factory()
+            # Production always streams, so a whole response becomes one chunk.
+            assert self._chat_response is not None, "neither stream_factory nor chat_response configured"
+            return iter([self._chat_response])
         return self._chat_response
 
     def list(self):
@@ -125,9 +140,16 @@ class FakeThinkingModelClient:
             return f"{self.reasoning}\n</think>\n\n{answer}", ""
         return answer, ""
 
-    def chat(self, model, messages, stream=False, think=None, keep_alive=None):
+    def chat(self, model, messages, stream=False, think=None, keep_alive=None, options=None):
         self.chat_calls.append(
-            {"model": model, "messages": messages, "stream": stream, "think": think, "keep_alive": keep_alive}
+            {
+                "model": model,
+                "messages": messages,
+                "stream": stream,
+                "think": think,
+                "keep_alive": keep_alive,
+                "options": options,
+            }
         )
         content, thinking = self._parts(messages, think)
         if not stream:
@@ -144,3 +166,102 @@ class FakeThinkingModelClient:
 
     def list(self):
         return FakeListResponse(["qwen3:4b"])
+
+
+# --- deterministic time and stream tracking ----------------------------------------------
+
+
+class TickingClock:
+    """A monotonic clock that tests advance explicitly; no sleeping."""
+
+    def __init__(self, start: float = 0.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class TrackedStream:
+    """A streamed response whose chunks advance a ``TickingClock`` as they are
+    received, recording how many were consumed and how often it was closed.
+
+    ``items`` is a sequence of ``(seconds_before_chunk, FakeChatResponse)``. Pass
+    ``has_close=False`` to model an iterator with no ``close()``.
+    """
+
+    def __init__(self, clock: TickingClock, items, *, has_close: bool = True, close_raises: bool = False):
+        self._clock = clock
+        self._items = list(items)
+        self.consumed = 0
+        self.close_calls = 0
+        self._close_raises = close_raises
+        if not has_close:
+            self.close = None  # type: ignore[assignment]  # shadows the method: getattr(..., "close") is not callable
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.consumed >= len(self._items):
+            raise StopIteration
+        seconds, response = self._items[self.consumed]
+        self.consumed += 1
+        self._clock.now += seconds
+        return response
+
+    def close(self):
+        self.close_calls += 1
+        if self._close_raises:
+            raise RuntimeError("close failed")
+
+
+def visible(text: str, seconds: float = 1.0):
+    """One scripted visible-content chunk."""
+    return (seconds, FakeChatResponse(text))
+
+
+def reasoning(seconds: float = 1.0):
+    """One scripted hidden-thinking chunk (no visible content)."""
+    return (seconds, FakeChatResponse(None, "SECRET-REASONING-7f3a"))
+
+
+def final(done_reason: str, seconds: float = 0.0, content: str = ""):
+    """The terminal chunk carrying Ollama's `done_reason`."""
+    return (seconds, FakeChatResponse(content, None, done_reason))
+
+
+def flaky_budget_model(kind: str):
+    """A real ``OllamaModel`` (fake client and clock) whose first generation fails by
+    budget (``kind`` is "deadline" or "token_limit") and whose later generations
+    succeed.
+
+    Returns ``(model, streams)``; ``streams`` collects every ``TrackedStream`` so
+    tests can check each was closed. The failing generation first streams "partial
+    text", to verify an incomplete answer is never persisted.
+    """
+    from studybot.models.ollama import OllamaModel, ThinkingCapability
+
+    assert kind in ("deadline", "token_limit")
+    clock = TickingClock()
+    streams: list[TrackedStream] = []
+    requests = {"n": 0}
+
+    def factory():
+        requests["n"] += 1
+        if requests["n"] == 1:
+            items = (
+                [visible("partial text", 1.0), visible("never delivered", 500.0)]
+                if kind == "deadline"
+                else [visible("partial text", 1.0), final("length")]
+            )
+        else:
+            items = [visible("A good answer.", 1.0), final("stop")]
+        tracked = TrackedStream(clock, items)
+        streams.append(tracked)
+        return tracked
+
+    client = FakeOllamaClient(stream_factory=factory, list_response=FakeListResponse(["m"]))
+    model = OllamaModel(
+        model="m", client=client, thinking_capability=ThinkingCapability.TOGGLEABLE, clock=clock
+    )
+    return model, streams

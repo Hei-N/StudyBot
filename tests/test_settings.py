@@ -151,3 +151,137 @@ def test_an_unrecognized_env_var_is_silently_ignored_not_an_error():
     settings = Settings.from_env(env={"STUDYBOT_DB_PATH": "/tmp/totally-ignored.db"})
 
     assert settings.data_dir == default_data_dir()  # the typo'd override had zero effect
+
+
+# --- generation budgets --------------------------------------------------------------------
+
+BUDGET_ENV = {
+    "STUDYBOT_FAST_MAX_GENERATED_TOKENS": "fast_max_generated_tokens",
+    "STUDYBOT_DEEP_MAX_GENERATED_TOKENS": "deep_max_generated_tokens",
+    "STUDYBOT_FAST_GENERATION_DEADLINE_SECONDS": "fast_generation_deadline_seconds",
+    "STUDYBOT_DEEP_GENERATION_DEADLINE_SECONDS": "deep_generation_deadline_seconds",
+}
+TOKEN_VARS = ["STUDYBOT_FAST_MAX_GENERATED_TOKENS", "STUDYBOT_DEEP_MAX_GENERATED_TOKENS"]
+DEADLINE_VARS = ["STUDYBOT_FAST_GENERATION_DEADLINE_SECONDS", "STUDYBOT_DEEP_GENERATION_DEADLINE_SECONDS"]
+
+
+def test_budget_defaults_come_from_the_generation_module():
+    from studybot.models import generation
+
+    settings = Settings.from_env(env={})
+
+    assert settings.fast_max_generated_tokens == generation.DEFAULT_FAST_MAX_GENERATED_TOKENS == 4096
+    assert settings.deep_max_generated_tokens == generation.DEFAULT_DEEP_MAX_GENERATED_TOKENS == 6144
+    assert settings.fast_generation_deadline_seconds == generation.DEFAULT_FAST_GENERATION_DEADLINE_SECONDS == 120.0
+    assert settings.deep_generation_deadline_seconds == generation.DEFAULT_DEEP_GENERATION_DEADLINE_SECONDS == 300.0
+
+
+@pytest.mark.parametrize("variable", TOKEN_VARS)
+def test_each_token_variable_overrides_only_its_own_field(variable):
+    settings = Settings.from_env(env={variable: "64"})
+    defaults = Settings.from_env(env={})
+    for env_name, field_name in BUDGET_ENV.items():
+        expected = 64 if env_name == variable else getattr(defaults, field_name)
+        assert getattr(settings, field_name) == expected
+
+
+@pytest.mark.parametrize("variable", DEADLINE_VARS)
+def test_each_deadline_variable_overrides_only_its_own_field(variable):
+    settings = Settings.from_env(env={variable: "2.5"})
+    defaults = Settings.from_env(env={})
+    for env_name, field_name in BUDGET_ENV.items():
+        expected = 2.5 if env_name == variable else getattr(defaults, field_name)
+        assert getattr(settings, field_name) == expected
+
+
+def test_all_budget_variables_together():
+    settings = Settings.from_env(
+        env={
+            "STUDYBOT_FAST_MAX_GENERATED_TOKENS": "32",
+            "STUDYBOT_DEEP_MAX_GENERATED_TOKENS": "64",
+            "STUDYBOT_FAST_GENERATION_DEADLINE_SECONDS": "2",
+            "STUDYBOT_DEEP_GENERATION_DEADLINE_SECONDS": "9.5",
+        }
+    )
+    assert (settings.fast_max_generated_tokens, settings.deep_max_generated_tokens) == (32, 64)
+    assert (settings.fast_generation_deadline_seconds, settings.deep_generation_deadline_seconds) == (2.0, 9.5)
+
+
+def test_a_pair_of_budget_variables_leaves_the_other_two_at_their_defaults():
+    settings = Settings.from_env(
+        env={"STUDYBOT_FAST_MAX_GENERATED_TOKENS": "100", "STUDYBOT_DEEP_GENERATION_DEADLINE_SECONDS": "10"}
+    )
+    assert settings.fast_max_generated_tokens == 100
+    assert settings.deep_generation_deadline_seconds == 10.0
+    assert settings.deep_max_generated_tokens == 6144
+    assert settings.fast_generation_deadline_seconds == 120.0
+
+
+@pytest.mark.parametrize("variable", TOKEN_VARS)
+@pytest.mark.parametrize("bad", ["0", "-1", "-2048", "nan", "inf", "-inf", "abc", "", " ", "1.5", "2e3", "0x10"])
+def test_invalid_token_values_fail_configuration(variable, bad):
+    with pytest.raises(ConfigurationError):
+        Settings.from_env(env={variable: bad})
+
+
+@pytest.mark.parametrize("variable", DEADLINE_VARS)
+@pytest.mark.parametrize("bad", ["0", "0.0", "-1", "-0.5", "nan", "NaN", "inf", "-inf", "Infinity", "abc", "", " "])
+def test_invalid_deadline_values_fail_configuration(variable, bad):
+    with pytest.raises(ConfigurationError):
+        Settings.from_env(env={variable: bad})
+
+
+def test_an_invalid_budget_error_names_the_offending_variable():
+    with pytest.raises(ConfigurationError, match="STUDYBOT_DEEP_MAX_GENERATED_TOKENS"):
+        Settings.from_env(env={"STUDYBOT_DEEP_MAX_GENERATED_TOKENS": "abc"})
+
+
+def test_invalid_budgets_are_never_silently_clamped():
+    with pytest.raises(ConfigurationError):
+        Settings.from_env(env={"STUDYBOT_FAST_MAX_GENERATED_TOKENS": "-5"})
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"fast_max_generated_tokens": 0},
+        {"deep_max_generated_tokens": -1},
+        {"fast_max_generated_tokens": 1.5},
+        {"fast_generation_deadline_seconds": 0.0},
+        {"deep_generation_deadline_seconds": float("nan")},
+        {"deep_generation_deadline_seconds": float("inf")},
+    ],
+)
+def test_constructing_settings_directly_with_an_invalid_budget_also_fails(kwargs):
+    with pytest.raises(ConfigurationError):
+        Settings(**kwargs)
+
+
+def test_budget_variables_coexist_with_the_data_dir_override(tmp_path):
+    settings = Settings.from_env(
+        env={"STUDYBOT_DATA_DIR": str(tmp_path), "STUDYBOT_FAST_MAX_GENERATED_TOKENS": "32"}
+    )
+    assert settings.data_dir == tmp_path
+    assert settings.fast_max_generated_tokens == 32
+
+
+def test_the_factory_builds_its_policy_from_the_settings_budget_fields():
+    from studybot.core.reasoning_mode import ReasoningMode
+    from studybot.models.factory import create_model
+
+    settings = Settings.from_env(
+        env={
+            "STUDYBOT_MODEL_PROVIDER": "ollama",
+            "STUDYBOT_FAST_MAX_GENERATED_TOKENS": "32",
+            "STUDYBOT_DEEP_MAX_GENERATED_TOKENS": "64",
+            "STUDYBOT_FAST_GENERATION_DEADLINE_SECONDS": "2",
+            "STUDYBOT_DEEP_GENERATION_DEADLINE_SECONDS": "4",
+        }
+    )
+
+    model = create_model(settings)
+
+    fast = model._generation_budget(ReasoningMode.FAST)
+    deep = model._generation_budget(ReasoningMode.DEEP)
+    assert (fast.max_generated_tokens, fast.deadline_seconds) == (32, 2.0)
+    assert (deep.max_generated_tokens, deep.deadline_seconds) == (64, 4.0)

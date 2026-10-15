@@ -1,4 +1,4 @@
-# Study Bot (v0.2, Stage 6.4 — AI Core Foundation)
+# Study Bot (v0.2, Stage 6.5 — Bounded Inference)
 
 A local-first personal study assistant. **Stage 5.5** added a local HTTP +
 WebSocket API (`python -m studybot.api`) in front of the same engine the
@@ -515,6 +515,10 @@ from environment variables (all optional, sensible defaults apply):
 | `STUDYBOT_OLLAMA_MODEL`        | `qwen3:4b`                                   | Ollama model name/tag to use              |
 | `STUDYBOT_OLLAMA_TIMEOUT`      | `120`                                        | Request timeout in seconds                |
 | `STUDYBOT_OLLAMA_KEEP_ALIVE`   | *(Ollama's own default, currently `5m`)*     | How long Ollama keeps the model loaded    |
+| `STUDYBOT_FAST_MAX_GENERATED_TOKENS` | `4096`                                | Token cap for a Fast reply (includes hidden reasoning) |
+| `STUDYBOT_DEEP_MAX_GENERATED_TOKENS` | `6144`                                | Token cap for a Deep reply                |
+| `STUDYBOT_FAST_GENERATION_DEADLINE_SECONDS` | `120`                          | Total time limit for a Fast reply         |
+| `STUDYBOT_DEEP_GENERATION_DEADLINE_SECONDS` | `300`                          | Total time limit for a Deep reply         |
 
 Examples:
 
@@ -527,6 +531,23 @@ The model name is entirely configuration-driven — swapping in `qwen3:8b`,
 `qwen3:14b`, a Gemma or Llama model, or any other model already pulled into
 Ollama is just an environment variable change; nothing in the code is tied
 to Qwen specifically.
+
+### Generation limits (Stage 6.5)
+
+Every reply is bounded so one runaway generation can't occupy the engine
+for hours: a **token cap** (hidden reasoning counts toward it) and a **total
+time limit**, with a bigger allowance for Deep than Fast (the table above lists
+the four overrides). If a reply hits either limit it is discarded, you see an
+error, only your own message is kept, and the chat is immediately usable again.
+Invalid values (zero, negative, `nan`, `inf`, non-numeric) refuse to start
+rather than being silently corrected.
+
+These are **safety controls, not quality knobs**: a bigger allowance can't make
+a small model smarter, it mostly makes a stuck generation last longer. A long
+multi-step problem on a reasoning model can still exhaust the token cap; if you
+see token-limit errors, raising the relevant cap is the fix. The time limit can
+only be enforced while the model is producing output; if the model server itself
+stops responding, `STUDYBOT_OLLAMA_TIMEOUT` is what applies.
 
 ### Choosing and benchmarking a local model (Stage 6.4)
 

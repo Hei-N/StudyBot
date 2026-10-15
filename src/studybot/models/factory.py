@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from studybot.core.exceptions import ConfigurationError
 from studybot.models.base import ModelProvider
+from studybot.models.generation import GenerationBudget, GenerationBudgetPolicy
 from studybot.models.mock import MockModel
 from studybot.models.ollama import OllamaModel
 
@@ -35,6 +36,14 @@ def create_model(settings: Settings) -> ModelProvider:
             host=settings.ollama_host,
             timeout=settings.ollama_timeout,
             keep_alive=settings.ollama_keep_alive,
+            generation_budget_policy=GenerationBudgetPolicy(
+                fast=GenerationBudget(
+                    settings.fast_max_generated_tokens, settings.fast_generation_deadline_seconds
+                ),
+                deep=GenerationBudget(
+                    settings.deep_max_generated_tokens, settings.deep_generation_deadline_seconds
+                ),
+            ),
         )
 
     raise ConfigurationError(
