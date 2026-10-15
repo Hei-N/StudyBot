@@ -162,6 +162,23 @@ hand-started API server instead, pass `--dart-define=STUDYBOT_AUTOSTART=false`
 and enter its URL and token on first launch. See
 [frontend/studybot_app/README.md](frontend/studybot_app/README.md).
 
+### Standalone macOS app
+
+Build and install an app that needs no terminal, Python or repository to run:
+
+```bash
+./scripts/build_macos_app.sh
+./scripts/install_macos_app.sh
+open ~/Applications/StudyBot.app
+```
+
+The app bundles the engine and starts it itself with a private token and a free
+port. Ollama must be installed and running, with the model pulled. Python and the
+venv are needed to build, not to run the installed app. Packaged data lives in
+the app's sandbox container, separate from a development database. The build is
+signed ad-hoc for local use; it is not notarized. See
+[packaging/macos/README.md](packaging/macos/README.md).
+
 ## Teaching modes
 
 | Mode | `/mode` name | Behavior |

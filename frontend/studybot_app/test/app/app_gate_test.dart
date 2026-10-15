@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:studybot_app/app/app.dart';
 import 'package:studybot_app/core/api/connection_config.dart';
+import 'package:studybot_app/core/models/health.dart';
 import 'package:studybot_app/features/connection/connection_providers.dart';
 import 'package:studybot_app/features/shell/app_shell.dart';
 import 'package:studybot_app/features/status/status_providers.dart';
@@ -47,6 +48,42 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Engine unavailable'), findsOneWidget);
+    expect(find.byType(AppShell), findsNothing);
+  });
+
+  testWidgets('says Ollama is not running when the engine is up but Ollama is not reachable', (tester) async {
+    final api = FakeStudyBotApi();
+    final container = ProviderContainer(
+      overrides: [
+        connectionConfigProvider.overrideWith(
+          () => _PreconfiguredConnectionNotifier(const ConnectionConfig(baseUrl: 'http://127.0.0.1:9', token: 't')),
+        ),
+        studyBotApiProvider.overrideWithValue(api),
+        chatWebSocketClientProvider.overrideWithValue(FakeChatWebSocketClient()),
+        engineHealthProvider.overrideWith(
+          () => StaticEngineHealthNotifier(
+            health: const EngineHealth(
+              apiVersion: '1',
+              status: 'ok',
+              provider: 'ollama',
+              model: 'qwen3:4b',
+              providerReachable: false,
+              modelAvailable: null,
+            ),
+          ),
+        ),
+      ],
+      retry: kNoRetry,
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: const MaterialApp(home: AppGate())),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Ollama is not running'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
     expect(find.byType(AppShell), findsNothing);
   });
 

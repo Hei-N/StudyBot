@@ -49,11 +49,12 @@ connection screen; they are saved with `shared_preferences`.
 | Build | App Sandbox | Why |
 |---|---|---|
 | Debug / Profile (`DebugProfile.entitlements`) | **disabled** | A sandboxed app can't launch the repo-local Python engine. Development only. |
-| Release (`Release.entitlements`) | **enabled** | Unchanged. |
+| Release (`Release.entitlements`) | **enabled** | Adds only the network server entitlement so the bundled engine can listen on loopback. |
 
-A packaged app must bundle its own Python engine and launch it without this
-exception; the launcher in `lib/core/backend/` is the piece that would be
-replaced.
+The packaged app bundles its own engine and does not use this exception; see
+[packaging/macos/README.md](../../packaging/macos/README.md). The launcher
+prefers the bundled engine and only falls back to the repository `.venv` in
+non-release builds.
 
 ## Structure
 

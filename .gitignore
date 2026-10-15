@@ -41,3 +41,7 @@ htmlcov/
 *.sqlite
 *.sqlite3
 benchmark_results/
+
+# Standalone app build output
+.build-venv/
+build/

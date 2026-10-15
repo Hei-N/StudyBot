@@ -102,6 +102,23 @@ teaching mode) and is built once from `Settings` by the factory.
 These are safety limits, not quality settings. There is no user-facing Stop
 button yet.
 
+### Engine resolution in the app
+
+The Flutter app starts the engine itself (`lib/core/backend/`), choosing in
+order:
+
+1. **Bundled engine**: `Contents/Resources/studybot_backend/studybot-backend`,
+   found relative to the running app's executable. Data goes to the app's
+   Application Support directory via `STUDYBOT_DATA_DIR`.
+2. **Development engine**: the repository's `.venv` (`python -m studybot.api`),
+   only in non-release builds.
+3. Otherwise it fails with a message; it never uses a system Python.
+
+Either way the app generates a fresh token per launch, passes it through the
+environment, uses an OS-assigned loopback port, waits for `/health`, and stops
+only the process it started (the engine also exits when its stdin pipe closes).
+Ollama is never started or stopped by StudyBot.
+
 ## 3. What belongs in StudyBot
 
 Courses, teaching modes (Teach / Homework / Quick / Practice / Exam), learning

@@ -27,6 +27,8 @@ dev = [
     # Needed only for Starlette's `TestClient` in tests.
     "httpx2",
 ]
+# Needed only to build the standalone macOS app (scripts/build_macos_app.sh).
+build = ["pyinstaller>=6.17"]
 
 [project.scripts]
 studybot = "studybot.__main__:main"

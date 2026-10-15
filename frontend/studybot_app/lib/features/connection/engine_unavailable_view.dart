@@ -15,6 +15,8 @@ class EngineUnavailableView extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final health = ref.watch(engineHealthProvider).value;
+    final modelServerDown = health != null && health.providerReachable == false;
     return Scaffold(
       body: Center(
         child: Padding(
@@ -24,10 +26,12 @@ class EngineUnavailableView extends ConsumerWidget {
             children: [
               Icon(Icons.cloud_off_outlined, size: 36, color: theme.colorScheme.onSurfaceVariant),
               const SizedBox(height: AppSpacing.md),
-              Text('Engine unavailable', style: theme.textTheme.titleMedium),
+              Text(modelServerDown ? 'Ollama is not running' : 'Engine unavailable', style: theme.textTheme.titleMedium),
               const SizedBox(height: AppSpacing.xs),
               Text(
-                'Study Bot can\'t reach the engine right now.',
+                modelServerDown
+                    ? 'Start Ollama, then tap Retry. Study Bot needs it to answer.'
+                    : 'Study Bot can\'t reach the engine right now.',
                 style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                 textAlign: TextAlign.center,
               ),
