@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 import os
+import sys
+import threading
 
 import uvicorn
 
@@ -22,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 8765
 _HOST = "127.0.0.1"  # not configurable; see module docstring
+_EXIT_ON_STDIN_CLOSE_ENV = "STUDYBOT_EXIT_WHEN_STDIN_CLOSES"
 
 
 def _configured_port() -> int:
@@ -35,6 +38,26 @@ def _configured_port() -> int:
         return int(raw)
     except ValueError:
         raise SystemExit(f"Invalid STUDYBOT_API_PORT {raw!r}; must be an integer.") from None
+
+
+def _exit_on_stdin_close_enabled() -> bool:
+    return os.environ.get(_EXIT_ON_STDIN_CLOSE_ENV) == "1"
+
+
+def _watch_stdin_for_close(on_close) -> None:
+    """Call ``on_close`` once stdin reaches EOF.
+
+    A launcher that keeps a pipe open on our stdin (the development Flutter
+    app) closes it when it exits for any reason, including being killed, so
+    the engine never outlives the app that started it. Nothing is read
+    from stdin beyond detecting the end of it.
+    """
+    try:
+        while sys.stdin.buffer.read(4096):
+            pass
+    except (OSError, ValueError):
+        pass
+    on_close()
 
 
 async def _serve() -> None:
@@ -56,6 +79,15 @@ async def _serve() -> None:
         if server.should_exit:
             return
         actual_port = server.servers[0].sockets[0].getsockname()[1]
+        if _exit_on_stdin_close_enabled():
+            loop = asyncio.get_running_loop()
+
+            def request_exit() -> None:
+                loop.call_soon_threadsafe(setattr, server, "should_exit", True)
+
+            threading.Thread(
+                target=_watch_stdin_for_close, args=(request_exit,), daemon=True
+            ).start()
         _announce_ready(actual_port, token)
         await server.main_loop()
         await server.shutdown()

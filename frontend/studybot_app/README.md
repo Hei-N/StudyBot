@@ -24,20 +24,36 @@ Three separate concepts appear in the UI:
 
 ## Running it
 
-1. Start the Python engine from the repository root (see the main
-   [README](../../README.md#api-server)):
-   ```bash
-   studybot-server
-   ```
-   It prints a base URL and a bearer token; copy both.
-2. Run the app:
-   ```bash
-   flutter pub get
-   flutter run -d macos
-   ```
-3. On first launch, enter the base URL and token on the connection screen. They
-   are saved locally with `shared_preferences`. Nothing is bundled or hardcoded,
-   and the app never starts the Python process itself.
+```bash
+flutter pub get
+flutter run -d macos      # or Run from VS Code
+```
+
+In a debug run on macOS the app starts the engine itself, from the repository's
+`.venv` (create it as described in the main [README](../../README.md#setup)).
+It finds the repository by walking up from the built app, or from
+`STUDYBOT_REPO_ROOT`. It generates a private token, picks a free port, waits
+for the health check and connects, so there is nothing to type. The engine uses
+the Ollama model provider unless `STUDYBOT_MODEL_PROVIDER` is set. When the app
+closes, however it ends, the engine it started exits too; Ollama is never
+started or stopped. If the engine can't start, the screen says why and offers
+"Try again" and "Connect manually…".
+
+To use a hand-started engine instead (see the main
+[README](../../README.md#api-server)), run with
+`--dart-define=STUDYBOT_AUTOSTART=false` and enter its base URL and token on the
+connection screen; they are saved with `shared_preferences`.
+
+### Sandbox settings
+
+| Build | App Sandbox | Why |
+|---|---|---|
+| Debug / Profile (`DebugProfile.entitlements`) | **disabled** | A sandboxed app can't launch the repo-local Python engine. Development only. |
+| Release (`Release.entitlements`) | **enabled** | Unchanged. |
+
+A packaged app must bundle its own Python engine and launch it without this
+exception; the launcher in `lib/core/backend/` is the piece that would be
+replaced.
 
 ## Structure
 
@@ -104,6 +120,6 @@ be clean.
 ## Not implemented
 
 Materials, notes, mastery tracking, progress, RAG/PDF ingestion, OCR, vision, a
-study planner, calendar/LMS integration, Python auto-launch or packaging,
-installers, accounts and cloud sync. None of it exists in the backend yet, so
+study planner, calendar/LMS integration, a packaged (bundled-Python)
+build, installers, accounts and cloud sync. None of it exists in the backend yet, so
 none of it is faked here.

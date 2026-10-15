@@ -2,10 +2,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// Where the Study Bot engine is and how to authenticate with it.
 ///
-/// The Python API is launched separately (see API_CONTRACT.md) and prints its
-/// port and bearer token to stdout on startup. There is no auto-launch or
-/// discovery, so the user enters both once and they are remembered. The token
-/// is never hardcoded or bundled with the app.
+/// A development run starts its own engine and uses that engine's address and
+/// token (see `BackendLauncher`). Otherwise the engine is launched separately
+/// (see API_CONTRACT.md) and the user enters the port and bearer token it
+/// prints once; they are remembered. The token is never hardcoded or bundled.
 class ConnectionConfig {
   const ConnectionConfig({required this.baseUrl, required this.token});
 

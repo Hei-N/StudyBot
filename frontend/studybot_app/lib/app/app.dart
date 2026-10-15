@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/theme/app_theme.dart';
 import '../features/connection/connection_providers.dart';
 import '../features/connection/connection_setup_view.dart';
+import '../features/connection/engine_starting_view.dart';
+import '../features/connection/managed_backend.dart';
 import '../features/connection/engine_unavailable_view.dart';
 import '../features/settings/theme_providers.dart';
 import '../features/shell/app_shell.dart';
@@ -35,6 +37,12 @@ class AppGate extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (ref.watch(managedBackendEnabledProvider)) {
+      final backend = ref.watch(managedBackendProvider);
+      if (backend.isLoading) return const EngineStartingView();
+      if (backend.hasError) return EngineStartingView(error: backend.error);
+    }
+
     final config = ref.watch(connectionConfigProvider);
     if (!config.isConfigured) {
       return const ConnectionSetupView();

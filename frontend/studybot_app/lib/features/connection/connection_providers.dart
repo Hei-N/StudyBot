@@ -3,13 +3,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/api/chat_websocket_client.dart';
 import '../../core/api/connection_config.dart';
 import '../../core/api/studybot_api.dart';
+import 'managed_backend.dart';
 
 /// The user's engine connection settings (base URL + token). Loaded from
 /// local storage on first read; edited from Settings. Nothing here is
-/// hardcoded — see [ConnectionConfig] for the "no auto-launch yet" note.
+/// hardcoded. A development run that started its own engine uses that
+/// engine's address and token instead (see [managedBackendProvider]).
 class ConnectionConfigNotifier extends Notifier<ConnectionConfig> {
   @override
   ConnectionConfig build() {
+    final managed = ref.watch(managedBackendProvider).value;
+    if (managed != null) return managed.config;
     _restore();
     return const ConnectionConfig(baseUrl: ConnectionConfig.defaultBaseUrl, token: '');
   }

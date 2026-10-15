@@ -149,16 +149,17 @@ error codes.
 
 ### Flutter app
 
-With the API server running:
-
 ```bash
 cd frontend/studybot_app
 flutter pub get
 flutter run -d macos
 ```
 
-Enter the base URL (default `http://127.0.0.1:8765`) and the token on first
-launch; both are remembered. The app never starts the engine itself. See
+A debug run starts the engine itself from this repository's `.venv` and
+connects automatically; closing the app stops it. This needs the macOS App
+Sandbox disabled for Debug/Profile builds (Release stays sandboxed). To use a
+hand-started API server instead, pass `--dart-define=STUDYBOT_AUTOSTART=false`
+and enter its URL and token on first launch. See
 [frontend/studybot_app/README.md](frontend/studybot_app/README.md).
 
 ## Teaching modes

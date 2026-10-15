@@ -40,7 +40,8 @@ persisted or logged again.
 | Environment variable | Default | Purpose |
 |---|---|---|
 | `STUDYBOT_API_PORT` | `8765` | Port to bind. `0` requests an OS-assigned port; the bound port is always reported in the startup line. |
-| `STUDYBOT_API_TOKEN` | *(random)* | Development/test hook that pins a known token. A real launcher should read the token from the startup line. |
+| `STUDYBOT_API_TOKEN` | *(random)* | Pins a known token. The development Flutter launcher uses it to share a token it generated; otherwise read the token from the startup line. |
+| `STUDYBOT_EXIT_WHEN_STDIN_CLOSES` | *(off)* | Set to `1` by a launcher that keeps a pipe open on the engine's stdin; the engine shuts down when that pipe closes, so it never outlives its launcher. |
 
 The usual `STUDYBOT_*` settings (`STUDYBOT_MODEL_PROVIDER`,
 `STUDYBOT_DATA_DIR`, `STUDYBOT_OLLAMA_MODEL`, ...) apply to the API server and
