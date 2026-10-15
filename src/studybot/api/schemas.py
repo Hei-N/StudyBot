@@ -1,14 +1,9 @@
-"""Transport DTOs for the Study Bot API.
+"""Transport DTOs for the API.
 
-Deliberately separate from the domain dataclasses in `storage.base` /
-`core.teaching_mode`: these are the wire contract Flutter depends on, and
-must be free to evolve independently of internal representations (and vice
-versa). Route handlers convert between the two in `api/converters.py` —
-nothing here talks to a repository or a service.
-
-Field names are emitted as camelCase (Flutter/Dart's own JSON convention)
-via `ApiModel`'s alias generator, while Python code reads/writes plain
-snake_case attributes.
+These define the wire contract the Flutter client depends on and are kept
+separate from the domain types; ``api/converters.py`` converts between them.
+Fields are emitted as camelCase via ``ApiModel``'s alias generator, while
+Python code uses snake_case.
 """
 
 from __future__ import annotations
@@ -54,11 +49,9 @@ class CourseCreateIn(ApiModel):
 
 
 class CourseUpdateIn(ApiModel):
-    """Full replace, matching `CourseService.edit_course`'s existing
-    contract exactly — send the fields you want kept unchanged back as-is.
-    There is no null-means-keep merge logic here; that's CLI-only
-    presentation behavior, not something the service supports, and the API
-    does not duplicate it."""
+    """Full replace, matching ``CourseService.edit_course``: send unchanged fields
+    back as-is. There is no null-means-keep merge.
+    """
 
     name: str
     code: str | None = None
@@ -70,10 +63,8 @@ class CourseUpdateIn(ApiModel):
 
 
 class ModeInfoOut(ApiModel):
-    """Shared shape for both catalogs: teaching modes (`GET /modes`) and
-    reasoning modes (`GET /reasoning-modes`) — both are just a stable id
-    plus display metadata, so one DTO serves both rather than duplicating
-    an identical schema under a second name."""
+    """Shared shape for the teaching-mode and reasoning-mode catalogs: a stable id plus display metadata.
+    """
 
     id: str
     display_name: str
@@ -123,12 +114,11 @@ class MessageOut(ApiModel):
     created_at: str
 
 
-# --- learning memory (Stage 6) ---------------------------------------------------------
+# --- learning memory --------------------------------------------------------------
 
 
 class MemoryKindInfoOut(ApiModel):
-    """Catalog entry for `GET /memory-kinds` — a stable id plus
-    natural-language display metadata, exactly like `ModeInfoOut`."""
+    """Catalog entry for ``GET /memory-kinds``: a stable id plus display metadata."""
 
     id: str
     display_name: str
@@ -156,16 +146,13 @@ class LearningMemoryCreateIn(ApiModel):
 
 
 class LearningMemoryUpdateIn(ApiModel):
-    """PATCH semantics: every field is optional, and an *omitted* field
-    means "leave unchanged". `topic`/`kind`/`summary` additionally treat an
-    explicit `null` the same as omitted (a real value can never
-    legitimately be null once validated, so there's no ambiguity to
-    resolve). `course_id` is different: explicit `null` is a real,
-    meaningful value ("unassign to General"), distinct from omitting it
-    entirely ("leave unchanged") — the route handler distinguishes the two
-    via Pydantic's `model_fields_set`, checking whether `course_id` was
-    actually present in the request body at all, mirroring
-    `storage.base.UNSET`'s purpose at the transport boundary."""
+    """PATCH semantics: an omitted field is left unchanged.
+
+    For ``topic``, ``kind`` and ``summary`` an explicit null is treated as omitted.
+    ``course_id`` differs: an explicit null means "unassign to General", which is
+    distinct from omitting it. The route tells the two apart with Pydantic's
+    ``model_fields_set``.
+    """
 
     topic: str | None = None
     kind: str | None = None

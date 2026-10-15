@@ -199,15 +199,13 @@ void main() {
     expect(find.text('General topic'), findsNothing);
   });
 
-  // --- Stage 6.1: memories orphaned by a course deletion (archived + global) ------------
+  // --- memories orphaned by a course deletion (archived + global) -----------------------
 
   testWidgets('a memory archived and unassigned by a course deletion shows correctly under Archived/General', (
     tester,
   ) async {
-    // Simulates exactly what the backend now does to a course's memories
-    // when the course is deleted (Stage 6.1: archived first, courseId set
-    // to null) — the Flutter layer has no special-casing for this and
-    // must just display whatever the backend authoritatively returns.
+    // Simulates what the backend does to a course's memories on course deletion
+    // (archived, courseId set to null); the app just displays what it returns.
     final api = FakeStudyBotApi(
       memories: [_memory(id: 'm1', courseId: null, topic: 'Stoichiometry', status: 'archived')],
     );

@@ -1,8 +1,8 @@
 """Ollama-backed model provider.
 
-This is the only module in the application allowed to import `ollama` (or
-its `httpx` transport) or know anything about its request/response shapes.
-Everything else talks to the `ModelProvider` protocol.
+The only module that imports ``ollama``/``httpx`` or depends on Ollama's
+request and response shapes; everything else uses the ``ModelProvider``
+protocol.
 """
 
 from __future__ import annotations
@@ -41,8 +41,7 @@ _ROLE_TO_OLLAMA = {
 
 
 class ThinkingCapability(Enum):
-    """What the configured model does with Ollama's `think` parameter, read
-    from `/api/show` (Stage 6.3)."""
+    """How the configured model handles Ollama's ``think`` parameter, read from ``/api/show``."""
 
     NONE = "none"  # not a thinking model: `think` must not be sent
     TOGGLEABLE = "toggleable"  # hybrid (e.g. original Qwen3): think on/off both work
@@ -50,8 +49,8 @@ class ThinkingCapability(Enum):
     UNKNOWN = "unknown"  # couldn't tell (probe failed, or an older Ollama)
 
 
-# The only place that knows Qwen/Ollama's `think` request parameter exists
-# — ChatService/SessionService only ever pass a generic ReasoningMode.
+# Only this module knows Ollama's `think` parameter; callers pass a generic
+# ReasoningMode.
 _REASONING_MODE_TO_THINK = {
     ReasoningMode.FAST: False,
     ReasoningMode.DEEP: True,
@@ -59,13 +58,11 @@ _REASONING_MODE_TO_THINK = {
 
 
 def _think_param(capability: ThinkingCapability, mode: ReasoningMode) -> bool | None:
-    """The `think` value to send for this model and reasoning mode.
+    """Return the ``think`` value to send for this model and reasoning mode.
 
-    A thinking-only model reasons whether or not it's asked to; sending
-    `think=False` only stops Ollama from *separating* that reasoning, so it
-    lands in `content` (the Stage 6.3 leak). Such a model therefore always
-    gets `think=True` — Fast and Deep behave the same for it (there is no
-    faster mode to offer), which is documented rather than hidden.
+    A thinking-only model reasons regardless; ``think=False`` would only stop
+    Ollama from separating the reasoning, leaking it into ``content``. Such
+    models always get ``think=True``, so Fast and Deep behave the same for them.
     """
     if capability is ThinkingCapability.ALWAYS_ON:
         return True
@@ -75,12 +72,11 @@ def _think_param(capability: ThinkingCapability, mode: ReasoningMode) -> bool | 
 
 
 def parse_thinking_capability(show_payload: dict[str, Any]) -> ThinkingCapability:
-    """Classify a raw `/api/show` JSON payload.
+    """Classify a raw ``/api/show`` payload.
 
-    `capabilities` says whether the model thinks at all; the `thinking`
-    object's `values` says which `think` settings it honours
-    (`[true]` = thinking-only, `[true, false]` = toggleable). Anything
-    missing or unexpected is UNKNOWN, never a guess.
+    ``capabilities`` says whether the model thinks; ``thinking.values`` says which
+    ``think`` settings it accepts (``[true]`` = thinking-only, ``[true, false]`` =
+    toggleable). Missing or unexpected data is UNKNOWN.
     """
     capabilities = show_payload.get("capabilities")
     if not isinstance(capabilities, list):
@@ -95,8 +91,9 @@ def parse_thinking_capability(show_payload: dict[str, Any]) -> ThinkingCapabilit
 
 
 def _capability_flag(show_payload: dict[str, Any], name: str) -> bool | None:
-    """True/False if `/api/show` carries a valid `capabilities` list (the
-    flag is present / absent), None if that list is missing or malformed."""
+    """True/False if ``capabilities`` is a valid list (flag present/absent); None if
+    it is missing or malformed.
+    """
     capabilities = show_payload.get("capabilities")
     if not isinstance(capabilities, list):
         return None
@@ -104,10 +101,9 @@ def _capability_flag(show_payload: dict[str, Any], name: str) -> bool | None:
 
 
 def _context_window(show_payload: dict[str, Any]) -> int | None:
-    """The largest positive integer under a `*.context_length` key of
-    `model_info`, or None. Model families name this key differently
-    (`qwen3.context_length`, `gemma3.context_length`, ...), hence the suffix
-    match rather than a per-family table."""
+    """Largest positive integer under a ``*.context_length`` key of ``model_info``,
+    or None. The key is prefixed with the model family, hence the suffix match.
+    """
     model_info = show_payload.get("model_info")
     if not isinstance(model_info, dict):
         return None
@@ -137,10 +133,12 @@ def _thinking_flags(capability: ThinkingCapability) -> tuple[bool | None, bool |
 def capabilities_from_show(
     show_payload: dict[str, Any] | None, thinking: ThinkingCapability
 ) -> ModelCapabilities:
-    """Provider-neutral `ModelCapabilities` from a raw `/api/show` payload
-    (None = the lookup failed) and the thinking classification to use —
-    normally parsed from the same payload, but a constructor-pinned value
-    wins for reasoning behavior (see `OllamaModel.get_capabilities`)."""
+    """Build ``ModelCapabilities`` from a raw ``/api/show`` payload (None if the
+    lookup failed).
+
+    ``thinking`` normally comes from the same payload, but a constructor-pinned
+    value takes precedence.
+    """
     supports_thinking, modes_distinct = _thinking_flags(thinking)
     if show_payload is None:
         return ModelCapabilities(None, None, supports_thinking, modes_distinct, None)
@@ -154,10 +152,8 @@ def capabilities_from_show(
 
 _MODEL_NOT_FOUND_STATUS = 404
 
-# The `ollama` package wraps a refused/unreachable connection as a plain
-# `ConnectionError` on its non-streaming request path, but its streaming
-# path talks to httpx directly and lets `httpx.ConnectError` escape
-# unwrapped. Both mean the same thing to us, so both are treated the same.
+# A refused connection surfaces as ConnectionError or httpx.ConnectError
+# depending on the code path; both are handled the same way.
 _CONNECTION_ERRORS = (ConnectionError, httpx.ConnectError)
 
 
@@ -191,16 +187,14 @@ def _close_stream_safely(stream: object) -> None:
 
 
 def _to_ollama_messages(messages: Sequence[Message]) -> list[dict[str, str]]:
-    """Convert our typed messages to Ollama's chat message dicts, in order."""
+    """Convert typed messages to Ollama chat dicts, preserving order."""
     return [{"role": _ROLE_TO_OLLAMA[m.role], "content": m.content} for m in messages]
 
 
 class OllamaModel:
-    """Talks to a local Ollama server via the official `ollama` Python client.
+    """Model provider backed by a local Ollama server.
 
-    Construction never touches the network — the client connects lazily on
-    the first request, so simply choosing this provider (without sending a
-    message) does not require Ollama to be running.
+    Construction makes no network calls; the client connects on the first request.
     """
 
     def __init__(
@@ -215,22 +209,16 @@ class OllamaModel:
         generation_budget_policy: GenerationBudgetPolicy = DEFAULT_GENERATION_BUDGET_POLICY,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """`client` is an injection seam for tests (a fake with `.chat`/`.list`
-        methods) — application code should leave it unset so a real
-        `ollama.Client` is built from `host`/`timeout`.
+        """``client`` is a test seam; leave it unset to build a real ``ollama.Client``.
 
-        `thinking_capability` pins the model's thinking behavior (tests, or
-        a caller that already knows); left unset, it's read lazily from
-        Ollama's `/api/show` on the first request via `show_fetcher` (a
-        test seam; by default a plain HTTP call — the `ollama` package's
-        own `show()` drops the `thinking` field this needs). Only a
-        successful read is cached, so a request made while Ollama is down
-        is retried next time instead of being stuck on UNKNOWN.
+        ``thinking_capability`` pins the model's thinking behavior. When unset it is
+        read lazily from ``/api/show`` via ``show_fetcher`` (a test seam; the
+        ``ollama`` package's own ``show()`` drops the ``thinking`` field). Only
+        successful lookups are cached, so a failure is retried on the next request.
 
-        `generation_budget_policy` bounds every request (token cap + total
-        deadline, chosen by reasoning mode only). `clock` is used solely to
-        measure the generation deadline; it is a test seam, and must be
-        monotonic."""
+        ``generation_budget_policy`` bounds every request by reasoning mode. ``clock``
+        measures the generation deadline and must be monotonic.
+        """
         self._model = model
         self._host = host
         self._timeout = timeout
@@ -238,12 +226,9 @@ class OllamaModel:
         self._client = client if client is not None else ollama.Client(host=host, timeout=timeout)
         self._pinned_thinking = thinking_capability
         self._show_fetcher = show_fetcher if show_fetcher is not None else self._fetch_show_payload
-        # One plain (non-reentrant) lock guards one cached `/api/show`
-        # payload. Everything derived from it (thinking class, vision,
-        # tools, context) is computed from that payload *outside* the lock
-        # by pure functions, so no code path ever re-acquires it — and
-        # because a fetch happens while holding it, concurrent first calls
-        # wait for one fetch instead of issuing duplicates.
+        # One non-reentrant lock guards the cached /api/show payload. Derived
+        # values are computed outside the lock, so it is never re-acquired,
+        # and concurrent first calls wait for a single fetch.
         self._generation_budget_policy = generation_budget_policy
         self._clock = clock
         self._show_lock = threading.Lock()
@@ -254,10 +239,11 @@ class OllamaModel:
         return "ollama"
 
     def _show_metadata(self) -> dict[str, Any] | None:
-        """The model's `/api/show` payload, fetched lazily. Only a
-        successful fetch is cached; a failure returns None and is retried
-        on the next call, so a request made while Ollama is down doesn't
-        pin the model to "unknown" forever."""
+        """Return the ``/api/show`` payload, fetched lazily.
+
+        Only a successful fetch is cached; a failure returns None and is retried on
+        the next call.
+        """
         with self._show_lock:
             if self._show_payload is not None:
                 return self._show_payload
@@ -278,19 +264,21 @@ class OllamaModel:
             return payload
 
     def thinking_capability(self) -> ThinkingCapability:
-        """The model's thinking behavior. A constructor-pinned value is
-        authoritative and never triggers a lookup; otherwise it's derived
-        from the (lazily fetched, cached) `/api/show` metadata."""
+        """Return the model's thinking behavior.
+
+        A constructor-pinned value takes precedence and avoids the lookup.
+        """
         if self._pinned_thinking is not None:
             return self._pinned_thinking
         payload = self._show_metadata()
         return ThinkingCapability.UNKNOWN if payload is None else parse_thinking_capability(payload)
 
     def get_capabilities(self) -> ModelCapabilities:
-        """Provider-neutral capabilities, discovered from local `/api/show`
-        metadata — never from the model's name. If the lookup fails the
-        metadata-only fields (vision, tools, context) are None; a pinned
-        thinking classification still determines the thinking fields."""
+        """Return provider-neutral capabilities discovered from ``/api/show``.
+
+        If the lookup fails, vision, tools and context are None; a pinned thinking
+        capability still fills the thinking fields.
+        """
         payload = self._show_metadata()
         if self._pinned_thinking is not None:
             thinking = self._pinned_thinking
@@ -306,8 +294,9 @@ class OllamaModel:
         return response.json()
 
     def _request_plan(self, reasoning_mode: ReasoningMode) -> tuple[bool | None, bool]:
-        """(`think` to send, whether the output filter must assume reasoning
-        may start with no opening tag)."""
+        """Return (``think`` value to send, whether the output filter must assume
+        reasoning can start without an opening tag).
+        """
         capability = self.thinking_capability()
         think = _think_param(capability, reasoning_mode)
         implicit_open = capability is ThinkingCapability.UNKNOWN and think is False
@@ -463,7 +452,7 @@ class OllamaModel:
     def _log_filter_stats(self, output_filter: ReasoningOutputFilter) -> None:
         stats = output_filter.stats
         if stats.reasoning_spans:
-            # Counts only — never the reasoning or answer text itself.
+            # Counts only; never the reasoning or answer text itself.
             logger.info(
                 "Removed %d inline reasoning span(s) (%d chars) from model output",
                 stats.reasoning_spans,

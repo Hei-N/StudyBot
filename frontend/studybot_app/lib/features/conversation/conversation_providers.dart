@@ -12,28 +12,24 @@ import '../chats/chats_providers.dart';
 import '../connection/connection_providers.dart';
 
 /// Structural-only debug logging for the streaming pipeline (chat id, event
-/// type, message count, state transition — never message content). Compiled
-/// out of release builds via [kDebugMode]. Temporary instrumentation added
-/// while stabilizing Stage 5.6's streaming-update bug; safe to remove once
-/// that class of regression has stayed fixed for a while.
+/// type, message count, state transition; never message content). Compiled out
+/// of release builds via [kDebugMode].
 void _debugLog(String message) {
   if (kDebugMode) developer.log(message, name: 'conversation');
 }
 
-/// The active chat's message history plus whatever is currently streaming
-/// in. `streamingText` is the accumulated delta buffer for an in-flight
-/// assistant reply — it is replaced by the real persisted message (appended
-/// to [messages]) the moment `message_completed` arrives, per
-/// API_CONTRACT.md; it is never itself treated as a persisted message.
+/// The active chat's message history plus the reply currently streaming in.
+/// `streamingText` buffers the deltas of an in-flight reply and is replaced by
+/// the persisted message (appended to [messages]) when `message_completed`
+/// arrives; it is never treated as persisted itself.
 class ConversationState {
   const ConversationState({required this.messages, this.streamingText, this.isSending = false});
 
   final List<ChatMessage> messages;
   final String? streamingText;
 
-  /// True from the moment [ConversationNotifier.send] is called until the
-  /// stream completes or errors — drives "disable sending another message
-  /// while streaming".
+  /// True from [ConversationNotifier.send] until the stream completes or errors;
+  /// disables sending another message while streaming.
   final bool isSending;
 
   bool get isStreaming => streamingText != null;
@@ -53,22 +49,14 @@ class ConversationState {
 }
 
 /// Drives the message list for [activeChatIdProvider] and the WebSocket
-/// send/stream lifecycle. Rebuilds (refetching full history) whenever the
-/// active chat changes.
+/// send/stream lifecycle. Rebuilds (refetching history) when the active chat
+/// changes.
 ///
-/// The WebSocket event subscription is re-established (via `ref.listen`,
-/// not a one-time `ref.read`) every time [chatWebSocketClientProvider]
-/// produces a *new* [ChatWebSocketClient] instance — which it always does
-/// at least once per app session, whenever [connectionConfigProvider]
-/// changes (including the very first time, when `ConnectionConfigNotifier`'s
-/// fire-and-forget async restore resolves after this notifier's first
-/// build). A one-time `ref.read` subscription would silently go stale the
-/// moment that happens: `send()` always does a fresh `ref.read` and so
-/// reaches the *new* client, but a stale listener stays attached to the
-/// *old* client's now-orphaned stream and never sees another event again —
-/// this was Stage 5.6's "completed reply never appears" bug. `ref.listen`
-/// with `fireImmediately: true` keeps the subscription pointed at whichever
-/// client is current.
+/// The event subscription uses `ref.listen` (not a one-time `ref.read`) so it
+/// follows every new [ChatWebSocketClient] that [chatWebSocketClientProvider]
+/// produces, e.g. when [connectionConfigProvider] changes after saved settings
+/// are restored asynchronously. A one-time subscription would stay attached to
+/// the old client's orphaned stream and never see another event.
 class ConversationNotifier extends AsyncNotifier<ConversationState> {
   StreamSubscription<ChatStreamEvent>? _wsSubscription;
   String? _chatId;
@@ -106,9 +94,7 @@ class ConversationNotifier extends AsyncNotifier<ConversationState> {
     });
   }
 
-  /// Per API_CONTRACT.md's "Lazy persistence": a chat with no messages yet
-  /// may not have a database row at all, so `GET .../messages` 404s with
-  /// `CHAT_NOT_FOUND` — that's a normal empty chat here, not a real error.
+  /// Treats `CHAT_NOT_FOUND` as an empty history instead of surfacing an error.
   Future<List<ChatMessage>> _fetchMessages(String chatId) async {
     try {
       return await ref.read(studyBotApiProvider).getChatMessages(chatId);
@@ -118,9 +104,9 @@ class ConversationNotifier extends AsyncNotifier<ConversationState> {
     }
   }
 
-  /// Sends [content] on the active chat. No-ops on blank input or while a
-  /// reply is already streaming — the composer disables itself for the
-  /// latter, but this guard keeps the notifier correct regardless of caller.
+  /// Sends [content] on the active chat. Ignored for blank input or while a reply
+  /// is streaming (the composer also disables itself; this keeps the notifier
+  /// correct for any caller).
   Future<void> send(String content) async {
     final chatId = _chatId;
     final current = state.value;
@@ -142,9 +128,9 @@ class ConversationNotifier extends AsyncNotifier<ConversationState> {
 
   void _handleEvent(ChatStreamEvent event) {
     final current = state.value;
-    // Ignore events that arrive while this chat isn't the one sending —
-    // e.g. the user switched chats mid-stream. The reply is still being
-    // persisted server-side and will simply appear on the next full fetch.
+    // Ignore events for a chat that isn't the one sending (e.g. the user switched
+    // chats mid-stream); the reply is still persisted server-side and appears on
+    // the next full fetch.
     if (current == null || !current.isSending) {
       _debugLog('event ignored: chatId=$_chatId type=${event.runtimeType} (not currently sending)');
       return;
@@ -186,9 +172,8 @@ final conversationProvider = AsyncNotifierProvider<ConversationNotifier, Convers
 );
 
 /// A transient, one-shot error from the last send/stream attempt (e.g. a
-/// dropped connection or `MODEL_ERROR`). The UI surfaces it once (a
-/// snackbar/banner) and clears it via `set(null)` — this is not persisted
-/// conversation state.
+/// dropped connection or `MODEL_ERROR`). The UI shows it once and clears it via
+/// `set(null)`; it is not persisted state.
 class ConversationErrorNotifier extends Notifier<ApiException?> {
   @override
   ApiException? build() => null;

@@ -10,10 +10,9 @@ import '../courses/courses_list_view.dart';
 import 'nav_rail.dart';
 import 'study_panel.dart';
 
-/// The adaptive four-region desktop shell (Navigation | Chats | Conversation
-/// | Study panel), collapsing progressively at narrower widths per the
-/// design brief's four breakpoints. Continuously resizable — every tier
-/// uses `Expanded`/bounded widths so nothing overflows.
+/// The adaptive four-region desktop shell (Navigation | Chats | Conversation |
+/// Study panel), collapsing progressively at four breakpoints. Continuously
+/// resizable: every tier uses `Expanded`/bounded widths so nothing overflows.
 class AppShell extends ConsumerWidget {
   const AppShell({super.key});
 
@@ -98,8 +97,8 @@ class _MediumLayout extends StatelessWidget {
   }
 }
 
-/// Tablet tier: Navigation + Chats collapse into one togglable panel beside
-/// the conversation, since there isn't room for three columns.
+/// Tablet tier: Navigation and Chats collapse into one togglable panel beside
+/// the conversation.
 class _CompactLayout extends StatefulWidget {
   const _CompactLayout();
 
@@ -122,16 +121,11 @@ class _CompactLayoutState extends State<_CompactLayout> {
           width: _sidebarOpen ? 280 : 0,
           clipBehavior: Clip.hardEdge,
           decoration: BoxDecoration(border: Border(right: BorderSide(color: theme.colorScheme.outlineVariant))),
-          // The sidebar's own content (section headers with a trailing
-          // IconButton, list tiles, ...) is laid out at a fixed 280px width
-          // at all times via OverflowBox — the outer AnimatedContainer just
-          // clips it as it shrinks toward 0. A plain SizedBox does not
-          // achieve this: it still gets clamped down to whatever (shrinking)
-          // constraint AnimatedContainer passes through. Letting the content
-          // actually relayout at every intermediate width down to a few
-          // pixels produces a real RenderFlex overflow partway through the
-          // collapse animation, since a Row with a fixed-size trailing
-          // IconButton cannot shrink below that button's own minimum width.
+          // The sidebar content is laid out at a fixed 280px width via OverflowBox, and
+          // the outer AnimatedContainer clips it as it shrinks. A plain SizedBox would
+          // be clamped by the shrinking constraint, so the content would relayout at
+          // every width and overflow mid-animation (a Row with a trailing IconButton
+          // cannot shrink below the button's minimum width).
           child: const OverflowBox(
             minWidth: 280,
             maxWidth: 280,
@@ -206,9 +200,8 @@ class _PhoneLayout extends StatelessWidget {
   }
 }
 
-/// Courses stacked above Chats in a single scrollable column — used by the
-/// compact and phone tiers where there isn't room for two side-by-side
-/// columns.
+/// Courses stacked above Chats in one scrollable column, used by the compact and
+/// phone tiers.
 class _CombinedSidebar extends StatelessWidget {
   const _CombinedSidebar();
 

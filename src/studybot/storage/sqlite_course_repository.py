@@ -1,19 +1,9 @@
-"""SQLite-backed `CourseRepository`.
+"""SQLite-backed ``CourseRepository``.
 
-This is one of three modules allowed to contain SQL (the others are
-`sqlite_repository.py` for chats and `sqlite_learning_memory_repository.py`
-for learning memory). Everything else — CLI, `CourseService`,
-`SessionService`, a future GUI — talks to the `CourseRepository` protocol.
-
-Schema creation and migration are handled by `storage.database`, which owns
-the shared `sqlite3.Connection` this repository is given.
-
-`delete_course_archiving_memories` is the one place this module reaches
-into the `learning_memories` table directly, rather than only `courses` —
-see its docstring in `storage.base.CourseRepository` for why that's a
-deliberate, narrow exception (SQLite transactions are connection-scoped,
-not repository-scoped) rather than a precedent for repositories reaching
-into each other's tables generally.
+One of three modules that contain SQL; see ``sqlite_repository.py``.
+``delete_course_archiving_memories`` also touches ``learning_memories``, a
+deliberate exception because a transaction is scoped to the connection (see
+``CourseRepository``).
 """
 
 from __future__ import annotations
@@ -42,7 +32,7 @@ def _row_to_course(row: sqlite3.Row) -> Course:
 
 
 class SQLiteCourseRepository:
-    """Talks to a shared SQLite connection via the standard-library `sqlite3`."""
+    """``CourseRepository`` over a shared SQLite connection."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._conn = connection
@@ -85,20 +75,16 @@ class SQLiteCourseRepository:
         return self.get_course(course_id)
 
     def delete_course(self, course_id: str) -> None:
-        # Foreign key ON DELETE SET NULL (declared on chats.course_id) clears
-        # the association on any chats that belonged to this course; the
-        # chats and their messages are never touched by this statement.
+        # ON DELETE SET NULL on chats.course_id clears the association; chats and
+        # messages are untouched.
         with self._conn:
             self._conn.execute("DELETE FROM courses WHERE id = ?", (course_id,))
 
     def delete_course_archiving_memories(self, course_id: str) -> None:
-        """Archive the course's active memories and delete the course, as
-        one atomic SQLite transaction — see the protocol docstring for the
-        full rationale. If the `DELETE` fails for any reason, the `UPDATE`
-        is rolled back too: `with self._conn:` commits only if the whole
-        block completes without raising, and rolls back everything in the
-        block otherwise (verified by test, including with a genuinely
-        independent second connection to the same database file).
+        """Archive the course's active memories and delete the course in one transaction.
+
+        If the ``DELETE`` fails, the ``UPDATE`` rolls back too: ``with self._conn:``
+        commits only if the whole block succeeds.
         """
         now = _now()
         with self._conn:

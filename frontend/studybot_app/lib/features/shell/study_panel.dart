@@ -12,10 +12,8 @@ import '../modes/modes_providers.dart';
 import '../modes/reasoning_providers.dart';
 import '../status/status_providers.dart';
 
-/// The contextual right-hand panel: current course, code/term, teaching
-/// mode, reasoning mode, a compact learning-memory summary (Stage 6), and
-/// engine status. No mastery percentages, key concepts, or progress —
-/// none of that exists in the backend, deliberately.
+/// The right-hand panel: current course, code/term, teaching mode, reasoning
+/// mode, a compact learning-memory summary, and engine status.
 class StudyPanel extends ConsumerWidget {
   const StudyPanel({super.key});
 
@@ -97,12 +95,10 @@ class StudyPanel extends ConsumerWidget {
   }
 }
 
-/// A compact, grouped summary of the active course's active learning
-/// memories (course-specific plus global) — grouped by kind ("Needs
-/// review", "Understands", ...), topics only (no summary text, to stay
-/// compact), each group hidden entirely when it has nothing to show.
-/// Never a percentage or score. "View all" opens the full management view
-/// for editing/archiving/creating.
+/// A compact summary of the active course's active learning memories
+/// (course-specific plus global), grouped by kind ("Needs review",
+/// "Understands", ...) and showing topics only. Empty groups are hidden.
+/// "View all" opens the full management view.
 class _LearningMemorySection extends ConsumerWidget {
   const _LearningMemorySection();
 

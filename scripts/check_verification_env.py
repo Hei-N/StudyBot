@@ -1,24 +1,15 @@
 #!/usr/bin/env python3
-"""Fail-fast preflight check for real-model verification scripts (Stage
-6.2) — run this BEFORE starting a `studybot-server` process for
-verification purposes, with the same environment (in particular
-`STUDYBOT_DATA_DIR`) you're about to launch it with:
+"""Preflight check for real-model verification: run before starting
+``studybot-server`` with the same environment.
 
     export STUDYBOT_DATA_DIR="$(mktemp -d -t studybot_verify)"
     python3 scripts/check_verification_env.py || exit 1
     STUDYBOT_MODEL_PROVIDER=ollama studybot-server &
 
-`STUDYBOT_DB_PATH` is NOT a recognized setting (only `STUDYBOT_DATA_DIR`
-is) — a mistake made throughout this project's own Stage 5.7-6.1
-real-verification scripts, which silently fell back to the real default
-data directory as a result. This script exists so that mistake, or any
-variant of it, is caught before it can touch real data, not after.
-
-Exits 0 (and prints the resolved, confirmed-safe database path) if the
-environment resolves to somewhere other than the real default StudyBot
-data directory. Exits 1 (and prints nothing that looks like a green
-light) otherwise — including when `STUDYBOT_DATA_DIR` is unset entirely,
-since that also resolves to the real default.
+``STUDYBOT_DATA_DIR`` is the only variable that selects the database location;
+an unrecognized one such as ``STUDYBOT_DB_PATH`` is ignored and falls back to
+the real default directory. Exits 0 and prints the resolved database path if it
+is safe, 1 otherwise (including when ``STUDYBOT_DATA_DIR`` is unset).
 """
 
 from __future__ import annotations

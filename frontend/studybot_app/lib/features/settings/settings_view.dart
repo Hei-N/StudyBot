@@ -61,7 +61,7 @@ class SettingsView extends ConsumerWidget {
           TextButton(onPressed: () => _editConnection(context, ref), child: const Text('Edit connection…')),
           const SizedBox(height: AppSpacing.lg),
           const SectionHeader('About'),
-          const ListTile(contentPadding: EdgeInsets.zero, title: Text('Study Bot'), subtitle: Text('Stage 5.6')),
+          const ListTile(contentPadding: EdgeInsets.zero, title: Text('Study Bot'), subtitle: Text('Local study assistant')),
         ],
       ),
     );

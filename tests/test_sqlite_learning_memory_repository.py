@@ -315,9 +315,6 @@ def test_unknown_stored_status_falls_back_to_active(connection, repository):
     memory = repository.get("mem-x")
     assert memory.status is MemoryStatus.ACTIVE
 
-# Course-deletion archiving moved to `SQLiteCourseRepository.
-# delete_course_archiving_memories` in Stage 6.2, for true SQLite
-# transaction-level atomicity (a single connection-scoped BEGIN/COMMIT
-# spanning both the archive and the delete) — see
-# tests/test_sqlite_course_repository.py for that coverage, including
-# rollback-on-failure, safe retry, and independent-connection visibility.
+# Course-deletion archiving lives in SQLiteCourseRepository.
+# delete_course_archiving_memories (one transaction spanning the archive and the
+# delete); see tests/test_sqlite_course_repository.py for its coverage.

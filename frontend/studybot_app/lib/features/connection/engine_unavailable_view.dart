@@ -5,12 +5,10 @@ import '../../core/theme/app_spacing.dart';
 import '../status/status_providers.dart';
 import 'connection_setup_view.dart';
 
-/// Shown once a connection is configured but the engine can't currently be
-/// reached (stopped, restarting, wrong token). Lighter than the initial
-/// setup screen — a Retry button first, "Edit connection" as a fallback —
-/// so a backend restart recovers with a single tap rather than re-entering
-/// credentials (the poll in [EngineHealthNotifier] will also pick it back
-/// up on its own).
+/// Shown when a connection is configured but the engine can't be reached
+/// (stopped, restarting, wrong token). Offers Retry first and "Edit
+/// connection" as a fallback, so a restart recovers with one tap; the poll in
+/// [EngineHealthNotifier] also recovers on its own.
 class EngineUnavailableView extends ConsumerWidget {
   const EngineUnavailableView({super.key});
 

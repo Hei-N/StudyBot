@@ -9,15 +9,13 @@ import 'chat_stream_event.dart';
 import 'connection_config.dart';
 
 /// One long-lived WebSocket connection to `/api/v1/ws/chat`, reused across
-/// chats and messages exactly as API_CONTRACT.md describes. This is the
-/// only place that speaks the `send_message`/`message_started`/`delta`/
-/// `message_completed`/`error` JSON protocol — callers get a typed
-/// [ChatStreamEvent] stream instead.
+/// chats and messages (see API_CONTRACT.md). The only place that speaks the
+/// `send_message`/`message_started`/`delta`/`message_completed`/`error` JSON
+/// protocol; callers get a typed [ChatStreamEvent] stream.
 ///
-/// Connection is lazy (established on first [sendMessage]) and is not
-/// automatically retried on drop — [StreamDisconnected] is surfaced once
-/// and a subsequent [sendMessage] call reconnects. Kept deliberately simple
-/// for this foundation stage rather than adding backoff/retry policy.
+/// The connection is established lazily on the first [sendMessage] and is not
+/// retried automatically: [StreamDisconnected] is surfaced once and the next
+/// [sendMessage] reconnects.
 class ChatWebSocketClient {
   ChatWebSocketClient(this.config);
 
@@ -52,8 +50,8 @@ class ChatWebSocketClient {
       cancelOnError: true,
     );
 
-    // Surface a connection failure (e.g. bad token, engine down) as soon as
-    // the handshake actually fails, rather than only on first send.
+    // Surface a connection failure (bad token, engine down) as soon as the
+    // handshake fails, not only on first send.
     try {
       await channel.ready;
     } catch (_) {

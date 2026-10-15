@@ -1,5 +1,5 @@
 /// Width breakpoints driving the adaptive shell layout (see
-/// `features/shell/app_shell.dart`). Four tiers, from the spec:
+/// `features/shell/app_shell.dart`). Four tiers:
 ///
 /// - [large]  and up: navigation + chats + conversation + study panel
 /// - [medium] to [large]: navigation + chats + conversation (panel hidden)

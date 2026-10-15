@@ -86,7 +86,7 @@ def test_reasoning_mode_change_persists(client):
 
 def test_reasoning_mode_change_does_not_affect_teaching_mode(client):
     chat = client.post("/api/v1/chats", json={}, headers=HEADERS).json()
-    send(client, chat["id"], "hello")  # force persistence — GET /chats/{id} below is stateless
+    send(client, chat["id"], "hello")  # force persistence; GET /chats/{id} below is stateless
     client.put(f"/api/v1/chats/{chat['id']}/mode", json={"mode": "homework"}, headers=HEADERS)
 
     client.put(f"/api/v1/chats/{chat['id']}/reasoning-mode", json={"reasoningMode": "deep"}, headers=HEADERS)

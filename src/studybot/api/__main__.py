@@ -1,10 +1,7 @@
-"""Entry point for `python -m studybot.api` and the installed
-`studybot-server` command — the API server for a future Flutter client.
+"""Entry point for ``python -m studybot.api`` and the ``studybot-server`` command.
 
-This is separate from, and does not replace, `python -m studybot` (the
-CLI, unchanged). Binds to 127.0.0.1 only — the host is deliberately not
-configurable, so there is no way to accidentally expose this on the local
-network. See API_CONTRACT.md.
+Binds to 127.0.0.1 only; the host is deliberately not configurable.
+See API_CONTRACT.md.
 """
 
 from __future__ import annotations
@@ -24,12 +21,13 @@ from studybot.logging_config import configure_logging
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 8765
-_HOST = "127.0.0.1"  # not configurable — see module docstring
+_HOST = "127.0.0.1"  # not configurable; see module docstring
 
 
 def _configured_port() -> int:
-    """0 requests an OS-assigned ephemeral port (see `_serve`'s startup
-    handshake line for how a launcher learns which one was chosen)."""
+    """Port from ``STUDYBOT_API_PORT``; 0 requests an OS-assigned port, which the
+    startup handshake line reports.
+    """
     raw = os.environ.get("STUDYBOT_API_PORT")
     if raw is None:
         return _DEFAULT_PORT
@@ -49,9 +47,8 @@ async def _serve() -> None:
     if not config.loaded:
         config.load()
     server = uvicorn.Server(config)
-    # Normally set inside `Server._serve()`, which we don't call — we need
-    # to drive `startup()`/`main_loop()`/`shutdown()` individually to print
-    # the actual bound port between startup and the main loop.
+    # Normally set in Server._serve(); we drive startup()/main_loop()/shutdown()
+    # ourselves to print the bound port in between.
     server.lifespan = config.lifespan_class(config)
 
     with server.capture_signals():
@@ -65,10 +62,11 @@ async def _serve() -> None:
 
 
 def _announce_ready(port: int, token: str) -> None:
-    """One handshake line on stdout — deliberately not via `logging` (which
-    may be routed to a file) — so a launcher (Flutter, or a dev harness)
-    learns the bound port and this process's token exactly once at
-    startup. Neither is ever persisted or written to a log file."""
+    """Print one handshake line on stdout (deliberately not via ``logging``) so a
+    launcher learns the bound port and token once at startup.
+
+    Neither is persisted or logged.
+    """
     print(
         json.dumps({"event": "studybot_api_ready", "host": _HOST, "port": port, "token": token}),
         flush=True,

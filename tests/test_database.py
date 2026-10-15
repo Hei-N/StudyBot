@@ -100,9 +100,9 @@ def test_opening_the_same_database_twice_is_idempotent(tmp_path):
 
 
 def _create_v1_database(db_path):
-    """Build a schema-v1 (Stage 3) database by hand, bypassing `open_database`
-    (which always creates the *current* schema), to simulate a real
-    Version 0.1 user database."""
+    """Build a schema-v1 database by hand (``open_database`` always creates the
+    current schema) to simulate an old user database.
+    """
     conn = sqlite3.connect(db_path)
     conn.execute(
         "CREATE TABLE chats (id TEXT PRIMARY KEY, title TEXT, created_at TEXT NOT NULL, "
@@ -235,8 +235,7 @@ def test_v1_to_v2_failed_migration_does_not_leave_a_partially_upgraded_database(
 
 
 def _create_v2_database(db_path):
-    """Build a schema-v2 (Stage 4) database by hand to simulate a real
-    Version 0.2 (Stage 4) user database with a course already in use."""
+    """Build a schema-v2 database by hand, with a course already in use."""
     conn = sqlite3.connect(db_path)
     conn.execute(
         "CREATE TABLE courses (id TEXT PRIMARY KEY, name TEXT NOT NULL, code TEXT, term TEXT, "
@@ -341,13 +340,11 @@ def test_v2_to_v3_failed_migration_does_not_leave_a_partially_upgraded_database(
         verify.close()
 
 
-# --- v3 -> v4 migration (Stage 5.7: reasoning modes) ------------------------------------
+# --- v3 -> v4 migration (reasoning modes) -----------------------------------------------
 
 
 def _create_v3_database(db_path):
-    """Build a schema-v3 (Stage 5) database by hand to simulate a real
-    pre-Stage-5.7 user database with a course and a non-default teaching
-    mode already in use."""
+    """Build a schema-v3 database by hand, with a course and a non-default teaching mode in use."""
     conn = sqlite3.connect(db_path)
     conn.execute(
         "CREATE TABLE courses (id TEXT PRIMARY KEY, name TEXT NOT NULL, code TEXT, term TEXT, "
@@ -458,13 +455,13 @@ def test_v3_to_v4_failed_migration_does_not_leave_a_partially_upgraded_database(
         verify.close()
 
 
-# --- v4 -> v5 migration (Stage 6: learning memory) --------------------------------------
+# --- v4 -> v5 migration (learning memory) -----------------------------------------------
 
 
 def _create_v4_database(db_path):
-    """Build a schema-v4 (Stage 5.8) database by hand to simulate a real
-    pre-Stage-6 user database with a course, a chat, and a message already
-    in use — no `learning_memories` table exists yet."""
+    """Build a schema-v4 database by hand, with a course, a chat and a message and
+    no ``learning_memories`` table.
+    """
     conn = sqlite3.connect(db_path)
     conn.execute(
         "CREATE TABLE courses (id TEXT PRIMARY KEY, name TEXT NOT NULL, code TEXT, term TEXT, "

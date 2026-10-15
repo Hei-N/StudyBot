@@ -1,8 +1,7 @@
-"""GET /api/v1/modes — the teaching-mode catalog for a Flutter mode picker.
+"""``GET /api/v1/modes``: the teaching-mode catalog, derived from
+``core.teaching_mode.all_modes()``.
 
-Derived directly from `core.teaching_mode.all_modes()` — the mode
-definitions are never duplicated here. Pure domain data with no I/O, so
-(unlike the other routes) this needs no `Engine` dispatch at all.
+Pure domain data, so no ``Engine`` dispatch is needed.
 """
 
 from __future__ import annotations

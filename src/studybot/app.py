@@ -1,8 +1,7 @@
 """Application wiring: builds the core services from configuration.
 
-Any interface (CLI today; a desktop UI or macOS assistant later) constructs
-a `StudyBotApp` and talks only to `app.sessions` and `app.courses`. Nothing
-here is CLI-specific.
+Any interface constructs a ``StudyBotApp`` and talks to ``app.sessions``,
+``app.courses`` and ``app.memories``. Nothing here is CLI-specific.
 """
 
 from __future__ import annotations

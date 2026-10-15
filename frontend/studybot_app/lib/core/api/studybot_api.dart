@@ -16,11 +16,10 @@ import 'connection_config.dart';
 
 /// Typed HTTP client for the `/api/v1/...` endpoints in API_CONTRACT.md.
 ///
-/// This is the only place that knows the API's URL shapes and JSON field
-/// names — everything above it (providers, widgets) works with the typed
-/// models in `core/models/`. Every failure — network-level or a structured
-/// `{code, message}` error body — surfaces as an [ApiException], never a
-/// raw exception or stack trace.
+/// The only place that knows the API's URL shapes and JSON field names;
+/// providers and widgets use the typed models in `core/models/`. Every failure,
+/// network-level or a structured `{code, message}` error body, surfaces as an
+/// [ApiException].
 class StudyBotApi {
   StudyBotApi(this.config, {http.Client? client}) : _client = client ?? http.Client();
 
@@ -209,15 +208,15 @@ class StudyBotApi {
     return ReasoningModeInfo.fromJson(json as Map<String, dynamic>);
   }
 
-  // --- learning memory (Stage 6) ---------------------------------------------------
+  // --- learning memory --------------------------------------------------------------
 
   Future<List<MemoryKindInfo>> listMemoryKinds() async {
     final json = await _send(() => _client.get(_uri('/memory-kinds'), headers: _headers));
     return (json as List).cast<Map<String, dynamic>>().map(MemoryKindInfo.fromJson).toList();
   }
 
-  /// `courseId: 'none'` filters to global-only memories, matching
-  /// `listChats`' own convention. Omit any filter to mean "no constraint".
+  /// `courseId: 'none'` filters to global-only memories, like `listChats`.
+  /// Omit a filter for "no constraint".
   Future<List<LearningMemory>> listMemories({String? courseId, String? kind, String? status}) async {
     final query = <String, String>{
       'course_id': ?courseId,
@@ -256,12 +255,10 @@ class StudyBotApi {
     return LearningMemory.fromJson(json as Map<String, dynamic>);
   }
 
-  /// PATCH semantics: only `topic`/`kind`/`summary` args that are non-null
-  /// are sent (and therefore changed). `courseId` is different — pass
-  /// [setCourseId] `true` to include it at all (even when [courseId] is
-  /// `null`, meaning "unassign to General"); leave it `false` to omit the
-  /// field entirely and keep the memory's current course unchanged. See
-  /// `LearningMemoryUpdateIn` in API_CONTRACT.md.
+  /// PATCH semantics: only non-null `topic`/`kind`/`summary` are sent. For
+  /// `courseId`, pass [setCourseId] `true` to include it (even when [courseId] is
+  /// `null`, meaning "unassign to General"); `false` omits it and keeps the
+  /// current course. See `LearningMemoryUpdateIn` in API_CONTRACT.md.
   Future<LearningMemory> updateMemory(
     String memoryId, {
     String? topic,

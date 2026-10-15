@@ -38,10 +38,9 @@ Chat _chat(int i) => Chat(
   updatedAt: 'now',
 );
 
-/// Renders [AppShell] at a given logical width/height with real (fake-backed)
-/// data flowing through every region — deliberately with *enough* courses
-/// and chats that they cannot all fit on screen, so a broken (non-scrolling)
-/// list would leave some unreachable, matching how Bug 2 actually manifested.
+/// Renders [AppShell] at a given size with fake-backed data in every region,
+/// using enough courses and chats that they cannot all fit on screen, so a
+/// non-scrolling list would leave some unreachable.
 Future<ProviderContainer> _pumpShellAt(WidgetTester tester, Size logicalSize, {int courseCount = 20}) async {
   addTearDown(tester.view.reset);
   tester.view.physicalSize = logicalSize * tester.view.devicePixelRatio;
@@ -83,9 +82,8 @@ Future<ProviderContainer> _pumpShellAt(WidgetTester tester, Size logicalSize, {i
 }
 
 void main() {
-  // The user-specified manual macOS window sizes from the Stage 5.6
-  // stabilization request, each labeled with which adaptive tier it falls
-  // into given AppBreakpoints (compact=600, medium=900, large=1200).
+  // Window sizes from manual macOS testing, each labeled with its adaptive tier
+  // (AppBreakpoints: compact=600, medium=900, large=1200).
   final sizes = {
     '1600x1000 (large)': const Size(1600, 1000),
     '1300x850 (large)': const Size(1300, 850),
@@ -132,31 +130,23 @@ void main() {
       '700x650 (compact)': const Size(700, 650),
     }.entries) {
       testWidgets(entry.key, (tester) async {
-        // Regression test for Bug 2's root cause: CoursesListView's inner
-        // list used to be `shrinkWrap: true` + `NeverScrollableScrollPhysics`
-        // inside a `Flexible` — with more courses than fit in the available
-        // height (worse at these deliberately short, non-fullscreen sizes),
-        // everything past the fold was permanently unreachable. It must now
-        // be a plain scrollable list that can reach the last course.
+        // Regression: CoursesListView's list used to be `shrinkWrap: true` with
+        // `NeverScrollableScrollPhysics` inside a `Flexible`, so courses past the fold
+        // were unreachable. It must be a plain scrollable list.
         await _pumpShellAt(tester, entry.value, courseCount: 20);
 
-        // The last course's own tile may not exist in the widget tree yet
-        // (ListView only builds visible + cached items) — scrolling the
-        // Scrollable that contains it must bring it into view and it must
-        // then be genuinely tappable (tester.tap fails if hit-testing is
-        // blocked by anything, e.g. a stray overlay). Anchored on
-        // CoursesListView specifically, rather than an ordinal
-        // find.byType(Scrollable).first, which is fragile once several
-        // scrollables exist in the tree.
+        // The last course tile may not be built yet (ListView builds only visible and
+        // cached items); scrolling its Scrollable must bring it into view and make it
+        // tappable. Anchored on CoursesListView, since an ordinal
+        // find.byType(Scrollable) is fragile.
         final coursesScrollable = find.descendant(
           of: find.byType(CoursesListView),
           matching: find.byType(Scrollable),
         );
         await tester.dragUntilVisible(find.text('Course number 19'), coursesScrollable, const Offset(0, -60));
-        // dragUntilVisible stops the moment the finder resolves at all,
-        // which can leave the item only just barely inside the viewport
-        // edge (a real tap there would be unreliable) — nudge it further
-        // in before asserting it's genuinely tappable.
+        // dragUntilVisible stops as soon as the finder resolves, which can leave the
+        // item at the viewport edge; nudge it further in before asserting it is
+        // tappable.
         await tester.drag(coursesScrollable, const Offset(0, -80));
         await tester.pumpAndSettle();
         expect(find.text('Course number 19'), findsOneWidget);
@@ -176,10 +166,8 @@ void main() {
       testWidgets(entry.key, (tester) async {
         await _pumpShellAt(tester, entry.value);
 
-        // Anchor on ChatsListView specifically rather than an ordinal
-        // find.byType(Scrollable).first/.last, which is fragile once
-        // several scrollables exist in the tree (courses, chats,
-        // conversation, ...).
+        // Anchor on ChatsListView rather than an ordinal Scrollable finder, which is
+        // fragile.
         final chatsScrollable = find.descendant(of: find.byType(ChatsListView), matching: find.byType(Scrollable));
         await tester.dragUntilVisible(find.text('Chat number 19'), chatsScrollable, const Offset(0, -60));
         // See the equivalent comment in the courses test above.
@@ -203,9 +191,8 @@ void main() {
     await tester.pump();
     expect(find.text('hello from the composer'), findsOneWidget);
 
-    // Switching to a course with no chats of its own is a real, valid state
-    // (an empty-conversation prompt, not a bug) — just confirm it doesn't
-    // throw and the course/chat lists themselves keep working.
+    // A course with no chats of its own is a valid state (empty-conversation
+    // prompt); confirm nothing throws and the lists keep working.
     await tester.tap(find.text('Course number 1'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
@@ -231,9 +218,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
 
-    // The compact StudyPanel (and its Learning Memory summary) is hidden at
-    // this width, but the full management view stays reachable via the nav
-    // rail (Stage 6 §18: a drawer/sheet/page, not a forced fourth column).
+    // The compact StudyPanel (and its memory summary) is hidden at this width, but
+    // the management view stays reachable via the nav rail.
     await tester.tap(find.byTooltip('Learning memory'));
     await tester.pumpAndSettle();
     expect(find.text('No learning memory yet'), findsOneWidget);

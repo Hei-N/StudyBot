@@ -173,7 +173,7 @@ def test_multiline_description_round_trips(client):
     assert response.json()["description"] == description
 
 
-# --- Stage 6.1: deleting a course archives its memories, never leaks them global -------
+# --- deleting a course archives its memories instead of leaking them global -----------
 
 
 def test_deleting_course_archives_its_memories_instead_of_making_them_active_global(client):

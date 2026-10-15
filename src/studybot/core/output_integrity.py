@@ -1,35 +1,23 @@
-"""Output integrity: keep a model's internal reasoning out of its answer.
+"""Keeps a model's internal reasoning out of its answer.
 
-Stage 6.3. Some local models (Qwen3's thinking variants in particular) can
-emit their chain-of-thought *inside* the ordinary content channel instead
-of Ollama's separate `thinking` field — e.g. a thinking-only model asked to
-not think (`think=False`) still reasons, but its template's pre-opened
-`<think>` block means the only visible marker is a bare closing `</think>`
-somewhere in the middle of `content`. Nothing downstream of the model
-provider can tell reasoning from answer after the fact, so the separation
-happens here, once, at the provider boundary, for both the streaming and
-non-streaming paths.
+Some models emit chain-of-thought inside the normal content channel instead of
+Ollama's separate ``thinking`` field (for example a thinking-only model run
+with ``think=False`` produces reasoning followed by a bare ``</think>``).
+Nothing downstream can tell reasoning from answer, so the separation happens
+once, at the provider boundary, for both streaming and non-streaming paths.
 
-Two pieces:
+* ``ReasoningOutputFilter``: an incremental filter for raw content chunks. It
+  strips a leading ``<think>...</think>`` span (even when split across
+  chunks), holds back anything ambiguous instead of emitting and retracting
+  it, and fails closed (``UnsafeModelOutputError``) when reasoning cannot be
+  separated confidently: an unterminated span, a ``</think>`` in answer text
+  outside code, or no answer at all. Tags inside code blocks or inline code
+  pass through.
+* ``assess_stored_reply`` / ``strip_confident_reasoning``: non-destructive
+  handling of already stored replies. Only confidently identified reasoning is
+  removed, and only from the copy sent to the model; storage is never rewritten.
 
-* `ReasoningOutputFilter` — a stateful, incremental filter a provider runs
-  its raw content chunks through. It strips a reasoning span that opens the
-  response (`<think>…</think>`, also split across any number of chunks),
-  buffers anything that is still ambiguous rather than emitting it and
-  "taking it back" later, and **fails closed** (`UnsafeModelOutputError`)
-  on anything it cannot separate confidently: an unterminated span, or a
-  `</think>` marker appearing in answer prose outside code. Legitimate
-  mentions of the tags inside fenced code blocks or inline code spans (a
-  student asking how Qwen's template works, say) pass through untouched.
-  A response with no visible answer at all also fails closed.
-
-* `strip_confident_reasoning` — the non-streaming, *non-destructive*
-  counterpart for already-persisted history (conversations saved before
-  this stage). It only returns a changed string when the reasoning portion
-  is identified with confidence; callers use it on the copy of history
-  they send to the model, never to rewrite storage.
-
-Nothing in this module logs message content.
+Nothing here logs message content.
 """
 
 from __future__ import annotations
@@ -55,21 +43,17 @@ _FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
 
 
 class _LeakDetected(Exception):
-    """Internal signal from `_AnswerScanner`; converted to
-    `UnsafeModelOutputError` by the filter."""
+    """Raised by ``_AnswerScanner``; converted to ``UnsafeModelOutputError`` by the filter."""
 
 
 class _AnswerScanner:
-    """Scans answer text line by line, tracking Markdown code (fenced blocks
-    and inline code spans), and raises `_LeakDetected` for a `</think>`
-    marker that appears outside code.
+    """Scans answer text line by line and raises ``_LeakDetected`` for a ``</think>``
+    marker outside Markdown code (fenced blocks and inline spans).
 
-    Text is released progressively; the only things held back are pieces
-    whose meaning isn't known yet: a line start that may still turn into a
-    code fence, a trailing fragment that may still complete into
-    `</think>`, and an inline code span whose closing backticks haven't
-    arrived (inline spans never cross a line here — an unmatched backtick
-    run is just literal text, as in CommonMark, so it can't hide a marker).
+    Text is released progressively. Only undecided pieces are held back: a line
+    start that may become a code fence, a trailing fragment that may complete into
+    ``</think>``, and an inline span whose closing backticks have not arrived.
+    Inline spans never cross a line, so an unmatched backtick run is literal text.
     """
 
     def __init__(self) -> None:
@@ -102,8 +86,7 @@ class _AnswerScanner:
         return out
 
     def _decide_line_kind(self, complete: bool) -> bool:
-        """Classify the current line as code or text; False if it's still
-        too early to tell."""
+        """Classify the current line as code or text; False if it is too early to tell."""
         stripped = self._line.lstrip(" ")
         indent = len(self._line) - len(stripped)
         if not complete and indent <= 3 and (not stripped or set(stripped) <= {"`"} or set(stripped) <= {"~"}):
@@ -179,8 +162,7 @@ class _AnswerScanner:
 
 
 def _find_closing_run(line: str, start: int, length: int) -> int:
-    """Index of the next backtick run of exactly `length` in `line` at or
-    after `start`, or -1."""
+    """Index of the next backtick run of exactly ``length`` at or after ``start``, or -1."""
     i = start
     while True:
         i = line.find("`", i)
@@ -213,19 +195,16 @@ class FilterStats:
 class ReasoningOutputFilter:
     """Incrementally separates a model's answer from inline reasoning.
 
-    Usage: call `feed(chunk)` for each raw content chunk and release
-    whatever it returns (possibly ""); call `finish()` once at the end and
-    release that too. Either may raise `UnsafeModelOutputError`, after which
-    the generation must be treated as failed — nothing it produced should be
-    persisted.
+    Call ``feed(chunk)`` for each raw chunk and ``finish()`` once at the end,
+    releasing whatever they return (possibly ""). Either may raise
+    ``UnsafeModelOutputError``; the generation must then be treated as failed and
+    nothing persisted.
 
-    `implicit_open=True` is for a model that may begin reasoning with *no*
-    opening tag (a thinking-only model whose template pre-opens the block,
-    driven without structured thinking separation). Then everything is
-    buffered until a `</think>` arrives — whatever precedes it is reasoning —
-    or the response ends without one, in which case it is all answer. That
-    gives up progressive streaming, so providers only use it when they can't
-    establish the model's thinking behavior up front.
+    ``implicit_open=True`` is for models that may start reasoning without an
+    opening tag. Everything is buffered until ``</think>`` arrives (what precedes
+    it is reasoning) or the response ends without one (all answer). This gives up
+    progressive streaming, so providers use it only when the model's thinking
+    behavior is unknown.
     """
 
     def __init__(self, *, implicit_open: bool = False) -> None:
@@ -333,8 +312,8 @@ class ReasoningOutputFilter:
 
 
 def filter_complete_output(text: str, *, implicit_open: bool = False) -> str:
-    """Run a complete (non-streamed) response through the same filter the
-    streaming path uses, so both paths apply one identical policy."""
+    """Run a complete response through the same filter as streaming, so both paths share one policy.
+    """
     output_filter = ReasoningOutputFilter(implicit_open=implicit_open)
     return output_filter.feed(text) + output_filter.finish()
 
@@ -360,18 +339,15 @@ class HistoryAssessment:
 def assess_stored_reply(content: str) -> HistoryAssessment:
     """Classify one stored assistant reply.
 
-    Deliberately narrow — no guessing about prose that merely *sounds* like
-    planning. A reply is CONTAMINATED only for the two exact shapes the
-    Stage 6.3 leak produced:
+    Deliberately narrow: prose that merely resembles planning is never touched. A
+    reply is CONTAMINATED only for the two shapes the leak produced:
 
-    * a leading `<think>…</think>` span followed by a non-empty answer, or
-    * no opening tag, exactly one `</think>` alone on its own line outside
-      code, and a non-empty answer after it (a thinking-only model's
-      template pre-opens the block, so everything before the marker is
-      reasoning).
+    * a leading ``<think>...</think>`` span followed by a non-empty answer, or
+    * no opening tag, exactly one ``</think>`` alone on its line outside code, and
+      a non-empty answer after it.
 
-    Any other occurrence of a marker outside code is AMBIGUOUS: reported by
-    the audit, left untouched everywhere.
+    Any other marker outside code is AMBIGUOUS: reported by the audit, never
+    modified.
     """
     if OPEN_TAG not in content and CLOSE_TAG not in content:
         return HistoryAssessment(HistoryVerdict.CLEAN, None)
@@ -406,8 +382,9 @@ def _contaminated(original: str, answer: str) -> HistoryAssessment:
 
 
 def strip_confident_reasoning(content: str) -> str:
-    """The answer alone if `content` is a confidently-identified
-    contaminated reply; otherwise `content` unchanged. Never raises."""
+    """Return the answer alone for a confidently contaminated reply, else ``content``
+    unchanged. Never raises.
+    """
     assessment = assess_stored_reply(content)
     if assessment.verdict is HistoryVerdict.CONTAMINATED and assessment.repaired:
         return assessment.repaired

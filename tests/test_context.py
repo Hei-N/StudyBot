@@ -128,7 +128,7 @@ def test_every_modes_prompt_is_distinct_and_non_empty():
     assert len(set(prompts)) == len(prompts)
 
 
-# --- learning-memory composition (Stage 6) ----------------------------------------------
+# --- learning-memory composition ----------------------------------------------------
 
 
 def test_memory_context_appears_between_course_and_mode():

@@ -1,5 +1,5 @@
-"""Stage 6.3: the reasoning/answer separation filter and the stored-reply
-classifier, in isolation."""
+"""Tests for the reasoning/answer separation filter and the stored-reply classifier, in isolation.
+"""
 
 import pytest
 

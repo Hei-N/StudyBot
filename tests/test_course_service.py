@@ -174,12 +174,8 @@ def test_count_chats_for_course_starts_at_zero(service):
     assert service.count_chats(course.id) == 0
 
 
-# =====================================================================================
-# Stage 6.1/6.2 — deleting a course atomically archives its memories rather than
-# leaking them global (see test_sqlite_course_repository.py for the transaction-
-# level atomicity/rollback/independent-connection coverage of the repository
-# method this delegates to)
-# =====================================================================================
+# --- deleting a course archives its memories rather than leaking them global ------------
+# Transaction-level atomicity is covered in test_sqlite_course_repository.py.
 
 
 def test_delete_course_archives_its_active_memories(service, memory_repository):
@@ -200,7 +196,7 @@ def test_delete_course_archives_its_active_memories(service, memory_repository):
 def test_delete_course_does_not_archive_already_archived_memories_differently(service, memory_repository):
     """An already-archived memory in the doomed course stays archived
     (obviously) and isn't touched in a way that would, say, reset its
-    `updated_at` unnecessarily — the archiving statement only targets
+    `updated_at` unnecessarily; the archiving statement only targets
     active rows."""
     course = service.create_course("Physics")
     memory = memory_repository.create("mem-1", course.id, None, "Topic", MemoryKind.LEARNING_GOAL, "s")
@@ -221,7 +217,7 @@ def test_delete_course_never_touches_memories_already_global(service, memory_rep
     service.delete_course(course.id)
 
     still_active = memory_repository.get(global_memory.id)
-    assert still_active.status is MemoryStatus.ACTIVE  # never archived — it was never in the deleted course
+    assert still_active.status is MemoryStatus.ACTIVE  # never archived; it was never in the deleted course
 
 
 def test_delete_course_never_touches_memories_in_a_different_course(service, memory_repository):

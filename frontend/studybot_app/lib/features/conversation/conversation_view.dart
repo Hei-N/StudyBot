@@ -121,10 +121,9 @@ class _ConversationViewState extends ConsumerState<ConversationView> {
     }
   }
 
-  /// Opens the memory dialog pre-filled from [message], defaulting course
-  /// scope and provenance to the chat it came from (Stage 6 §20) — the
-  /// user still fills in the topic and picks a kind deliberately; this
-  /// never guesses those from the text.
+  /// Opens the memory dialog pre-filled from [message], defaulting course scope
+  /// and provenance to the chat it came from. The user still enters the topic and
+  /// picks a kind; neither is guessed from the text.
   void _saveToMemory(BuildContext context, Chat chat, ChatMessage message) {
     showMemoryEditDialog(
       context,

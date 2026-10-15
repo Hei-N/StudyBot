@@ -1,122 +1,48 @@
-# Study Bot (v0.2, Stage 6.5 — Bounded Inference)
+# StudyBot
 
-A local-first personal study assistant. **Stage 5.5** added a local HTTP +
-WebSocket API (`python -m studybot.api`) in front of the same engine the
-CLI uses; **Stage 5.6** added the first real product UI on top of it — a
-Flutter desktop/mobile app at [`frontend/studybot_app/`](frontend/studybot_app/)
-(primary target macOS) that drives Study Bot entirely through that API,
-knowing nothing about SQLite, Ollama, or Python internals. **Stage 5.7**
-added an explicit, per-chat **reasoning mode** (Fast/Deep Think) so the app
-no longer leaves Qwen3's "thinking" behavior implicit. **Stage 5.8** removed
-the API's last remaining coupling to a single mutable "active chat" per
-process: every chat-specific HTTP/WebSocket operation addresses its
-`chat_id` explicitly and is safe to interleave with operations on any other
-chat, in any order. **Stage 6** added **learning memory** — durable,
-course-scoped learning facts ("needs review: vector components",
-"understands significant figures") that StudyBot retains independently of
-raw chat history, are fully user-visible and user-controlled, and are
-woven into future answers for the same course. **Stage 6.1** was a narrow
-reliability pass on top of that: deleting a course started archiving its
-memories instead of silently turning them into active global ones, and the
-prompt guidance around using memory was refined after real-model testing
-surfaced a subtler failure mode (treating a memory as authoritative proof
-of current understanding, rather than a soft, overridable hint). **Stage
-6.2** makes that course-deletion archiving genuinely atomic at the SQLite
-transaction level (previously two sequential calls; now one real
-`BEGIN`/`COMMIT`/`ROLLBACK`, verified with actual failure injection and a
-second independent connection — see "Learning memory" below), and fixes a
-real bug in this project's own verification tooling: several stages'
-real-model verification scripts silently ran against the real default
-database instead of a fresh one (see "Real-model verification scripts"
-below). The CLI (`python -m studybot`) is unchanged and keeps working
-exactly as before — these are two interfaces onto the same core, not a
-replacement. See **[API_CONTRACT.md](API_CONTRACT.md)** for the full API
-reference (endpoints, the WebSocket protocol, error codes, auth).
+A local-first personal study assistant. It runs a local model through
+[Ollama](https://ollama.com), organizes work into courses and chats, and offers
+five teaching modes (Teach, Homework, Quick Answer, Practice, Exam) and two
+reasoning modes (Fast, Deep Think). It has a terminal interface and a
+Flutter desktop app, both built on the same Python engine. Nothing leaves your
+machine.
 
-Teaching modes (Teach, Homework, Quick Answer, Practice, Exam — one active
-per chat, prompt-based, added in Stage 5) and course organization (Stage 4)
-are unchanged from before. **Reasoning mode is a separate, independent
-per-chat setting** (Stage 5.7) — it controls the model's inference-time
-"thinking" depth/latency, not instructional behavior; a chat can be in any
-combination of the two.
+The product name is provisional; the Python package is `studybot`.
 
-The product name is provisional; the internal Python package is `studybot`.
+## Features
 
-## What this is (and isn't) right now
+- **Courses and chats.** Courses are an organizational label with an optional
+  code, term and description (full Unicode). A chat belongs to one course or to
+  none ("General"). Course membership never merges chat history.
+- **Teaching modes**, set per chat: **Teach** (step-by-step tutoring),
+  **Homework** (guided help, full solution on request), **Quick Answer**
+  (direct and concise), **Practice** (one question at a time, with feedback),
+  **Exam** (no hints until you answer). New chats start in Teach mode.
+- **Reasoning modes**, set per chat and independent of teaching mode: **Fast**
+  (default) and **Deep Think**. Hidden model reasoning is never shown or stored.
+- **Learning memory.** Durable, course-scoped facts ("needs review: vector
+  components") you keep deliberately, separate from chat history, and fed back
+  to the model as soft context.
+- **Streaming replies.** A completed stream is stored as one assistant message;
+  a failed or abandoned one stores none.
+- **Local API.** An authenticated HTTP and WebSocket server bound to
+  `127.0.0.1`, documented in [API_CONTRACT.md](API_CONTRACT.md).
+- **Swappable model backend.** `ModelProvider` hides the backend; Ollama and a
+  deterministic mock are included. See [AI_ARCHITECTURE.md](AI_ARCHITECTURE.md).
+- **Privacy-safe logging.** Prompts, replies, titles and course names are never
+  logged.
 
-- ✅ A local HTTP + WebSocket API (`python -m studybot.api` /
-  `studybot-server`) exposing the same `SessionService`/`CourseService`
-  the CLI uses — courses, chats, teaching modes, and streaming chat, all
-  under `/api/v1/...`. See [API_CONTRACT.md](API_CONTRACT.md).
-- ✅ Binds to `127.0.0.1` only (not configurable) and requires a
-  per-process `Authorization: Bearer <token>` on every request — never
-  persisted, never logged, generated fresh each time the server starts
-- ✅ Five teaching modes, one active per chat: **Teach** (step-by-step
-  tutoring), **Homework** (guided help, full solution on request),
-  **Quick Answer** (direct and concise), **Practice** (one question at a
-  time with feedback), **Exam** (no hints until you answer)
-- ✅ Mode is per-chat, not global or per-course — the same course can have
-  a Teach chat, a Homework chat, and an Exam chat side by side, each
-  keeping its own mode independently
-- ✅ New chats always start in Teach mode — a chat never inherits whatever
-  mode was active elsewhere
-- ✅ Changing mode persists immediately, applies starting with the next
-  message, and never touches messages, title, or course; it's never
-  recorded as a chat message
-- ✅ Courses: create, list, open, edit, delete — each with an optional
-  code/term/description, full Unicode support (including Burmese, Chinese,
-  emoji)
-- ✅ Chats can belong to one course, or none ("General") — course membership
-  is purely organizational and **never merges conversation history** between
-  chats, even chats in the same course
-- ✅ The model is told the active course (name, code, term, description)
-  and the active teaching mode via small, independently-composed pieces of
-  context — it never sees database ids or timestamps
-- ✅ Multiple persisted chats, each with its own isolated history, surviving
-  restarts — the most recently updated chat resumes automatically, with
-  its course and teaching mode reconstructed with it
-- ✅ Deterministic, local chat titles generated from the first message
-  (no LLM call involved)
-- ✅ A real local model backend (Ollama) or a deterministic `MockModel`,
-  swappable behind a `ModelProvider` interface that knows nothing about
-  Ollama, courses, or teaching modes
-- ✅ Streaming responses; a completed stream is persisted as exactly one
-  assistant message, a failed or abandoned one persists none
-- ✅ `/status`: on-demand provider/server/model health check
-- ✅ Centralized configuration and privacy-safe logging (prompts, responses,
-  chat titles, and course names/descriptions are never written to logs)
-- ❌ No cloud AI provider (OpenAI, Anthropic, etc.) — local-only
-- ❌ No mastery tracking, skill model, scoring, or spaced repetition — mode
-  adaptation (e.g. Practice's difficulty) only ever uses the current
-  conversation, nothing persisted
-- ❌ No formal exam engine, timers, or grading database — Exam mode is a
-  prompt-based behavior, not a real assessment system
-- ❌ No RAG, embeddings, PDFs, file uploads, OCR, screenshots, vision, or
-  long-term learning memory
-- ❌ No desktop GUI, filesystem/browser/calendar agent access, or cloud sync
-- ❌ No automatic model downloading — you always run `ollama pull` yourself
-- ✅ A Flutter desktop/mobile app ([`frontend/studybot_app/`](frontend/studybot_app/)) —
-  courses, chats, teaching-mode picker, reasoning-mode picker, and streaming
-  conversation, adaptive from phone width up to a full four-pane desktop
-  layout; see [frontend/studybot_app/README.md](frontend/studybot_app/README.md)
-  for how to run it
-- ✅ Two reasoning modes, one active per chat, independent of teaching mode:
-  **Fast** (the default for every new chat) and **Deep Think** (for harder
-  questions). Hidden model "thinking" is never shown in the UI and never
-  persisted — only the final answer is (Stage 6.3 enforces this at the
-  model-provider boundary for every mode; see "Reasoning modes").
-- ❌ No Materials, Notes, Progress, RAG, mastery, or PDFs in the Flutter app
-  — only what the API above actually exposes
-- ❌ No remote/network exposure, cloud deployment, or user accounts — the
-  API is a local bridge for one desktop app talking to its own engine
-  process, nothing else
+Not implemented: cloud providers, mastery tracking or scoring, a formal exam
+engine, RAG over documents, embeddings, OCR, vision, tool use, cloud sync and
+accounts. The API is a local bridge for one desktop app, not a network service.
 
-## Prerequisites
+## Requirements
 
 - macOS
 - Python 3.12 or newer
-- [Ollama](https://ollama.com) — only required if you want real model
-  responses; `mock` mode needs nothing beyond Python
+- [Ollama](https://ollama.com), only for real model responses (the `mock`
+  provider needs nothing)
+- Flutter, only for the desktop app
 
 ## Setup
 
@@ -126,58 +52,30 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-### Installing Ollama and a model (optional, for real responses)
+To use a real model:
 
 ```bash
 brew install ollama      # or download from https://ollama.com
-ollama serve              # start the local server (or use the Ollama app)
-ollama pull qwen3:4b       # download the default development model (~2.5GB)
+ollama serve             # or open the Ollama app
+ollama pull qwen3:4b     # the default model, about 2.5 GB
 ```
 
-Study Bot never downloads a model on your behalf — if the configured model
-isn't present locally, it tells you the exact `ollama pull` command to run.
+StudyBot never downloads models for you; if the configured model is missing it
+prints the exact `ollama pull` command to run.
 
-### Development-environment note: iCloud Desktop sync
+## Usage
 
-If this project lives under `~/Desktop` (or anywhere else covered by
-iCloud's "Desktop & Documents" sync), macOS can intermittently evict and
-re-fetch small files in `.venv`, which occasionally makes the editable
-install briefly unreadable and `python -m studybot` fail with
-`ModuleNotFoundError: No module named 'studybot'` even though `pip show
-studybot` reports it as installed. **This is an iCloud/filesystem quirk of
-this development machine, not a Study Bot bug or feature — the application
-itself contains no code that detects or works around it.**
-
-A reliable workaround for a shell session:
+### Terminal
 
 ```bash
-export PYTHONPATH="$PWD/src"
+python -m studybot          # or: studybot
 ```
 
-Run this once per new terminal (after `source .venv/bin/activate`) if you
-hit that error. The permanent fix is either excluding `.venv` from iCloud
-sync or moving the project outside `~/Desktop`.
-
-## Running the chatbot
-
-```bash
-python -m studybot
-```
-
-or, if installed as a script (via the venv above):
-
-```bash
-studybot
-```
-
-By default the app uses `mock` (no server needed). To talk to a real local
-model via Ollama:
+The default provider is `mock`. For a real model:
 
 ```bash
 STUDYBOT_MODEL_PROVIDER=ollama python -m studybot
 ```
-
-Example session (Ollama mode, resuming a Homework-mode course chat):
 
 ```
 Study Bot
@@ -188,6 +86,7 @@ Model: qwen3:4b
 Course: University Physics I
 Chat: Vectors homework
 Mode: Homework
+Reasoning: Fast
 
 Type /help for commands.
 You > A car starts from rest and accelerates at 3 m/s^2 for 4 seconds. Help me solve it.
@@ -196,195 +95,122 @@ You > /quit
 Goodbye.
 ```
 
-If no chats exist yet, `Chat: Untitled`, `Course: General`, and `Mode:
-Teach` are shown, and nothing is written to the database until you
-actually send a message — launching and quitting without chatting (or
-just opening a course to look at it) leaves no empty row behind.
+With no chats yet, `Chat: Untitled`, `Course: General` and `Mode: Teach` are
+shown, and nothing is written to the database until you send a message.
 
-## Running the API server
+| Command | Description |
+|---|---|
+| `/help` | List commands |
+| `/history` | Show the active chat's history |
+| `/status` | Show provider and model availability |
+| `/new` | New chat in the active course (always Teach mode) |
+| `/chats` | List chats in the active course, or General |
+| `/chats all` | List every chat |
+| `/open <id>` | Switch to a chat by id or unique id prefix |
+| `/rename <title>` | Rename the active chat |
+| `/clear` | Remove the active chat's messages (asks to confirm; keeps the chat) |
+| `/delete` | Delete the active chat (asks to confirm) |
+| `/mode [name]` | Show or change the teaching mode |
+| `/reasoning [name]` | Show or change the reasoning mode (`fast` or `deep`) |
+| `/course new` | Create a course (interactive) and activate it |
+| `/course list` | List courses (`*` marks the active one) |
+| `/course open <id>` | Activate a course by id or unique id prefix |
+| `/course info` | Show the active course and its chat count |
+| `/course edit` | Edit the active course (blank keeps a value, `-` clears an optional one) |
+| `/course delete` | Delete the active course (asks to confirm; its chats are kept) |
+| `/course leave` | Back to General |
+| `/chat course <id>` | Move the active chat into a course |
+| `/chat course none` | Move the active chat to General |
+| `/quit` | Exit |
 
-For a future Flutter client (or any local tooling) instead of the terminal:
+`Ctrl+C` and `Ctrl+D` exit cleanly. Inside an interactive prompt or a `[y/N]`
+confirmation they cancel that one action instead. Deleting a course never
+deletes its chats; they become General.
+
+### API server
 
 ```bash
-python -m studybot.api
-# or, if installed as a script:
-studybot-server
+python -m studybot.api      # or: studybot-server
 ```
 
-This prints one JSON line to stdout with the port and auth token to use:
+It prints one JSON line with the port and bearer token to use:
 
 ```json
 {"event": "studybot_api_ready", "host": "127.0.0.1", "port": 8765, "token": "..."}
 ```
 
-Every request needs `Authorization: Bearer <token>` from that line. Full
-reference: **[API_CONTRACT.md](API_CONTRACT.md)**. Quick example:
-
 ```bash
 curl http://127.0.0.1:8765/api/v1/health -H "Authorization: Bearer <token>"
 ```
 
-The CLI and the API server can run at the same time against the same
-local database — try creating a course through one and listing it through
-the other.
+The server and the CLI can run at the same time against the same database. See
+[API_CONTRACT.md](API_CONTRACT.md) for endpoints, the WebSocket protocol and
+error codes.
 
-## Running the Flutter app
+### Flutter app
 
-With the API server running (see above), and its printed port + token in
-hand:
+With the API server running:
 
 ```bash
 cd frontend/studybot_app
 flutter pub get
-flutter run -d macos   # or: flutter analyze / flutter test
+flutter run -d macos
 ```
 
-On first launch, enter the base URL (default `http://127.0.0.1:8765`) and
-the token printed by `studybot-server` into the connection screen — both
-are remembered locally for next time. The app never bundles or auto-starts
-the Python engine; start it yourself first. See
-[frontend/studybot_app/README.md](frontend/studybot_app/README.md) and the
-Flutter section of the architecture notes below for details.
+Enter the base URL (default `http://127.0.0.1:8765`) and the token on first
+launch; both are remembered. The app never starts the engine itself. See
+[frontend/studybot_app/README.md](frontend/studybot_app/README.md).
 
-### Commands
+## Teaching modes
 
-| Command             | Description                                              |
-|----------------------|-------------------------------------------------------------|
-| `/help`              | List available commands                                     |
-| `/history`           | Show the active chat's conversation history                 |
-| `/status`            | Show model provider connection/availability status          |
-| `/new`               | Start a new chat (in the active course, if any; always Teach mode) |
-| `/chats`             | List chats in the active course, or General if none is active |
-| `/chats all`         | List every chat regardless of course                          |
-| `/open <id>`         | Switch to an existing chat by id or unique id prefix          |
-| `/rename <title>`    | Rename the active chat                                        |
-| `/clear`             | Remove the active chat's messages — asks to confirm; keeps the chat itself |
-| `/delete`            | Delete the active chat entirely — asks to confirm             |
-| `/mode`              | Show the active chat's teaching mode and all available modes  |
-| `/mode <name>`       | Change the active chat's teaching mode                        |
-| `/reasoning`         | Show the active chat's reasoning mode and all available modes |
-| `/reasoning <name>`  | Change the active chat's reasoning mode (`fast` or `deep`)    |
-| `/course new`        | Create a course (interactive) and activate it                 |
-| `/course list`       | List courses (`*` marks the active one)                        |
-| `/course open <id>`  | Activate a course by id or unique id prefix                    |
-| `/course info`       | Show the active course's details and chat count                |
-| `/course edit`       | Edit the active course's fields (interactive; see below)       |
-| `/course delete`     | Delete the active course — asks to confirm; its chats survive  |
-| `/course leave`      | Leave the active course, back to General                       |
-| `/chat course <id>`  | Move the active chat into a course                              |
-| `/chat course none`  | Remove the active chat from its course (back to General)        |
-| `/quit`              | Exit                                                            |
+| Mode | `/mode` name | Behavior |
+|---|---|---|
+| Teach | `teach` | Tutors: explains clearly, adapts depth, breaks ideas into steps, corrects misconceptions. Default. |
+| Homework | `homework` (`hw`) | Guides you through your own problem, but gives the full solution immediately if you ask for it. |
+| Quick Answer | `quick` (`qa`) | Answers directly and concisely, with only the essential reasoning. |
+| Practice | `practice` | Asks one question at a time, waits for your answer, evaluates it and adjusts difficulty. |
+| Exam | `exam` | Asks a question with no hints and gives no feedback until you answer. |
 
-`Ctrl+C` and `Ctrl+D` (EOF) both exit cleanly with no stack trace, and
-close the database connection on the way out. The same applies mid-prompt
-in `/course new`/`/course edit`/any `[y/N]` confirmation — it cancels that
-one action rather than exiting the whole app.
+A mode belongs to the chat, not the course or the app. Changing it applies from
+the next message, never touches messages, title or course, and is never recorded
+as a message. Modes are prompt-based guidance (`core/mode_prompts.py`), not a
+scoring or assessment engine.
 
-**`/clear` vs `/delete`:** `/clear` empties a chat's messages but keeps its
-title, id, course, and teaching mode — use it to start a topic over
-without losing the chat slot. `/delete` removes the chat (and its
-messages) entirely. Both destroy data, so both ask `[y/N]` first,
-defaulting to No.
+## Reasoning modes
 
-**`/course edit`** shows each field's current value and lets you type a new
-one, leave it blank to keep the current value, or type `-` to clear an
-optional field (code/term/description — the name itself can't be cleared,
-only changed).
+Reasoning mode controls inference-time "thinking" and is independent of teaching
+mode.
 
-**`/course delete`** never deletes chats or messages — they become
-"General" (unassigned). Deleting the *active* course keeps you on the same
-chat; it just stops showing course context to the model.
+| Mode | `/reasoning` name | Behavior |
+|---|---|---|
+| Fast | `fast` | Answers without extended reasoning, if the model allows reasoning to be turned off. Default. |
+| Deep Think | `deep` | Reasons through the problem first; slower, for harder questions. |
 
-### Teaching modes
-
-| Mode       | `/mode` name | What it does |
-|------------|--------------|--------------|
-| Teach      | `teach`      | Acts as a tutor: explains clearly, adapts depth, breaks ideas into steps, corrects misconceptions. Doesn't force a question after every reply or pad answers. **Default for every new chat.** |
-| Homework   | `homework` (alias `hw`) | Guides you through solving your own homework — identifies what's asked, relevant formulas, and walks step-by-step — but gives the full solution immediately if you explicitly ask for it (e.g. "just solve it"). |
-| Quick Answer | `quick` (alias `qa`) | Answers directly and concisely, with only the essential reasoning. Does not turn into a tutoring session unless you ask. |
-| Practice   | `practice`   | Presents one practice question at a time, waits for your answer, evaluates it, explains mistakes, and adjusts difficulty based on the conversation so far. |
-| Exam       | `exam`       | Simulates exam conditions: presents a question with no hints and gives no feedback until you submit an answer. |
-
-```
-You > /mode
-Teaching mode: Teach
-
-Available:
-  teach      Step-by-step tutoring that builds understanding.
-  homework   Guided homework help; full solutions on request.
-  quick      Direct, concise answers with minimal explanation.
-  practice   One practice question at a time, with feedback.
-  exam       Exam-style questions with no hints until you answer.
-
-You > /mode homework
-Teaching mode changed to Homework.
-```
-
-Mode is entirely prompt-based behavior guidance for this stage — there is
-no scoring, no mastery model, and no formal exam engine behind it yet.
-Expect the wording of each mode's instructions to be refined after more
-real-world use; it lives in one place (`core/mode_prompts.py`) specifically
-so that's easy to do without hunting through the codebase.
-
-### Reasoning modes
-
-A second, **independent** per-chat setting (Stage 5.7) — controls how much
-inference-time "thinking" Ollama/Qwen3 does before answering, not
-instructional behavior (that's teaching mode, above). A chat can combine
-any teaching mode with any reasoning mode.
-
-| Mode | `/reasoning` name | What it does |
-|------|-------------------|--------------|
-| Fast | `fast` | Answers without extended reasoning, *if the model supports turning reasoning off*. **Default for every new chat.** |
-| Deep Think | `deep` | Reasons through the problem before answering — slower, for harder questions. |
-
-```
-You > /reasoning
-Reasoning mode: Fast
-
-Available:
-  fast       Answers without extended reasoning when the model supports it — faster.
-  deep       Reasons through the problem before answering — slower, for harder questions.
-
-You > /reasoning deep
-Reasoning mode changed to Deep Think.
-```
-
-**With the default `qwen3:4b`, Fast and Deep behave the same.** That tag
-is Qwen3-4B-Thinking-2507, a *thinking-only* model: it always reasons
-before answering, and asking it not to (`think=False`) only stops Ollama
-from separating the reasoning from the answer — which is exactly how
-Stage 6.3's bug happened (the model's planning text streamed into the chat
-as if it were the reply, ending in a stray `</think>`). StudyBot now reads
-the model's capabilities from Ollama and always requests separated
-reasoning from a thinking-only model; Fast only gives a real speed-up with
-a *toggleable* model (a hybrid Qwen3 build), where it maps to
-`think=False`. The earlier "~3.7s to first token in Fast" figure (Stage
-5.7) was measuring the first token of *leaked reasoning*, not of the
-answer, and is withdrawn. See
-[API_CONTRACT.md](API_CONTRACT.md#reasoning-modes-stage-57) for the full
+**With the default `qwen3:4b`, Fast and Deep behave the same.** That tag is a
+thinking-only model: it always reasons, and asking it not to only stops Ollama
+from separating the reasoning from the answer. StudyBot reads the model's
+capabilities from Ollama and always requests separated reasoning from such a
+model, so Fast gives a real speed-up only with a model whose thinking can be
+switched off. See [API_CONTRACT.md](API_CONTRACT.md#reasoning-modes) for the
 mapping.
 
-Whichever mode is active, the model's reasoning is never shown in the UI
-and never persisted — only the final answer is. Every reply passes one
-filter at the model-provider boundary that strips a leading `<think>…
-</think>` span without ever displaying it, and **fails closed** (the reply
-is discarded with an error; only your message is saved) if reasoning
-can't be separated from the answer with confidence. Legitimate mentions of
-those tags inside code blocks are left alone.
+Whatever the mode, reasoning is never displayed or stored. Every reply passes
+one filter at the model-provider boundary that removes a leading
+`<think>...</think>` span, and **fails closed**: if reasoning cannot be
+separated from the answer with confidence, the reply is discarded with an error
+and only your message is saved. Tags inside code blocks are left alone.
 
-**Replies saved before Stage 6.3** may still contain leaked reasoning.
-StudyBot keeps confidently-identified reasoning in those old replies out
-of every new model request without modifying them. To see which chats are
-affected (read-only; prints ids and counts, never content):
+Replies saved by an older version may still contain leaked reasoning. They are
+kept out of new model requests automatically without being modified. To see
+which chats are affected (read-only; prints ids and counts, never content):
 
 ```bash
 python3 scripts/audit_reasoning_contamination.py
 ```
 
-Rewriting the stored replies is optional and only happens if you ask for
-it — stop `studybot-server` first; a full backup is written before
-anything changes, and ambiguous replies are never touched:
+Rewriting the stored text is optional. Stop `studybot-server` first; a full
+backup is written before anything changes, and ambiguous replies are never
+touched:
 
 ```bash
 python3 scripts/audit_reasoning_contamination.py --apply --backup-dir ~/studybot-backups --yes
@@ -392,609 +218,271 @@ python3 scripts/audit_reasoning_contamination.py --apply --backup-dir ~/studybot
 python3 scripts/audit_reasoning_contamination.py --rollback ~/studybot-backups/<name>.manifest.json --yes
 ```
 
-### Learning memory
+## Learning memory
 
-**A different system from chat history.** Chat history answers "what was
-said?"; learning memory answers "what useful learning information should
-StudyBot retain?" — a small, deliberately-recorded set of durable facts
-("needs review: vector components", "understands significant figures",
-"recurring misconception: confuses velocity and acceleration"), completely
-independent of the conversation that produced them. Clearing or deleting a
-chat never destroys a memory it produced. **This is not a mastery/scoring
-engine** — there are no percentages, numeric weights, or aggregation
-anywhere in Stage 6, by design; that's explicitly deferred (see "Next
-planned stage").
+Chat history answers "what was said?"; learning memory answers "what should
+StudyBot remember about how I'm learning?" It is a small set of facts you
+record deliberately. Clearing or deleting a chat never deletes the memories it
+produced. It is not a mastery or scoring system: there are no percentages or
+weights.
 
-**Five kinds, a strict closed set** (never arbitrary free text):
+Each memory has one of five kinds:
 
 | Kind | Shown as | Meaning |
-|------|----------|---------|
-| `understands` | Understands | The student has shown they understand this. |
-| `needs_review` | Needs review | The student should revisit this before moving on. |
-| `misconception` | Misconception | A recurring mistaken belief worth gently correcting. |
-| `learning_goal` | Goal | Something the student wants to work toward. |
-| `useful_strategy` | Helpful approach | An explanation/strategy that worked well before. |
+|---|---|---|
+| `understands` | Understands | You have shown you understand this. |
+| `needs_review` | Needs review | Revisit this before moving on. |
+| `misconception` | Misconception | A recurring mistaken belief worth correcting. |
+| `learning_goal` | Goal | Something you want to work toward. |
+| `useful_strategy` | Helpful approach | An explanation or strategy that worked. |
 
-**Course-scoped by default.** A memory normally belongs to a course
-(`courseId`) — Physics memories never appear in a Calculus chat, no matter
-how similar the wording. A memory can also be global (`courseId: null`,
-shown in every course), but that should be the exception, not the norm.
-
-**Source-chat provenance, not a dependency.** A memory may record
-`sourceChatId` — which chat produced it — purely for reference. The memory
-remains fully valid, with all its own content intact, even after that chat
-is cleared or deleted (`sourceChatId` just becomes `null`). Neither foreign
-key ever cascades a delete into a memory — see `ON DELETE SET NULL` in the
-schema below.
-
-**Archive, don't delete.** Retiring a memory (e.g. the student no longer
-needs review on a topic) archives it — it stays visible under "Archived"
-and can be restored — rather than being erased. A separate, explicit hard
-delete is available for when a memory should genuinely be gone.
-
-**Deleting a course atomically archives its memories first (Stage 6.1,
-made a real SQLite transaction in Stage 6.2).** The database's `ON DELETE
-SET NULL` would, by itself, turn every active memory in a deleted course
-into an active *global* memory the instant the course disappears —
-silently injecting that subject's context into every other course from
-then on. Instead, `SQLiteCourseRepository.delete_course_archiving_memories`
-archives every active memory belonging to that course and deletes the
-course as **one atomic transaction** (`BEGIN`/`COMMIT`/`ROLLBACK` around
-both statements, on the shared connection) — either both happen or
-neither does, verified by actually injecting a failure between the two
-statements and confirming the archive rolls back too, that a retry
-afterward succeeds cleanly, and that a second, fully independent
-`sqlite3.Connection` to the same file never observes an in-between state.
-`CourseService.delete_course` (used by both the API and the CLI's
-`/course delete` — one implementation, so both stay consistent) is the
-only caller. Memories that were already global, or belong to a different
-course, are never touched. The archived memory keeps all its content and
-is fully visible/editable via the usual archive-listing and edit
-operations; recovering it into active use again is a **separate,
-explicit** choice — restore it (it becomes global, since its course is
-gone) or reassign its `courseId` to a different existing course first —
-never automatic.
-
-**Duplicate and conflict policy** (deliberately simple, no fuzzy/semantic
-matching yet): within one course (or the global scope), topics are compared
-case-insensitively with whitespace collapsed.
-- The exact same active topic+kind already exists → rejected
-  (`MEMORY_CONFLICT`); edit the existing memory instead.
-- The same topic has an active memory in the **opposite** learning state
-  (`understands` vs. `needs_review`/`misconception`) → the old one is
-  **archived automatically** as the new one is created — learning changes,
-  and Stage 6 models that as supersession, not indefinite coexistence.
-  `learning_goal`/`useful_strategy` never trigger this (they're not claims
-  about current understanding).
-
-**User control first.** Every memory is visible and editable in the
-Flutter app's Study Panel and a dedicated management view: create, edit,
-archive, restore, delete. **Nothing is created automatically** — Stage 6
-deliberately does not run a second model call after every chat response to
-extract memories on its own (local inference is still comparatively
-expensive and serialized; see "Known limitations" — automatic extraction
-is explicitly future work, not implemented here). Instead, the composer's
-message actions include **"Save to Learning Memory"**, turning a specific
-assistant explanation or user-stated weakness into a real, structured
-memory with one action.
-
-**Woven into future answers, not announced — and never authoritative
-(refined in Stage 6.1).** Every chat request automatically includes a
-compact, size-limited block of that chat's course's active memories (plus
-global ones) in the model's system prompt — at most 12 entries, ~1200
-characters, most-recently-updated first. The model is told to treat this
-as a soft, possibly outdated hint, never as proof of the student's current
-understanding: if a memory says they "understand" a topic but they ask
-about it anyway, it's instructed to explain in full rather than shorten or
-skip the explanation — real testing during Stage 6.1 showed an earlier,
-less careful wording risked exactly that under-explaining failure. It's
-also told never to mention, quote, or refer to this background in its
-reply, and to always follow the student's current question and teaching
-mode when they conflict with it — Quick Answer mode still gives a quick
-answer even with a relevant memory present. None of this is enforced by
-editing the model's output afterward; it's prompt guidance only, checked
-against real `qwen3:4b` responses in both Fast and Deep modes, not just
-asserted. Composing this context measures at **well under 1ms of overhead**
-regardless of memory count (0/5/20 memories benchmarked — see
-[API_CONTRACT.md](API_CONTRACT.md#learning-memory-stage-6)) — it never
-materially affects first-token latency.
+- **Course-scoped by default.** A course's memories never appear in another
+  course's chats. A memory can be global (`courseId: null`), which is the
+  exception.
+- **Provenance only.** A memory may record the chat it came from. If that chat
+  is deleted the memory is unaffected.
+- **Archive, don't delete.** Archived memories stay visible and can be restored;
+  a separate hard delete exists.
+- **Course deletion archives memories.** Deleting a course archives its active
+  memories in the same SQLite transaction. Otherwise they would turn into global
+  memories and leak into every other course. Restoring one makes it global;
+  reassigning it to another course is a separate choice.
+- **Duplicates and conflicts.** Topics are compared case-insensitively with
+  whitespace collapsed. An exact duplicate (same topic and kind) is rejected;
+  creating `understands` for a topic archives an active `needs_review` or
+  `misconception` memory for it, and vice versa.
+- **User controlled.** Memories are created, edited, archived, restored and
+  deleted from the Flutter app (Study Panel and management view). Nothing is
+  created automatically: no extra model call extracts memories from replies.
+- **Used as a soft hint.** Each request includes a compact, size-limited block
+  (at most 12 entries, about 1200 characters, newest first) of the chat's
+  course memories plus global ones. The model is told to treat it as possibly
+  outdated, never to treat it as proof of understanding, never to mention it,
+  and to follow the current question and teaching mode when they conflict.
+  It is prompt guidance only; replies are not post-processed.
 
 ## Configuration
 
-Configuration is centralized in `studybot.config.settings.Settings` and read
-from environment variables (all optional, sensible defaults apply):
+Configuration is validated in `studybot.config.settings.Settings` and read from
+environment variables. All are optional.
 
-| Variable                     | Default                                    | Purpose                                   |
-|-------------------------------|---------------------------------------------|--------------------------------------------|
-| `STUDYBOT_ENV`                 | `development`                               | Environment name                          |
-| `STUDYBOT_LOG_LEVEL`           | `INFO`                                       | `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` |
-| `STUDYBOT_MODEL_PROVIDER`      | `mock`                                       | `mock` or `ollama`                        |
-| `STUDYBOT_DATA_DIR`            | `~/Library/Application Support/StudyBot`     | Where the chat database (and future data) lives |
-| `STUDYBOT_SYSTEM_PROMPT`       | *(see `core/prompts.py`)*                    | Overrides the baseline system prompt      |
-| `STUDYBOT_OLLAMA_HOST`         | `http://localhost:11434`                     | Ollama server URL                         |
-| `STUDYBOT_OLLAMA_MODEL`        | `qwen3:4b`                                   | Ollama model name/tag to use              |
-| `STUDYBOT_OLLAMA_TIMEOUT`      | `120`                                        | Request timeout in seconds                |
-| `STUDYBOT_OLLAMA_KEEP_ALIVE`   | *(Ollama's own default, currently `5m`)*     | How long Ollama keeps the model loaded    |
-| `STUDYBOT_FAST_MAX_GENERATED_TOKENS` | `4096`                                | Token cap for a Fast reply (includes hidden reasoning) |
-| `STUDYBOT_DEEP_MAX_GENERATED_TOKENS` | `6144`                                | Token cap for a Deep reply                |
-| `STUDYBOT_FAST_GENERATION_DEADLINE_SECONDS` | `120`                          | Total time limit for a Fast reply         |
-| `STUDYBOT_DEEP_GENERATION_DEADLINE_SECONDS` | `300`                          | Total time limit for a Deep reply         |
-
-Examples:
+| Variable | Default | Purpose |
+|---|---|---|
+| `STUDYBOT_ENV` | `development` | Environment name |
+| `STUDYBOT_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
+| `STUDYBOT_MODEL_PROVIDER` | `mock` | `mock` or `ollama` |
+| `STUDYBOT_DATA_DIR` | `~/Library/Application Support/StudyBot` | Where the database lives |
+| `STUDYBOT_SYSTEM_PROMPT` | see `core/prompts.py` | Override the baseline system prompt |
+| `STUDYBOT_OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
+| `STUDYBOT_OLLAMA_MODEL` | `qwen3:4b` | Ollama model tag |
+| `STUDYBOT_OLLAMA_TIMEOUT` | `120` | HTTP timeout in seconds |
+| `STUDYBOT_OLLAMA_KEEP_ALIVE` | Ollama's default | How long Ollama keeps the model loaded |
+| `STUDYBOT_FAST_MAX_GENERATED_TOKENS` | `4096` | Token cap for a Fast reply (hidden reasoning counts) |
+| `STUDYBOT_DEEP_MAX_GENERATED_TOKENS` | `6144` | Token cap for a Deep reply |
+| `STUDYBOT_FAST_GENERATION_DEADLINE_SECONDS` | `120` | Total time limit for a Fast reply |
+| `STUDYBOT_DEEP_GENERATION_DEADLINE_SECONDS` | `300` | Total time limit for a Deep reply |
 
 ```bash
 STUDYBOT_LOG_LEVEL=DEBUG python -m studybot
 STUDYBOT_MODEL_PROVIDER=ollama STUDYBOT_OLLAMA_MODEL=qwen3:8b python -m studybot
 ```
 
-The model name is entirely configuration-driven — swapping in `qwen3:8b`,
-`qwen3:14b`, a Gemma or Llama model, or any other model already pulled into
-Ollama is just an environment variable change; nothing in the code is tied
-to Qwen specifically.
+Invalid values (for example a negative token cap or `nan`) stop startup instead
+of being silently corrected.
 
-### Generation limits (Stage 6.5)
+### Choosing a model
 
-Every reply is bounded so one runaway generation can't occupy the engine
-for hours: a **token cap** (hidden reasoning counts toward it) and a **total
-time limit**, with a bigger allowance for Deep than Fast (the table above lists
-the four overrides). If a reply hits either limit it is discarded, you see an
-error, only your own message is kept, and the chat is immediately usable again.
-Invalid values (zero, negative, `nan`, `inf`, non-numeric) refuse to start
-rather than being silently corrected.
+The model is just a tag, so any model already pulled into Ollama works with no
+code changes. What a model supports (vision, tools, thinking, whether Fast and
+Deep differ, advertised context length) is discovered at runtime from Ollama's
+`/api/show` rather than guessed from its name. A model may report vision or tool
+support that StudyBot does not use yet: messages are text-only and there is no
+tool loop.
 
-These are **safety controls, not quality knobs**: a bigger allowance can't make
-a small model smarter, it mostly makes a stuck generation last longer. A long
-multi-step problem on a reasoning model can still exhaust the token cap; if you
-see token-limit errors, raising the relevant cap is the fix. The time limit can
-only be enforced while the model is producing output; if the model server itself
-stops responding, `STUDYBOT_OLLAMA_TIMEOUT` is what applies.
+`qwen3:4b` is the default. It was benchmarked on an 8 GB M3 Mac against
+`qwen3.5:4b` and `gemma3:4b` using identical prompts through the full stack, and
+neither beat it: `qwen3.5:4b` sometimes spent its whole context reasoning in
+Deep mode and revealed answers in Practice; `gemma3:4b` revealed Practice
+answers and marked wrong answers correct.
 
-### Choosing and benchmarking a local model (Stage 6.4)
-
-**The default is `qwen3:4b`.** Stage 6.4 benchmarked it against `qwen3.5:4b` and
-`gemma3:4b` on an 8 GB M3 Mac, through the real StudyBot stack with identical
-prompts, and **no upgrade was justified**: both candidates failed hard gates
-(`qwen3.5:4b` intermittently ran out of its 4,096-token context while
-reasoning in Deep mode and, in Practice, revealed answers before the learner
-tried; `gemma3:4b` revealed Practice answers and wrongly marked incorrect
-answers correct). To try another model, install it (`ollama pull <tag>`) and
-override it — no code changes:
+To compare models yourself (a development tool that uses a throwaway database per
+model, refuses to touch your real data, and prints answers only with
+`--show-answers`):
 
 ```bash
-STUDYBOT_MODEL_PROVIDER=ollama STUDYBOT_OLLAMA_MODEL=qwen3.5:4b studybot-server
-```
-
-What a model can do is **discovered at runtime** from Ollama's local metadata
-(`/api/show`), never assumed from its name: vision, tools, thinking, whether
-Fast and Deep genuinely differ, and its advertised context length. Fast and
-Deep only differ for a model whose thinking can be switched off; an
-always-thinking model (like the default) runs both the same way. A model may
-report **vision or tool support that StudyBot does not use yet** — the message
-pipeline is text-only and there is no tool loop; capabilities are recorded for
-future stages, not wired in.
-
-> **8 GB machines:** don't raise Ollama's context length (`num_ctx` /
-> `OLLAMA_CONTEXT_LENGTH`) casually. A model's *advertised* context (often
-> 128K+) is not what Ollama actually uses (check `ollama ps`; currently 4,096
-> here), and a longer one costs memory you may not have. A thinking model
-> that spends the whole window reasoning produces no answer, which StudyBot
-> reports as an error rather than showing partial reasoning.
-
-To compare models yourself (development tool; uses a throwaway database per
-model, guarded so it can never touch your real data, and prints answers only
-with `--show-answers`):
-
-```bash
-python scripts/benchmark_local_models.py \
-  --models qwen3:4b qwen3.5:4b gemma3:4b --output results.json
+python scripts/benchmark_local_models.py --models qwen3:4b qwen3.5:4b --output results.json
 python scripts/benchmark_local_models.py --score-from results.json --grades grades.json
 ```
 
-Saved results hold scenario ids, timings, lengths and capability values —
-never prompts or answers. See [AI_ARCHITECTURE.md](AI_ARCHITECTURE.md) for how
-the AI boundary is structured and what is deliberately not built yet.
+Saved results contain scenario ids, timings, lengths and capability values,
+never prompts or answers.
 
-## Where chats and courses are stored
+### Generation limits
 
-Everything lives in one local SQLite database at
-`STUDYBOT_DATA_DIR/studybot.db` (default:
-`~/Library/Application Support/StudyBot/studybot.db`). The schema is
-created and upgraded automatically — there's nothing to run by hand. A
-database from any earlier version is upgraded the first time this version
-opens it, in one atomic step per version bump: it either fully succeeds or
-leaves your existing database completely untouched, chained as needed
-(e.g. a Version 0.1 database goes v1 → v2 → v3 → v4 in one open). Existing
-chats keep their ids, titles, timestamps, course assignments, and
-messages exactly; they simply default to Teach teaching mode and Fast
-reasoning mode until you change them. You never need to open this
-database file directly; manage everything through the app's commands.
+Every reply is bounded by a token cap and a total time limit, each larger for
+Deep than for Fast, so one runaway generation cannot occupy the engine
+indefinitely. A reply that hits either limit is discarded, you see an error, only
+your message is kept, and the chat is usable again immediately.
 
-**Resetting local data:** to start over with a clean slate, quit Study Bot
-and delete the database file:
+These are safety limits, not quality settings. Reasoning models count hidden
+reasoning toward the token cap, so a long multi-step problem can exhaust the
+defaults; if you see token-limit errors, raising the relevant cap is the fix.
+The time limit is checked whenever the model produces output; if the model
+server stops responding entirely, `STUDYBOT_OLLAMA_TIMEOUT` applies.
+
+On an 8 GB machine, be careful raising Ollama's context length (`num_ctx` or
+`OLLAMA_CONTEXT_LENGTH`). A model's advertised context (often 128K or more) is
+not what Ollama uses (check `ollama ps`), and a longer one costs memory.
+
+## Data
+
+Everything is stored in one SQLite database at
+`$STUDYBOT_DATA_DIR/studybot.db`, by default
+`~/Library/Application Support/StudyBot/studybot.db`. The schema is created and
+upgraded automatically on open. Each upgrade step is one all-or-nothing
+transaction, so a failed upgrade leaves your database as it was, and existing
+chats keep their ids, titles, timestamps, courses and messages.
+
+| Version | Change |
+|---|---|
+| v1 to v2 | Adds `courses` and a nullable `chats.course_id` (`ON DELETE SET NULL`). |
+| v2 to v3 | Adds `chats.teaching_mode` (default `teach`). |
+| v3 to v4 | Adds `chats.reasoning_mode` (default `fast`). |
+| v4 to v5 | Adds `learning_memories` (`course_id` and `source_chat_id` both `ON DELETE SET NULL`). |
+
+A fresh database is created directly at the current version (v5).
 
 ```bash
-rm ~/Library/Application Support/StudyBot/studybot.db
+# Reset (quit StudyBot first). This deletes all chats, courses and memories:
+rm ~/Library/Application\ Support/StudyBot/studybot.db
+
+# Inspect read-only:
+sqlite3 -readonly "$HOME/Library/Application Support/StudyBot/studybot.db" \
+  "SELECT id, name FROM courses; SELECT COUNT(*) FROM chats;"
+
+# Back up (with StudyBot not running):
+db="$HOME/Library/Application Support/StudyBot/studybot.db"
+cp "$db" "$db.bak-$(date +%Y%m%d-%H%M%S)"
 ```
 
-This removes all chats, courses, and mode assignments — do it only if you
-actually want to lose your local history.
+### Verifying against a real model
 
-**Inspecting the database safely (read-only):**
-
-```bash
-# A plain read-only look, no risk of writing anything:
-sqlite3 -readonly "~/Library/Application Support/StudyBot/studybot.db" \
-  "SELECT id, name FROM courses; SELECT COUNT(*) FROM chats; SELECT COUNT(*) FROM learning_memories;"
-```
-
-**Backing it up before anything risky** (upgrading, running a real-model
-verification script by hand, etc.) — a plain file copy is safe as long as
-Study Bot isn't actively running (SQLite's on-disk format has no special
-export step for a simple backup):
+A script that starts a real `studybot-server` must use a disposable database,
+never your real one. `STUDYBOT_DATA_DIR` is the only variable that selects the
+database; an unrecognized one such as `STUDYBOT_DB_PATH` is silently ignored and
+falls back to your real data. Use this pattern:
 
 ```bash
-studybot_db="$HOME/Library/Application Support/StudyBot/studybot.db"
-cp "$studybot_db" "$studybot_db.bak-$(date +%Y%m%d-%H%M%S)"
-```
-
-To restore, quit Study Bot and copy the `.bak-...` file back over
-`studybot.db`. Nothing in this codebase ever deletes, resets, or writes to
-this file automatically as a side effect of development/testing — see
-"Real-model verification scripts" below for the guarantee that a
-verification script can't touch it either.
-
-### Real-model verification scripts
-
-A script that starts a real `studybot-server` (`STUDYBOT_MODEL_PROVIDER=
-ollama`) to check actual model behavior needs its own, disposable database
-— never the real one above. **`STUDYBOT_DATA_DIR` is the only environment
-variable that controls where that database lives** (`STUDYBOT_DB_PATH`,
-used in this project's own earlier verification scripts across several
-stages, is not a real setting — `Settings.from_env` silently ignores an
-unrecognized key and falls back to the real default directory; this was
-found and fixed in Stage 6.2, see `src/studybot/config/
-verification_guard.py`). Every real-model verification script should
-follow this exact pattern:
-
-```bash
-# 1. A fresh, unique, disposable directory — never a hardcoded /tmp path
-#    reused across runs, and never the real default.
 export STUDYBOT_DATA_DIR="$(mktemp -d -t studybot_verify)"
-
-# 2. Fail fast if it somehow still resolves to the real default directory
-#    (e.g. STUDYBOT_DATA_DIR wasn't actually exported, or was overridden
-#    again downstream) — this must pass before anything destructive runs.
-python3 scripts/check_verification_env.py || exit 1
-
-# 3. Only now start the real server against that confirmed-safe directory.
+python3 scripts/check_verification_env.py || exit 1   # refuses the real default directory
 STUDYBOT_MODEL_PROVIDER=ollama studybot-server &
 ```
 
-`scripts/check_verification_env.py` prints the resolved database path and
-exits `0` when it's safe, or refuses (exit `1`, nothing printed that looks
-like a green light) when the resolved directory is, contains, or is
-contained by the real default — including when `STUDYBOT_DATA_DIR` was
-never set at all. `studybot.config.verification_guard.
-assert_safe_for_verification(settings)` is the same check, importable
-directly for a verification script that constructs `Settings` in-process
-instead of launching a subprocess. Neither this guard, `scripts/
-check_verification_env.py`, nor anything else in this codebase ever
-deletes, truncates, or modifies the real default database — the guard's
-only job is refusing to let a *verification script* proceed against it;
-resetting your own real data (see above) remains something only you do,
-by hand, on purpose.
+`scripts/check_verification_env.py` exits 0 and prints the resolved path when it
+is safe, and exits 1 if the directory is, contains or is contained by the real
+default (including when `STUDYBOT_DATA_DIR` is unset). In-process scripts can
+call `studybot.config.verification_guard.assert_safe_for_verification(settings)`.
+The guard only refuses; nothing in the codebase deletes or modifies the real
+database.
 
-## Running tests
+## Testing
 
 ```bash
 pip install -e ".[dev]"
 pytest
 ```
 
-All tests are deterministic and self-contained: they fake the `ollama`
-client boundary (`tests/fake_ollama.py`) rather than requiring a running
-Ollama server or a downloaded model, and every persistence test opens its
-own SQLite database under pytest's `tmp_path` — no test reads or writes
-`~/Library/Application Support/StudyBot` or any other real user data. The
-API tests (`tests/test_api_*.py`) use FastAPI's `TestClient` (in-process,
-no real network/port) with a fake `ModelProvider` where streaming/failure
-behavior needs to be controlled deterministically — no test requires a
-running API server, Ollama, or internet.
+Tests are deterministic and need no Ollama, network or real data: the Ollama
+client boundary is faked (`tests/fake_ollama.py`), every persistence test uses
+its own database under pytest's `tmp_path`, and API tests use FastAPI's
+in-process `TestClient`. For the Flutter app run `flutter analyze` and
+`flutter test` in `frontend/studybot_app`.
 
 ## Troubleshooting
 
-**"Could not connect to the local Ollama service."** — Ollama isn't
-running. Start it with `ollama serve` (or open the Ollama app), then check
-`STUDYBOT_OLLAMA_HOST` matches where it's listening (default
-`http://localhost:11434`). Run `/status` in the chat to confirm.
+**"Could not connect to the local Ollama service."** Ollama is not running. Start
+it with `ollama serve` (or open the app) and check that `STUDYBOT_OLLAMA_HOST`
+matches. `/status` in the CLI shows the current state.
 
-**"Model 'x' is not available locally. Run: ollama pull x"** — the
-configured model hasn't been downloaded. Run the suggested `ollama pull`
-command yourself; Study Bot deliberately never downloads models
-automatically.
+**"Model 'x' is not available locally. Run: ollama pull x"** The configured model
+is not downloaded. Run the suggested command.
 
-**`ModuleNotFoundError: No module named 'studybot'`** — see the iCloud
-Desktop sync note above.
+**`ModuleNotFoundError: No module named 'studybot'`** after installing. This can
+happen when the project lives in an iCloud-synced folder such as `~/Desktop`,
+which may intermittently evict files in `.venv`. Export `PYTHONPATH="$PWD/src"`
+for the session, exclude `.venv` from sync, or move the project out of the
+synced folder.
 
 ## Privacy
 
-This is a local-first project. There is no analytics, telemetry, cloud
-logging, cloud backup, or remote error reporting anywhere in the codebase,
-and inference runs entirely against your local Ollama server. Chat, course,
-and mode data live only in your local SQLite database. Application logs
-record message *counts*, provider/model names, database *paths* (never
-contents), and structural error details for debugging — never the actual
-content of prompts, model responses, chat titles, or course names/codes/
-descriptions. A teaching-mode identifier (e.g. `mode=homework`) may appear
-in a debug log; that's fine, it carries no personal content. Course and
-mode context is sent to the configured model provider only when needed to
-answer within that chat — under the default Ollama configuration, that
-stays entirely on your machine. This matters more with each stage:
-eventually Study Bot will read your course materials, screenshots, and
-other personal files, so privacy-safe logging is the default from the
-start, not an afterthought.
+There is no analytics, telemetry, cloud logging, backup or error reporting, and
+inference runs against your local Ollama server. Chats, courses, modes and
+memories live only in your local database. Logs record counts, provider and model
+names, database paths and structural error details, never prompts, replies,
+titles, course names or memory text. Course and mode context is sent only to the
+configured model provider, which under the default setup runs on your machine.
 
-The API server follows the same rules: it binds to `127.0.0.1` only, never
-logs request bodies (where message/course content lives) or the auth
-token, and its per-request access log is effectively disabled by default
-so there's no log surface to worry about. See
-[API_CONTRACT.md](API_CONTRACT.md#privacy) for specifics.
+The API server binds to `127.0.0.1`, never logs request bodies or the token, and
+disables per-request access logging. See [API_CONTRACT.md](API_CONTRACT.md#privacy).
 
 ## Architecture
 
 ```
-CLI (python -m studybot)     Flutter (frontend/studybot_app) → studybot.api (FastAPI, HTTP + WebSocket)
-        ↓                                              ↓
-        └──────────────────→ StudyBotApp (src/studybot/app.py) ←──────────────────┘
-        ├── CourseService ─────────────┐
-        └── SessionService             │
-              ↓              ↓         │
-        ChatService   ChatRepository   │
-              ↓              ↓         │
-        ModelProvider  SQLiteChatRepo  │
-                              ↓        ↓
-                        (shared SQLite connection)
-                              ↑
-                     SQLiteCourseRepository
-                              ↑
-                       CourseRepository
+CLI (python -m studybot)     Flutter app ──► studybot.api (FastAPI: HTTP + WebSocket)
+          │                                          │
+          └──────────────► StudyBotApp ◄─────────────┘
+                              ├── SessionService ──► ChatService ──► ModelProvider (Ollama | Mock)
+                              ├── CourseService
+                              └── LearningMemoryService
+                                        │
+                  SQLite repositories (chats, courses, learning memories)
+                  sharing one connection
 ```
 
-Both interfaces are equally thin: neither the CLI nor `studybot/api/`
-contains course/chat/mode business logic — both only translate their own
-transport (terminal I/O vs. HTTP/WebSocket JSON) into calls on
-`SessionService`/`CourseService` and translate results back. Everything
-below `StudyBotApp` is completely unaware that either interface, or FastAPI/
-Starlette/HTTP/WebSocket, exists.
+The CLI and the API are equally thin: they translate their transport (terminal
+I/O, HTTP/WebSocket JSON) into calls on the services and back, and contain no
+course, chat or mode logic. Nothing in `core/`, `models/` or `storage/` imports
+or knows about either interface.
 
-Model inference, persistence, course organization, and teaching mode are
-four separate concerns. `SessionService` calls `ChatService` for a
-response and, independently, mirrors whatever new messages appear in
-`ChatService.history` into `ChatRepository` — neither `ChatService` nor
-`ModelProvider` knows persistence, courses, or teaching modes exist.
-`SessionService` reads (but never writes) `CourseRepository` only to build
-the minimal course context fed into the system prompt; all course business
-rules (validation, create/edit/delete) live in `CourseService`. Teaching
-mode is simpler still: a plain field on `ChatSession`, fed into the same
-prompt-composition function as another independent section — there is no
-separate mode "service" because there's no mode-specific business logic to
-own beyond get/set, which live directly on `SessionService`.
+Inference, persistence, courses, teaching mode and memory are separate concerns.
+`SessionService` asks `ChatService` for a reply and mirrors whatever new messages
+appear in `ChatService.history` into the repository, so neither `ChatService`
+nor `ModelProvider` knows about persistence, courses or modes. Teaching mode is a
+plain field on the chat, fed into the same prompt-composition function as the
+course and memory context. A different model, an encrypted store or another UI
+can replace one piece without touching the others.
 
-This design is explicitly UI-independent: nothing in `core/`, `models/`,
-or `storage/` imports or assumes anything about the CLI, a future desktop
-UI, or any transport/IPC layer. A future UI can construct its own
-`StudyBotApp` and call `session_service.get_teaching_mode()` /
-`set_teaching_mode()` / `studybot.core.teaching_mode.all_modes()` directly
-to build a native mode picker, exactly the way the CLI's `/mode` command
-does.
+| Module | Responsibility |
+|---|---|
+| `studybot/app.py` | Composition root: settings, logging, model, shared connection, repositories and services |
+| `studybot/cli.py` | Terminal shell; no core logic, no SQL, nothing Ollama-specific |
+| `studybot/config/` | Typed, validated `Settings`; `verification_guard` for safe real-model testing |
+| `studybot/core/session_service.py` | Chat orchestration: an active-chat layer for the CLI and an explicit by-id layer for the API, with a per-chat lock against concurrent generations |
+| `studybot/core/chat.py` | `ChatService`: in-memory history, `send`/`send_streaming`, restored-history sanitizing |
+| `studybot/core/course_service.py` | Course validation and CRUD; archives memories when deleting a course |
+| `studybot/core/memory_service.py` | Learning-memory validation, conflict policy, CRUD and the prompt context block |
+| `studybot/core/context.py` | Builds the system prompt from baseline, course, memory and mode sections |
+| `studybot/core/teaching_mode.py`, `mode_prompts.py` | Teaching-mode enum and catalog; per-mode instruction text |
+| `studybot/core/reasoning_mode.py` | Reasoning-mode enum and catalog |
+| `studybot/core/output_integrity.py` | The reasoning filter and stored-reply classifier |
+| `studybot/models/` | `ModelProvider` interface, `MockModel`, `OllamaModel` (the only module that knows Ollama), generation budgets, factory |
+| `studybot/storage/` | Repository protocols and domain types, SQLite repositories, schema migrations via `PRAGMA user_version`, and the reasoning audit; all SQL lives in this package |
+| `studybot/api/` | FastAPI app: routes, auth, schemas, WebSocket, and the single worker thread that owns the SQLite connection |
 
-Key modules:
+### Streaming and persistence
 
-- `src/studybot/__main__.py` — `python -m studybot` entry point
-- `src/studybot/cli.py` — interactive terminal shell; no core logic, no raw
-  SQL, no Ollama-specific code — only `StudyBotApp`/`SessionService`/
-  `CourseService`/`core.teaching_mode`
-- `src/studybot/app.py` — builds settings, logging, the model, the shared
-  SQLite connection, both repositories, and both services for a run of the
-  app; closes the database connection on shutdown
-- `src/studybot/config/settings.py` — typed, validated configuration,
-  including `database_path` (derived from `data_dir`)
-- `src/studybot/core/messages.py` — typed `Message`/`Role`
-  (`system`/`user`/`assistant`)
-- `src/studybot/core/prompts.py` — the shared baseline system prompt
-- `src/studybot/core/teaching_mode.py` — the `TeachingMode` enum (pure
-  domain data, no I/O), `TeachingModeInfo` display metadata, `all_modes()`
-  (the catalog a mode picker renders), and `parse_teaching_mode()` for
-  turning user/UI input into a `TeachingMode`
-- `src/studybot/core/mode_prompts.py` — the concise instruction text for
-  each mode, kept in one small module so it's easy to revise after
-  real-world testing
-- `src/studybot/core/context.py` — `CourseContext` and `build_system_prompt`,
-  the single place baseline instructions, course context, learning-memory
-  context (Stage 6), and teaching-mode instructions are composed into one
-  system prompt, in that order — kept separate from both
-  `core/prompts.py`/`core/mode_prompts.py` and any model provider so
-  there's no scattered string concatenation elsewhere
-- `src/studybot/core/learning_memory.py` (Stage 6) — the `MemoryKind`
-  (`understands`/`needs_review`/`misconception`/`learning_goal`/
-  `useful_strategy`) and `MemoryStatus` (`active`/`archived`) enums, their
-  display metadata/`all_kinds()` catalog, `parse_memory_kind()`, and
-  `opposes()` — the pure building block the conflict/supersession policy
-  is built on (which kinds represent opposite learning states for the same
-  topic). No I/O, no business logic.
-- `src/studybot/core/memory_service.py` (Stage 6) — `LearningMemoryService`:
-  validation/normalization, the duplicate (`MEMORY_CONFLICT`) and
-  conflict/supersession (auto-archive) policy, course-scoped CRUD, and
-  `build_memory_context_text()` — the compact, size-limited block injected
-  into a chat's system prompt. The only place that knows what a "learning
-  memory" is at the business-logic level; `OllamaModel`, the SQLite
-  repository, and Flutter never do.
-- `src/studybot/core/titles.py` — deterministic, local chat-title
-  generation from a chat's first message (no LLM call)
-- `src/studybot/core/chat.py` — `ChatService`: in-memory history for one
-  chat, `send`/`send_streaming`, `clear`, `get_status`; can be seeded with
-  restored history via its `history=` constructor argument; stateless
-  enough to be freely (re)constructed per request, which is exactly what
-  `SessionService`'s explicit-by-id layer does
-- `src/studybot/core/session_service.py` — `SessionService`: two layers
-  over the same storage (Stage 5.8). The **active-chat convenience layer**
-  (unchanged since earlier stages) owns one mutable "current chat" per
-  process — `new_chat`/`open_chat`/`send`/`send_streaming`/
-  `get_teaching_mode()`/`set_teaching_mode()`/etc. — exactly what the CLI
-  needs. The **explicit-by-id layer**
-  (`create_chat`/`send_to_chat`/`send_streaming_to_chat`/`rename_chat`/
-  `set_teaching_mode_for_chat`/`assign_course_to_chat`/...) takes a
-  `chat_id` and operates on exactly that chat, loaded fresh from the
-  repository every call, with no cursor involved — this is what the API
-  layer is built on. A per-chat `threading.Lock` (`_chat_lock`) rejects a
-  second concurrent generation for the same chat id with `ChatBusyError`
-  rather than letting two replies race; different chat ids are never
-  blocked by each other. Both layers persist new messages the same way:
-  by diffing a `ChatService`'s history before/after each call.
-- `src/studybot/core/course_service.py` — `CourseService`: course
-  validation (name required and length-limited; optional fields trimmed;
-  full Unicode support) and CRUD, independent of `SessionService`.
-  `delete_course` calls `CourseRepository.delete_course_archiving_memories`
-  (Stage 6.2) — see "Learning memory" above for why
-- `src/studybot/storage/sqlite_course_repository.py` —
-  `delete_course_archiving_memories` (Stage 6.2) archives a doomed
-  course's active memories and deletes the course as one real SQLite
-  transaction; the one deliberate, documented exception to "one
-  repository, one table" in this codebase, made because a transaction is
-  connection-scoped, not repository-scoped
-- `src/studybot/config/verification_guard.py` (Stage 6.2) —
-  `assert_safe_for_verification(settings)` refuses to let a real-model
-  verification script run against the real default data directory; see
-  "Real-model verification scripts" above and `scripts/
-  check_verification_env.py`, a thin CLI wrapper around it
-- `src/studybot/core/exceptions.py` — `StudyBotError` and subclasses:
-  `SessionError` for chat/course navigation or validation problems (not
-  found, ambiguous id prefix, empty name, ...); `ChatNotFoundError`/
-  `CourseNotFoundError` (`SessionError` subtypes) for precise
-  `CHAT_NOT_FOUND`/`COURSE_NOT_FOUND` mapping when a call could otherwise
-  raise either; `ChatBusyError` for the per-chat generation lock above;
-  `MemoryNotFoundError` (Stage 6, a `SessionError` subtype) and
-  `MemoryConflictError` (Stage 6) for the learning-memory duplicate policy
-- `src/studybot/storage/sqlite_learning_memory_repository.py` (Stage 6) —
-  `SQLiteLearningMemoryRepository`, one of three modules allowed to
-  contain SQL (with `sqlite_repository.py`/`sqlite_course_repository.py`);
-  a dumb data layer with no validation or policy logic of its own
-- `src/studybot/models/` — unchanged since Stage 2 (`ModelProvider`,
-  `MockModel`, `OllamaModel`, the provider factory); `OllamaModel` has no
-  awareness of courses, teaching modes, or SQLite
-- `src/studybot/storage/base.py` — `ChatRepository`/`CourseRepository`
-  protocols and the `ChatSession`/`Course` domain types (`ChatSession`
-  carries a typed `teaching_mode: TeachingMode`); nothing outside
-  `storage/` sees a raw SQLite row
-- `src/studybot/storage/database.py` — opens the one shared
-  `sqlite3.Connection` both repositories use and applies schema migrations,
-  versioned via SQLite's own `PRAGMA user_version` (currently `4`); each
-  migration step runs in one explicit, all-or-nothing transaction, chained
-  as needed (v1 → v2 → v3 → v4)
-- `src/studybot/storage/sqlite_repository.py` / `sqlite_course_repository.py`
-  — the **only** two modules allowed to contain SQL; parameterized queries
-  only, for chats/messages and courses respectively. `sqlite_repository.py`
-  converts the stored `teaching_mode` string to a `TeachingMode` at the
-  repository boundary, falling back to the default mode (with a warning
-  log containing only the invalid identifier, never chat content) if the
-  stored value is ever unrecognized
-- `src/studybot/logging_config.py` — console logging setup; quiet by
-  default, verbosity controlled via `STUDYBOT_LOG_LEVEL`
-- `src/studybot/api/` — the local HTTP + WebSocket bridge; see
-  [API_CONTRACT.md](API_CONTRACT.md) for the contract and
-  `api/engine.py`'s docstring for why every call is routed through one
-  dedicated worker thread (the shared SQLite connection is not safe to
-  touch from FastAPI's default worker pool — found and fixed via this
-  stage's own testing). Nothing under `core/`, `models/`, or `storage/`
-  imports anything from this package or knows it exists.
+`ModelProvider.stream()` yields content incrementally and `ChatService` adds one
+complete assistant message to history only when the stream finishes
+successfully. `SessionService` persists by comparing history before and after a
+call, so a successful exchange stores one user row and one assistant row, and a
+failed or abandoned one stores only the user row. Nothing is written per token.
+A failed model call leaves your message in the database so you can retry; no
+synthetic error message is ever inserted into a chat, and mode changes never
+appear in history either.
 
-A future backend — a different local model, hybrid routing, an encrypted
-store, sync — can replace `OllamaModel` or either SQLite repository
-independently, without touching `SessionService`, `CourseService`, the CLI,
-or a future GUI. Choosing `mock` still runs with no Ollama installed,
-exactly as in Stage 2.
+## Roadmap
 
-### Streaming + persistence
-
-`ModelProvider.stream()` yields content incrementally; `ChatService`
-accumulates it and adds exactly one complete assistant message to its
-in-memory history, but only once the stream finishes successfully — never
-on failure or early abandonment (unchanged from Stage 2). `SessionService`
-persists by comparing `ChatService.history` before and after each call, so
-this guarantee carries through to storage automatically: a successful
-exchange writes one user row and one assistant row; a failed or abandoned
-one writes only the user row. No database row is ever written per token.
-
-If the model fails after the user's message was already recorded, that
-user message is deliberately left in the database (so the user can retry)
-— Study Bot never inserts a synthetic assistant message like "Error:
-model unavailable" into the conversation itself; errors are surfaced by
-the CLI, not written into chat history. The same principle applies to
-mode changes: `/mode homework` never inserts a "Mode changed to Homework"
-message into the conversation either — the CLI prints a confirmation to
-the terminal, but it's never part of what the model sees as history.
-
-### Schema migrations (v1 → v2 → v3 → v4 → v5)
-
-- **v1 → v2** (Stage 4): adds a `courses` table and a nullable
-  `chats.course_id` referencing it with `ON DELETE SET NULL` — deleting a
-  course never touches its chats or their messages.
-- **v2 → v3** (Stage 5): adds `chats.teaching_mode` (`NOT NULL DEFAULT
-  'teach'`) — every existing chat becomes Teach mode; nothing else changes.
-- **v3 → v4** (Stage 5.7): adds `chats.reasoning_mode` (`NOT NULL DEFAULT
-  'fast'`) — every existing chat becomes Fast reasoning mode; teaching
-  mode, courses, chats, and messages are all left completely untouched.
-- **v4 → v5** (Stage 6): adds a new `learning_memories` table (`course_id`
-  and `source_chat_id` both nullable, both `ON DELETE SET NULL`, plus
-  indexes on `course_id`/`status`/`topic`) — a brand-new table, so no
-  existing courses/chats/messages/modes are touched at all; the table
-  starts empty.
-
-Each step is one explicit SQL transaction (`BEGIN` ...
-`commit()`/`rollback()` — plain DDL statements are *not* automatically
-transactional in Python's `sqlite3` module, so this is done by hand): if
-anything in a step fails, the database is left exactly as it was before
-that step, not partially upgraded. Steps chain automatically (a v1
-database run against this version goes straight to v5 in one `open`), a
-brand-new database skips migration entirely and is created directly at the
-current schema, and re-opening an already-current database is a no-op.
-
-### Course organization semantics
-
-A chat belongs to at most one course (or none — "General"); a course never
-aggregates or shares chat history — it's purely an organizational label.
-`/new` while a course is active creates the new chat inside that course
-(always in Teach mode, regardless of what mode was active elsewhere);
-`/new` in General creates an unassigned chat. Opening a course
-(`/course open`) resumes its most recently updated chat, or starts a fresh
-empty one scoped to that course if it has none yet — no database row is
-written just from looking at a course. The model receives the active
-course's name/code/term/description as a short block of context appended
-after the baseline system prompt — never a database id or a timestamp, and
-never persisted as a chat message.
-
-### Teaching-mode semantics
-
-Mode lives on the chat, not the course or the app: two chats in the same
-course (or the same chat's own history) can be in completely different
-modes, and switching one chat's mode never touches any other chat. A new
-chat always starts in Teach mode regardless of what mode was active when
-`/new` was run — modes are not inherited. Changing mode persists
-immediately, takes effect starting with the next model request, and never
-clears messages, creates a new chat, or alters the chat's course or title.
-
-## Next planned stage
-
-The Flutter app at [`frontend/studybot_app/`](frontend/studybot_app/) now
-covers courses, chats, teaching modes, reasoning modes, streaming
-conversation, and (Stage 6) learning memory end to end, with control over
-Ollama's thinking behavior (Stage 5.7) so simple prompts answer materially
-faster by default, an API that no longer depends on a single mutable
-"active chat" per process (Stage 5.8), and durable, user-controlled,
-course-scoped learning facts that are woven into future answers without
-ever exposing a mastery percentage (Stage 6). Deliberately **not** yet
-implemented: numeric mastery/scoring, automatic LLM-driven memory
-extraction, a knowledge graph, spaced repetition, quizzes, a study planner,
-RAG over PDFs/notes/slides, embeddings, image/screenshot understanding,
-calendar/LMS integration, cloud sync, accounts, and eventually device/tool
-access — none of which exists yet, in either the API or the Flutter app.
+Not yet implemented: numeric mastery or scoring, automatic memory extraction, a
+knowledge graph, spaced repetition, quizzes and a study planner, RAG over PDFs,
+notes and slides, embeddings, image understanding, calendar or LMS integration,
+cloud sync, accounts, and device or tool access.

@@ -1,23 +1,14 @@
 """Opens the shared SQLite connection and applies schema migrations.
 
-`SQLiteChatRepository`, `SQLiteCourseRepository`, and
-`SQLiteLearningMemoryRepository` all operate on the one
-`sqlite3.Connection` returned by `open_database`, so they share one
-consistent schema and `chats.course_id`/`learning_memories.course_id`/
-`learning_memories.source_chat_id` can reference `courses.id`/`chats.id`
-without needing separate migration stories.
+All repositories use the one ``sqlite3.Connection`` returned by
+``open_database``, so they share a schema and foreign keys can span tables.
 
-Versioning uses SQLite's own `PRAGMA user_version` — a small integer stored
-in the database header — rather than a bespoke metadata table. There is
-deliberately no generic migration framework: each version bump gets one
-small, explicit function here, applied in sequence.
+The schema version is stored in ``PRAGMA user_version``. There is no migration
+framework: each version bump is one explicit function, applied in sequence.
 
-Migration atomicity note: Python's `sqlite3` module does NOT include DDL
-statements (CREATE/ALTER TABLE, ...) in its implicit transaction handling
-when using the `with connection:` context manager — verified empirically,
-not folklore. Getting a real all-or-nothing migration therefore requires an
-explicit `BEGIN` and `commit()`/`rollback()`, which is what every migration
-function here does.
+Python's ``sqlite3`` does not include DDL in its implicit transactions, so each
+migration uses an explicit ``BEGIN`` and ``commit()``/``rollback()`` to be
+all-or-nothing.
 """
 
 from __future__ import annotations
@@ -30,10 +21,8 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 5
 
-# Individual statements rather than one `executescript()` call: `sqlite3`'s
-# `executescript()` forces an implicit COMMIT before it runs and does not
-# participate in an explicit transaction (verified empirically), which would
-# silently defeat the atomicity this module exists to guarantee.
+# Individual statements instead of executescript(), which commits implicitly
+# and would defeat the explicit transaction.
 _FRESH_SCHEMA_STATEMENTS = [
     """
     CREATE TABLE courses (
@@ -88,9 +77,9 @@ _FRESH_SCHEMA_STATEMENTS = [
 
 
 def open_database(db_path: Path) -> sqlite3.Connection:
-    """Open (creating if needed) the chat database at `db_path`, applying
-    any pending schema migrations. Safe to call repeatedly and
-    idempotent — an already-current database is left untouched."""
+    """Open (creating if needed) the database at ``db_path`` and apply pending
+    migrations. Idempotent: a current database is left untouched.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     logger.debug("Opening chat database at %s", db_path)
     connection = sqlite3.connect(db_path)
@@ -133,8 +122,7 @@ def _migrate(connection: sqlite3.Connection) -> None:
 
 
 def _create_fresh_schema(connection: sqlite3.Connection) -> None:
-    """A brand-new database: create the current schema directly, with no
-    migration history to replay."""
+    """Create the current schema directly for a new database."""
     try:
         connection.execute("BEGIN")
         for statement in _FRESH_SCHEMA_STATEMENTS:
@@ -147,13 +135,9 @@ def _create_fresh_schema(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
-    """Add course support to a Version 0.1 (schema v1) database.
+    """Add courses: a ``courses`` table and a nullable ``chats.course_id``.
 
-    All existing chats and messages (ids, titles, timestamps, content) are
-    left completely untouched; every chat simply gains `course_id = NULL`
-    (an unassigned/"General" chat) via the new column's default. Applied as
-    one explicit transaction — if any statement fails, `rollback()` leaves
-    the database exactly as it was at schema v1, not partially upgraded.
+    Existing chats become General (``course_id = NULL``). One transaction.
     """
     logger.debug("Migrating chat database schema from v1 to v2")
     try:
@@ -183,15 +167,9 @@ def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
-    """Add per-chat teaching modes to a schema-v2 (Stage 4) database.
+    """Add ``chats.teaching_mode`` (default 'teach').
 
-    All existing courses, chats, messages, and chat/course associations are
-    left completely untouched; every existing chat simply gains
-    `teaching_mode = 'teach'` (the deliberate default — see
-    `core.teaching_mode.DEFAULT_TEACHING_MODE`) via the new column's
-    default. Applied as one explicit transaction — if any statement fails,
-    `rollback()` leaves the database exactly as it was at schema v2, not
-    partially upgraded.
+    Existing data is untouched. One transaction.
     """
     logger.debug("Migrating chat database schema from v2 to v3")
     try:
@@ -207,15 +185,9 @@ def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
-    """Add per-chat reasoning modes to a schema-v3 (Stage 5.7) database.
+    """Add ``chats.reasoning_mode`` (default 'fast').
 
-    All existing courses, chats, messages, chat/course associations, and
-    teaching modes are left completely untouched; every existing chat
-    simply gains `reasoning_mode = 'fast'` (the deliberate default — see
-    `core.reasoning_mode.DEFAULT_REASONING_MODE`) via the new column's
-    default. Applied as one explicit transaction — if any statement fails,
-    `rollback()` leaves the database exactly as it was at schema v3, not
-    partially upgraded.
+    Existing data is untouched. One transaction.
     """
     logger.debug("Migrating chat database schema from v3 to v4")
     try:
@@ -231,15 +203,9 @@ def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
-    """Add the `learning_memories` table to a schema-v4 (Stage 5.8)
-    database (Stage 6: Learning Memory Foundation).
+    """Add the ``learning_memories`` table.
 
-    A brand-new table, so nothing about any existing courses, chats,
-    messages, teaching modes, or reasoning modes is touched — there is no
-    existing learning-memory data to migrate, since the feature didn't
-    exist before this version. Applied as one explicit transaction — if
-    any statement fails, `rollback()` leaves the database exactly as it
-    was at schema v4, not partially upgraded.
+    Existing data is untouched. One transaction.
     """
     logger.debug("Migrating chat database schema from v4 to v5")
     try:

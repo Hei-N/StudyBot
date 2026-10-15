@@ -19,10 +19,9 @@ class MemoryKindInfo {
 
 /// One durable, course-scoped learning fact, as returned by
 /// `GET/POST/PATCH /api/v1/memories...`. Mirrors `LearningMemoryOut` in
-/// API_CONTRACT.md exactly. Completely separate from [ChatMessage] — a
-/// learning memory is never a transcript or summary of a conversation,
-/// only a single, deliberately-created fact. There is no mastery
-/// percentage anywhere on this type, by design.
+/// API_CONTRACT.md. Separate from [ChatMessage]: a memory is a single,
+/// deliberately created fact, not a transcript or summary, and carries no
+/// mastery score.
 class LearningMemory {
   const LearningMemory({
     required this.id,

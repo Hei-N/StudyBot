@@ -1,11 +1,7 @@
-"""Learning memory endpoints (Stage 6) — thin translation onto
-`LearningMemoryService`.
+"""Learning-memory endpoints: thin translation onto ``LearningMemoryService``,
+which holds all validation, conflict policy and context composition.
 
-No memory business logic (validation, duplicate/conflict policy, context
-composition) lives here — see `core.memory_service.LearningMemoryService`.
-Every route addresses its memory purely by `memory_id`, exactly like the
-explicit-by-id chat operations added in Stage 5.8 — there is no
-"current"/active memory concept anywhere in this API.
+Every route addresses a memory by ``memory_id``.
 """
 
 from __future__ import annotations
@@ -125,10 +121,9 @@ async def update_memory(
         except ValueError as exc:
             raise ApiError(422, INVALID_MEMORY_KIND, f"Unknown learning memory kind: {body.kind!r}") from exc
 
-    # `course_id` uses "was it present in the request at all" (not "is it
-    # None") so that an explicit `courseId: null` (unassign) is
-    # distinguishable from an omitted `courseId` (leave unchanged) — see
-    # `LearningMemoryUpdateIn`'s docstring.
+    # Check "present in the request", not "is None", so an explicit
+    # courseId: null (unassign) differs from an omitted courseId (unchanged);
+    # see LearningMemoryUpdateIn.
     course_id = body.course_id if "course_id" in body.model_fields_set else UNSET
 
     try:

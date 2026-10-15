@@ -140,9 +140,7 @@ def test_sql_injection_style_content_is_stored_literally(repo):
     assert repo.get_course("c1").name == malicious
 
 
-# =====================================================================================
-# Stage 6.2 — delete_course_archiving_memories: true transaction-level atomicity
-# =====================================================================================
+# --- delete_course_archiving_memories: transaction-level atomicity ----------------------
 
 
 def test_archives_active_memories_and_deletes_the_course(repo, memory_repo):
@@ -189,7 +187,7 @@ def test_already_archived_memory_in_the_course_is_left_as_is(repo, memory_repo):
 
     after = memory_repo.get(memory.id)
     assert after.status is MemoryStatus.ARCHIVED
-    assert after.updated_at == before  # not re-touched — the UPDATE only matches status='active' rows
+    assert after.updated_at == before  # not re-touched; the UPDATE only matches status='active' rows
 
 
 def test_course_with_no_memories_deletes_cleanly(repo):
@@ -202,17 +200,12 @@ def test_course_with_no_memories_deletes_cleanly(repo):
 
 # --- true atomicity: rollback on failure, safe retry ------------------------------------
 #
-# Sabotage is done with a real SQLite trigger (`RAISE(ABORT, ...)`) that
-# fires on the specific course row being deleted, rather than mocking
-# `connection.execute` — `sqlite3.Connection` is a C extension type whose
-# `execute` attribute can't be monkeypatched (`AttributeError:
-# 'sqlite3.Connection' object attribute 'execute' is read-only`), and a real
-# trigger is a more faithful stand-in for "the second statement fails for
-# some real reason" than mocking would be anyway. Empirically confirmed:
-# `RAISE(ABORT, ...)` inside the trigger raises `sqlite3.IntegrityError`,
-# and — because it propagates out of the `with self._conn:` block —
-# Python's `sqlite3` module rolls back the *entire* transaction (including
-# the `UPDATE` that already ran), not just the aborted statement.
+# Sabotage uses a real SQLite trigger (`RAISE(ABORT, ...)`) that fires on the
+# course row being deleted, rather than mocking `connection.execute`, which is
+# read-only on the C-extension `sqlite3.Connection`. The trigger raises
+# `sqlite3.IntegrityError`, which propagates out of the `with self._conn:`
+# block, so `sqlite3` rolls back the whole transaction, including the `UPDATE`
+# that already ran.
 
 
 def _sabotage_delete_of(connection, course_id: str) -> None:
@@ -227,10 +220,9 @@ def _remove_sabotage(connection) -> None:
 
 
 def test_rolls_back_the_archive_if_the_course_delete_fails(connection, repo, memory_repo):
-    """Sabotage the second statement (the `DELETE FROM courses`) so it
-    fails, and verify the first statement (archiving) is rolled back too
-    — proving the two statements share one real transaction, not just
-    happen to run one after the other."""
+    """Sabotage the second statement (the `DELETE FROM courses`) and verify the
+    first (archiving) is rolled back too, proving both share one transaction
+    rather than merely running one after the other."""
     course = repo.create_course("c1", "Physics", None, None, None)
     memory = memory_repo.create("m1", course.id, None, "Vectors", MemoryKind.NEEDS_REVIEW, "s")
     _sabotage_delete_of(connection, course.id)
@@ -266,7 +258,7 @@ def test_safe_to_retry_after_a_rolled_back_failure(connection, repo, memory_repo
 
 def test_partial_failure_does_not_corrupt_unrelated_memories(connection, repo, memory_repo):
     """The rollback undoes the *whole* transaction, not just the row for
-    the course being deleted — a global memory (never touched by the
+    the course being deleted; a global memory (never touched by the
     UPDATE's WHERE clause in the first place) is naturally unaffected
     either way, but this confirms the sabotage path doesn't do anything
     broader than the real one would."""
@@ -289,7 +281,7 @@ def test_visible_atomically_to_a_second_independent_connection(db_path, repo, me
     the CLI and the API engine each holding their own connection, or a
     process restart) must never see an in-between state: before the call
     it sees the original data, and as soon as the call returns (commits),
-    it sees the fully-updated data — never course-gone-but-memory-active
+    it sees the fully-updated data; never course-gone-but-memory-active
     or memory-archived-but-course-still-there.
     """
     course = repo.create_course("c1", "Physics", None, None, None)
@@ -307,7 +299,7 @@ def test_visible_atomically_to_a_second_independent_connection(db_path, repo, me
         repo.delete_course_archiving_memories(course.id)
 
         # After: the independent connection's next read reflects the full,
-        # committed transaction — both changes together, never just one.
+        # committed transaction; both changes together, never just one.
         assert other_courses.get_course(course.id) is None
         assert other_memories.get(memory.id).status is MemoryStatus.ARCHIVED
     finally:
@@ -317,7 +309,7 @@ def test_visible_atomically_to_a_second_independent_connection(db_path, repo, me
 def test_second_connections_uncommitted_read_does_not_block_first_connections_write(db_path, repo, memory_repo):
     """A plain read on a second connection (no explicit transaction of its
     own) must not prevent the first connection's atomic operation from
-    committing — readers and the one writer here don't deadlock each
+    committing; readers and the one writer here don't deadlock each
     other under SQLite's default rollback-journal mode."""
     course = repo.create_course("c1", "Physics", None, None, None)
     memory_repo.create("m1", course.id, None, "Vectors", MemoryKind.NEEDS_REVIEW, "s")

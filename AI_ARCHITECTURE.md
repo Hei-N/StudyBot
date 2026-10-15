@@ -1,14 +1,14 @@
 # StudyBot AI architecture
 
-This describes the AI boundary as it actually exists after Stage 6.4, not a
-plan. Where something is deliberately missing, it says so.
+This describes the AI boundary as it exists today. Where something is
+deliberately missing, it says so.
 
 ## 1. Purpose
 
-StudyBot is a study application. It should not have to change when the model
-underneath it does — a different local model today, a hosted model or a
-purpose-built "YourAI" model later. One small, stable interface, `ModelProvider`
-(`src/studybot/models/base.py`), is the whole contract between the two worlds.
+StudyBot is a study application and should not need to change when the model
+underneath it does: a different local model today, a hosted or custom
+fine-tuned model later. One small, stable interface, `ModelProvider`
+(`src/studybot/models/base.py`), is the contract between the two.
 
 ## 2. Current boundary
 
@@ -43,7 +43,7 @@ has no routing, scoring or model whitelist; any Ollama tag works.
 `reasoning_modes_distinct`, `context_window`. Each flag is `True` (the provider
 positively reports it), `False` (it positively reports the lack) or `None`
 (couldn't be determined). They are discovered at runtime from Ollama's local
-`/api/show` metadata — never from a model's name — fetched lazily, cached only
+`/api/show` metadata (never from a model's name), fetched lazily, cached only
 on success, and retried after a failure.
 
 They describe the **model**, not StudyBot. `supports_vision=True` means the
@@ -123,30 +123,29 @@ heard of a course:
   provider; unsafe output fails closed)
 - provider health
 
-`core/output_integrity.py` and `ChatService` currently live under `core/` for
-historical reasons; they know nothing about courses or teaching modes.
+`core/output_integrity.py` and `ChatService` currently live under `core/`; they
+know nothing about courses or teaching modes.
 
 ## 5. Current providers
 
-- **MockModel** — echoes the last user message. All capabilities `False`/`None`.
-- **OllamaModel** — talks to a local Ollama server. The only production module
+- **MockModel**: echoes the last user message. All capabilities `False`/`None`.
+- **OllamaModel**: talks to a local Ollama server. The only production module
   that imports `ollama`, reads `/api/show`, sends `think`, or interprets an
   Ollama error. Every response (streamed or not) goes through the reasoning
   output filter.
 
 ## 6. Future providers
 
-A hosted-model provider or a future fine-tuned "YourAI" model would be another
-`ModelProvider` implementation (or simply another Ollama tag). It would need to:
+A hosted-model provider or a custom fine-tuned model would be another
+`ModelProvider` implementation (or simply another Ollama tag). It would need to
 return only user-visible answer text, raise `ModelError` on failure, and report
 capabilities honestly. Nothing above the boundary should need to change.
 
 ## 7. Why the AI layer is not a separate server yet
 
-There is exactly one consumer — StudyBot. A separate process would add
-deployment, authentication, versioning and a network hop to solve a reuse
-problem that does not exist yet. The boundary is kept clean enough that the
-extraction is mechanical when it is needed.
+There is one consumer, StudyBot. A separate process would add deployment,
+authentication, versioning and a network hop to solve a reuse problem that does
+not exist yet. The boundary is clean enough that extraction would be mechanical.
 
 ## 8. Extraction trigger
 
@@ -173,7 +172,7 @@ application** needs to consume it, or when it must be deployed independently
 ## 10. Non-negotiable invariants
 
 1. A model provider never receives `Course` objects or any StudyBot domain
-   object — only `Message` sequences.
+   object, only `Message` sequences.
 2. A model provider never accesses SQLite.
 3. Flutter never parses model-specific output.
 4. Hidden reasoning never crosses `ModelProvider`; output that can't be

@@ -67,7 +67,7 @@ def test_parse_teaching_mode_rejects_empty_string():
         parse_teaching_mode("")
 
 
-# --- mode prompt wording pinned by Stage 6.3 real-model acceptance ------------------
+# --- mode prompt wording pinned by real-model acceptance testing ---------------------
 
 
 def test_practice_prompt_forbids_unrequested_hints_and_answers():

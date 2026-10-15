@@ -1,8 +1,6 @@
-"""Chat service: the core conversation logic, independent of any UI or backend.
+"""Conversation logic for a single chat, independent of any UI or model backend.
 
-Interfaces (CLI, future desktop UI, future macOS assistant) call into this
-service. The service in turn calls a `ModelProvider`. Neither this module nor
-its callers should know which concrete model backend is in use.
+``ChatService`` keeps the in-memory history and calls a ``ModelProvider``.
 """
 
 from __future__ import annotations
@@ -15,10 +13,8 @@ from studybot.core.output_integrity import strip_confident_reasoning
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 
 if TYPE_CHECKING:
-    # Annotation-only. Importing the model boundary at runtime here would make
-    # `studybot.models` and `studybot.core` import each other, so importing
-    # `studybot.models.ollama` first in a fresh interpreter failed — a
-    # blocker for ever reusing the model layer on its own.
+    # Annotation-only: a runtime import would make studybot.models and
+    # studybot.core import each other.
     from studybot.models.base import ModelCapabilities, ModelProvider, ProviderStatus
 
 logger = logging.getLogger(__name__)
@@ -32,7 +28,7 @@ def _sanitize_restored(message: Message) -> Message:
 
 
 class ChatService:
-    """Manages in-memory conversation history for a single session."""
+    """In-memory conversation history for one chat."""
 
     def __init__(
         self,
@@ -41,22 +37,15 @@ class ChatService:
         history: Sequence[Message] = (),
         reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE,
     ) -> None:
-        """`history` preloads prior user/assistant turns (e.g. restored from
-        persistence) after the system prompt, without re-sending it to the
-        model until the next `send`/`send_streaming` call.
+        """``history`` preloads restored user/assistant turns after the system prompt.
 
-        Assistant turns in `history` are passed through
-        `strip_confident_reasoning` first (Stage 6.3): a reply persisted
-        before reasoning was separated at the provider boundary may still
-        hold the model's leaked chain-of-thought, which must not be fed
-        back to the model as if the assistant had said it. Storage is never
-        touched — only this in-memory copy — and a reply is only changed
-        when the reasoning portion is identified with confidence.
+        Restored assistant turns pass through ``strip_confident_reasoning``: replies
+        saved before reasoning was filtered may contain leaked reasoning, which must
+        not be sent back to the model. Only this in-memory copy changes; storage is
+        untouched.
 
-        `reasoning_mode` is fixed for this service instance's lifetime, like
-        `system_prompt` — callers (`SessionService`) that need to change it
-        for an existing chat rebuild the `ChatService`, the same way they
-        already do when teaching mode changes.
+        ``reasoning_mode`` is fixed for the instance's lifetime; callers rebuild the
+        service to change it.
         """
         self._model = model
         self._reasoning_mode = reasoning_mode
@@ -71,10 +60,7 @@ class ChatService:
         return tuple(self._history)
 
     def send(self, user_input: str) -> Message:
-        """Add a user message, get a model response, and record it.
-
-        Returns the assistant's reply message.
-        """
+        """Add a user message, get the model's response, record it and return it."""
         user_message = Message.user(user_input)
         self._history.append(user_message)
         logger.debug("Sending conversation of length %d to model", len(self._history))
@@ -86,20 +72,12 @@ class ChatService:
         return assistant_message
 
     def send_streaming(self, user_input: str) -> Iterator[str]:
-        """Like `send`, but yields response content incrementally.
+        """Like ``send``, but yields the reply incrementally.
 
-        The user message is recorded immediately. The assistant's reply is
-        accumulated from the yielded chunks and recorded as a single,
-        complete message in history only after the stream finishes
-        successfully — history never ends up holding a partial reply.
-
-        If the underlying model raises partway through, the exception
-        propagates to the caller and NO assistant message is added: the
-        conversation is left with the user's message but no (necessarily
-        incomplete or misleading) reply, rather than silently recording a
-        truncated response as if it were complete. Callers that need to
-        show the caller how much text arrived before the failure should
-        collect the chunks yielded before the exception themselves.
+        The user message is recorded immediately. The assistant message is added once,
+        complete, only after the stream finishes successfully. If the model raises
+        partway through, the exception propagates and no assistant message is
+        recorded; callers that want the partial text must collect the yielded chunks.
         """
         user_message = Message.user(user_input)
         self._history.append(user_message)
@@ -122,6 +100,5 @@ class ChatService:
         return self._model.get_status()
 
     def get_capabilities(self) -> ModelCapabilities:
-        """What the underlying model reports it supports (see
-        `ModelCapabilities`) — a pure delegation, no StudyBot logic."""
+        """Return what the model reports it supports (delegates to the provider)."""
         return self._model.get_capabilities()

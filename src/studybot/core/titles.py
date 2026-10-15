@@ -1,7 +1,7 @@
-"""Deterministic, local chat-title generation.
+"""Deterministic, local chat-title generation (no model call).
 
-No LLM call: this just collapses whitespace and truncates to a reasonable
-length on a word boundary. The user can always rename a chat afterward.
+Collapses whitespace and truncates on a word boundary; the user can rename a
+chat afterward.
 """
 
 from __future__ import annotations

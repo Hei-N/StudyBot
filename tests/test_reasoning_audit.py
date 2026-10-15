@@ -1,5 +1,4 @@
-"""Stage 6.3: the stored-reply contamination audit (read-only), and the
-opt-in repair/rollback."""
+"""Tests for the stored-reply contamination audit (read-only) and the opt-in repair/rollback."""
 
 import hashlib
 import json

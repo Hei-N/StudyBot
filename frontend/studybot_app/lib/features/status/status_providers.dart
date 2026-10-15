@@ -7,10 +7,10 @@ import '../connection/connection_providers.dart';
 
 const _pollInterval = Duration(seconds: 20);
 
-/// Engine/provider health, refreshed on demand and on a slow timer —
-/// "do not aggressively poll the backend" per the design brief. A failed
-/// fetch (engine unreachable) surfaces as [AsyncValue.error], which the
-/// status indicator renders as "Engine unavailable".
+/// Engine/provider health, refreshed on demand and on a slow timer (the backend
+/// is not polled aggressively). A failed fetch (engine unreachable) surfaces as
+/// [AsyncValue.error], which the status indicator renders as "Engine
+/// unavailable".
 class EngineHealthNotifier extends AsyncNotifier<EngineHealth> {
   Timer? _timer;
 

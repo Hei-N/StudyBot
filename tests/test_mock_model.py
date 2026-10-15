@@ -62,7 +62,7 @@ def test_mock_model_raises_model_error_with_empty_messages():
 
 
 def test_mock_model_accepts_and_ignores_reasoning_mode():
-    """A capability the mock has no concept of at all — accepted uniformly
+    """A capability the mock has no concept of at all; accepted uniformly
     (not rejected) but deliberately produces no behavior difference."""
     model = MockModel()
     messages = [Message.user("hello")]

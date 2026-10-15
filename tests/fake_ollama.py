@@ -1,7 +1,8 @@
-"""Fakes standing in for the `ollama` package's client boundary in tests.
+"""Fakes for the ``ollama`` client boundary, so tests never touch a network or a
+real server.
 
-These duck-type the two `ollama.Client` methods `OllamaModel` actually
-calls (`chat`, `list`) so tests never touch a network or a real server.
+They duck-type the ``ollama.Client`` methods ``OllamaModel`` calls (``chat``,
+``list``).
 """
 
 from __future__ import annotations
@@ -36,10 +37,10 @@ class FakeListResponse:
 
 
 class FakeOllamaClient:
-    """A stand-in for `ollama.Client`.
+    """Stand-in for ``ollama.Client``.
 
-    Configure exactly one of `chat_response` / `stream_factory` /
-    `chat_exception` depending on what the test needs `chat()` to do.
+    Configure one of ``chat_response``, ``stream_factory`` or ``chat_exception`` for
+    what ``chat()`` should do.
     """
 
     def __init__(
@@ -87,30 +88,27 @@ class FakeOllamaClient:
         return self._list_response
 
 
-# Sentinel reasoning text: tests assert it never reaches any visible,
-# persisted or re-sent surface.
+# Sentinel reasoning text: tests assert it never reaches visible, persisted
+# or re-sent output.
 REASONING_SENTINEL = "SECRET-REASONING-7f3a"
 
 
 class FakeThinkingModelClient:
-    """Imitates how Ollama serves a *thinking* Qwen3 model, decided per
-    request by the `think` parameter — the Stage 6.3 leak, reproduced
-    deterministically:
+    """Imitates how Ollama serves a thinking Qwen3 model, decided per request by ``think``:
 
-    * `think=True`: reasoning arrives in the separate `thinking` field,
-      `content` holds only the answer (Ollama's structured separation).
-    * `think=False` with `thinking_only=True` (Qwen3-4B-Thinking-2507): the
-      model reasons anyway; its template pre-opened `<think>`, so `content`
-      carries the reasoning, a bare `</think>` line, then the answer.
-    * `think=False` with `thinking_only=False` (a hybrid model), or
-      `think=None`: `content` is just the answer.
-    * `inline_tags=True`: `content` wraps reasoning in an explicit
-      `<think>…</think>` span regardless of `think`.
+    * ``think=True``: reasoning arrives in the separate ``thinking`` field and
+      ``content`` holds only the answer.
+    * ``think=False`` with ``thinking_only=True``: the model reasons anyway;
+      ``content`` carries the reasoning, a bare ``</think>`` line, then the answer
+      (the original leak).
+    * ``think=False`` with ``thinking_only=False``, or ``think=None``: ``content``
+      is just the answer.
+    * ``inline_tags=True``: ``content`` wraps reasoning in a ``<think>...</think>``
+      span regardless of ``think``.
 
-    Streams are split into `chunk_size`-character pieces (so tags are split
-    across chunks), with empty chunks interleaved. `answer_for` builds the
-    answer from the request messages, so tests can see what the model was
-    given.
+    Streams are split into ``chunk_size``-character pieces (so tags split across
+    chunks) with empty chunks interleaved. ``answer_for`` builds the answer from
+    the request messages.
     """
 
     def __init__(

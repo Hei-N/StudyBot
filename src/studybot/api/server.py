@@ -1,10 +1,8 @@
-"""FastAPI application factory for the Study Bot engine API.
+"""FastAPI application factory for the engine API.
 
-Builds exactly one `StudyBotApp` per server process (the same class the CLI
-uses) and exposes it (bundled with its dedicated worker thread — see
-`api/engine.py`) via `app.state.engine` for route handlers to call into —
-see `api/dependencies.py`/`api/engine.py`. This module contains no course/
-chat/mode business logic itself.
+Builds one ``StudyBotApp`` per server process (with its worker thread, see
+``api/engine.py``) and exposes it via ``app.state.engine``. Contains no
+business logic.
 """
 
 from __future__ import annotations
@@ -31,18 +29,15 @@ logger = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None, token: str | None = None) -> FastAPI:
-    """Build the FastAPI app. `settings`/`token` are injection seams for
-    tests — normal startup (`api/__main__.py`) leaves both to their
-    environment-driven defaults."""
+    """Build the FastAPI app. ``settings`` and ``token`` are test seams."""
     resolved_settings = settings or Settings.from_env()
     resolved_token = resolve_startup_token(token)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         loop = asyncio.get_running_loop()
-        # A single dedicated thread owns StudyBotApp (and its SQLite
-        # connection) for this process's whole lifetime — see
-        # api/engine.py's module docstring for why.
+        # One dedicated thread owns StudyBotApp and its SQLite connection
+        # (see api/engine.py).
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studybot-engine")
         studybot_app = await loop.run_in_executor(executor, StudyBotApp, resolved_settings)
 
@@ -71,9 +66,8 @@ def create_app(settings: Settings | None = None, token: str | None = None) -> Fa
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
-        # Deliberately logs only the method/path (never a request body, so
-        # never message/course content) plus the exception for developers —
-        # the client only ever sees a generic, user-safe message.
+        # Log only the method and path (never request bodies) plus the exception;
+        # the client gets a generic message.
         logger.exception("Unhandled error on %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=500,

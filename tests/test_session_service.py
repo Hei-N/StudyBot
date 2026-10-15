@@ -489,8 +489,7 @@ def test_leaving_course_via_none_context_goes_to_general(repository, course_repo
 
 
 def test_three_way_chat_isolation_across_two_courses_and_general(repository, course_repository):
-    """Physics/Chat A, Physics/Chat B, and Calculus/Chat C must never see
-    each other's history, even though two of them share a course."""
+    """Chats A and B (same course) and C (another course) never see each other's history."""
     physics = course_repository.create_course("physics", "Physics", None, None, None)
     calculus = course_repository.create_course("calc", "Calculus", None, None, None)
     service = make_service(repository, course_repository)
@@ -912,8 +911,7 @@ def test_mode_persists_across_restart(repository, course_repository):
 
 
 def test_different_chats_preserve_different_modes(repository, course_repository):
-    """Physics/Chat A -> Homework, Chat B -> Quick, Chat C -> Exam: changing
-    one must never change the others, and reopening each restores its own."""
+    """Changing one chat's mode never changes the others; reopening restores each."""
     service = make_service(repository, course_repository)
 
     service.send("chat a")
@@ -1082,9 +1080,8 @@ def test_reasoning_mode_and_teaching_mode_are_fully_independent(repository, cour
 
 
 def test_reasoning_mode_applies_to_next_inference(repository, course_repository):
-    """ChatService/ModelProvider receive the chat's current reasoning mode
-    on every call — proven generically here (no Ollama dependency) via
-    RecordingModel's received_reasoning_modes."""
+    """The chat's current reasoning mode reaches the model on every call (checked via RecordingModel).
+    """
     model = RecordingModel(reply="ack")
     service = SessionService(
         model=model, repository=repository, course_repository=course_repository,
@@ -1155,9 +1152,7 @@ def test_reasoning_mode_persists_across_restart(repository, course_repository):
 
 
 def test_different_chats_preserve_different_reasoning_modes(repository, course_repository):
-    """Chat A -> Fast, Chat B -> Deep, Chat C -> Fast: changing one must
-    never change the others, and reopening each restores its own — proving
-    reasoning-mode isolation the same way teaching mode is proven above."""
+    """Changing one chat's reasoning mode never changes the others; reopening restores each."""
     service = make_service(repository, course_repository)
 
     service.send("chat a")
@@ -1203,19 +1198,14 @@ def test_different_chats_preserve_different_reasoning_modes_across_restart(repos
     assert service2.open_chat(chat_b).reasoning_mode is ReasoningMode.DEEP
 
 
-# =====================================================================================
-# Stage 5.8 — explicit chat-id operations (no active-chat cursor dependency)
-# =====================================================================================
+# --- explicit chat-id operations (no active-chat cursor) ------------------------------
 
-# --- critical regression: the exact real bug -----------------------------------------
+# --- regression: creating a second chat ----------------------------------------------
 
 
 def test_creating_second_chat_does_not_break_sending_to_first(repository, course_repository):
-    """The exact real bug Stage 5.8 exists to fix: create A, do NOT message
-    it, create B, then send to A — A must not fail. On the old
-    `_activate()`/cursor-based implementation this failed because creating
-    B (while A was still an unpersisted, in-memory "pending" chat) silently
-    evicted A before it ever got a database row."""
+    """Regression: creating chat B while A was still unpersisted used to evict A, so sending to A failed.
+    """
     service = make_service(repository, course_repository)
 
     chat_a = service.create_chat()
@@ -1340,8 +1330,7 @@ def test_explicit_operations_on_unknown_chat_raise_chat_not_found(repository, co
 
 
 def test_assign_course_to_chat_raises_plain_session_error_for_unknown_course(repository, course_repository):
-    """Distinguishable from chat-not-found: the API maps this to
-    COURSE_NOT_FOUND, not CHAT_NOT_FOUND."""
+    """Distinct from chat-not-found: the API maps this to COURSE_NOT_FOUND."""
     service = make_service(repository, course_repository)
     chat = service.create_chat()
 
@@ -1354,10 +1343,9 @@ def test_assign_course_to_chat_raises_plain_session_error_for_unknown_course(rep
 
 
 def test_two_courses_two_chats_full_isolation_interleaved(repository, course_repository):
-    """Course Physics/Chat A (Homework + Fast, history ALPHA) and Course
-    Calculus/Chat B (Exam + Deep, history BETA), addressed in an
-    A, B, A, B interleaving — histories, course context, teaching mode, and
-    reasoning mode must never cross."""
+    """Interleaved sends to two chats in different courses never mix history, course
+    context, teaching mode or reasoning mode.
+    """
     physics = course_repository.create_course("physics", "Physics", None, None, None)
     calculus = course_repository.create_course("calc", "Calculus", None, None, None)
     model = RecordingModel(reply="ack")
@@ -1392,7 +1380,7 @@ def test_two_courses_two_chats_full_isolation_interleaved(repository, course_rep
     assert final_b.reasoning_mode is ReasoningMode.DEEP
 
     # Every model call for A carried Physics/Homework/Fast context; every
-    # call for B carried Calculus/Exam/Deep context — never mixed.
+    # call for B carried Calculus/Exam/Deep context; never mixed.
     calls_and_modes = list(zip(model.received_calls, model.received_reasoning_modes))
     a_calls = calls_and_modes[0::2]
     b_calls = calls_and_modes[1::2]
@@ -1411,8 +1399,8 @@ def test_two_courses_two_chats_full_isolation_interleaved(repository, course_rep
 
 
 def test_explicit_send_never_uses_the_active_chats_course_or_mode(repository, course_repository):
-    """A explicit send for chat A must derive context from chat A alone,
-    even while a completely different chat is the active (CLI) cursor."""
+    """An explicit send derives its context from that chat alone, not from the active (CLI) chat.
+    """
     physics = course_repository.create_course("physics", "Physics", None, None, None)
     model = RecordingModel(reply="ack")
     service = SessionService(
@@ -1540,19 +1528,10 @@ def test_chat_busy_on_one_chat_does_not_block_a_different_chat(repository, cours
 
 
 class _InMemoryChatRepository:
-    """A minimal, dict-backed `ChatRepository` used only by
-    `test_chat_busy_lock_is_genuinely_thread_safe` below.
+    """Dict-backed ``ChatRepository`` for the thread-safety test.
 
-    The real `SQLiteChatRepository` ties its connection to the thread that
-    created it (see `api/engine.py`'s module docstring) and cannot safely
-    be called from a second OS thread at all — that restriction is exactly
-    why the API routes every call through one dedicated executor thread.
-    This test wants to prove something different and more basic:
-    `SessionService._chat_lock` itself correctly serializes two *real*
-    concurrent threads for the same chat id, independent of whatever
-    repository or executor happens to sit underneath it. An in-memory fake
-    sidesteps the unrelated SQLite restriction so the test isolates the
-    one thing it's actually checking.
+    The real SQLite repository is bound to the thread that created it, which would
+    hide what the test checks: that the per-chat lock serializes concurrent threads.
     """
 
     def __init__(self) -> None:
@@ -1591,9 +1570,9 @@ class _InMemoryChatRepository:
 
 
 def test_chat_busy_lock_is_genuinely_thread_safe(course_repository):
-    """Same as the generator-interleaving tests above, but with two real OS
-    threads racing on the same chat's lock, to prove `_chat_lock` itself
-    (not just the generator-suspension trick) is what prevents the race."""
+    """Two real threads racing on one chat's lock: the lock itself, not generator
+    suspension, prevents the race.
+    """
 
     class BlockingModel:
         name = "blocking"
@@ -1656,8 +1635,7 @@ def test_explicit_chats_remain_addressable_after_restart(repository, course_repo
     service1.set_reasoning_mode_for_chat(chat_b.id, ReasoningMode.DEEP)
     service1.send_to_chat(chat_b.id, "hello b")
 
-    # A brand-new SessionService simulates the app/API server restarting —
-    # notably, without ever calling anything active-cursor-related.
+    # A new SessionService simulates a restart, without touching the active-chat cursor.
     service2 = make_service(repository, course_repository)
 
     assert [m.content for m in service2.get_chat_history(chat_a.id)] == [
@@ -1671,9 +1649,7 @@ def test_explicit_chats_remain_addressable_after_restart(repository, course_repo
     assert service2.get_chat(chat_b.id).reasoning_mode is ReasoningMode.DEEP
 
 
-# =====================================================================================
-# Stage 6 — learning memory context injection
-# =====================================================================================
+# --- learning memory context injection -----------------------------------------------
 
 
 def _service_with_memory(repository, course_repository, memory_service, model):
@@ -1687,10 +1663,7 @@ def _service_with_memory(repository, course_repository, memory_service, model):
 
 
 def test_no_memory_service_means_no_memory_section_in_prompt(repository, course_repository):
-    """Backward compatibility: every pre-Stage-6 `SessionService(...)`
-    construction (no `memory_service` argument) must behave exactly as
-    before — this is the default in `make_service` used throughout this
-    file."""
+    """Without a ``memory_service``, behavior is unchanged: no memory section in the prompt."""
     model = RecordingModel(reply="ack")
     service = make_service(repository, course_repository, model=model)
 
@@ -1748,8 +1721,7 @@ def test_archived_memory_is_not_injected(repository, course_repository, memory_s
 
 
 def test_explicit_send_to_chat_also_receives_its_own_courses_memory(repository, course_repository, memory_service):
-    """The explicit-by-id layer (Stage 5.8) goes through the same
-    `_effective_system_prompt` path, so it must get memory context too."""
+    """The explicit-by-id layer builds the same system prompt, so it gets memory context too."""
     physics = course_repository.create_course("physics", "Physics", None, None, None)
     memory_service.create(
         topic="Vector components", kind=MemoryKind.NEEDS_REVIEW, summary="s", course_id=physics.id

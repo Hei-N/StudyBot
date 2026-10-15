@@ -17,9 +17,8 @@ Chat _chat(String id) =>
     Chat(id: id, title: null, courseId: null, teachingMode: 'teach', reasoningMode: 'fast', createdAt: 'now', updatedAt: 'now');
 
 /// [FakeChatWebSocketClient.emit] delivers over a broadcast [StreamController],
-/// which dispatches to listeners on a microtask rather than synchronously —
-/// so tests must yield back to the event loop before asserting on state
-/// that [ConversationNotifier] updates from its stream subscription.
+/// which dispatches on a microtask, so tests must yield to the event loop
+/// before asserting on state updated from the stream.
 Future<void> _flush() => Future<void>.delayed(Duration.zero);
 
 void main() {
@@ -56,11 +55,8 @@ void main() {
     'treats CHAT_NOT_FOUND from an unpersisted (never-messaged) chat as an empty '
     'chat, not an error — API_CONTRACT.md "Lazy persistence"',
     () async {
-      // Regression test: found via real end-to-end verification against the
-      // running API server — GET .../messages 404s with CHAT_NOT_FOUND for a
-      // chat that has no messages yet, which is a completely normal state
-      // for a freshly created chat, not a real failure to surface as an
-      // error screen.
+      // Regression: GET .../messages can 404 with CHAT_NOT_FOUND for a chat with no
+      // messages; that is an empty chat, not an error to show.
       api.phantomChatIds.add('chat1');
 
       final state = await container.read(conversationProvider.future);
@@ -265,15 +261,11 @@ void main() {
     're-subscribes when chatWebSocketClientProvider produces a new client instance '
     '(e.g. ConnectionConfigNotifier\'s async restore completing after the first subscription)',
     () async {
-      // Regression test for Bug 1: chatWebSocketClientProvider rebuilds
-      // (a brand-new ChatWebSocketClient) whenever connectionConfigProvider
-      // changes — which it always does once, early, when
-      // ConnectionConfigNotifier's fire-and-forget _restore() resolves. If
-      // ConversationNotifier subscribed to the *old* client's event stream
-      // before that happened, every later delta/message_completed event
-      // arrives on a stream nobody is listening to, and the UI never
-      // updates until the chat is reloaded (e.g. by navigating away and
-      // back), which read history fresh over HTTP instead.
+      // Regression: chatWebSocketClientProvider rebuilds (a new ChatWebSocketClient)
+      // whenever connectionConfigProvider changes, which happens once early when
+      // ConnectionConfigNotifier's async restore resolves. If ConversationNotifier
+      // stayed subscribed to the old client's stream, later events never reached the
+      // UI until the chat was reloaded.
       SharedPreferences.setMockInitialValues({});
       final wsClients = <FakeChatWebSocketClient>[];
       final localApi = FakeStudyBotApi(chats: [_chat('chatX')]);
@@ -290,10 +282,9 @@ void main() {
         retry: kNoRetry,
       );
       addTearDown(localContainer.dispose);
-      // A real ConversationView/Composer keeps conversationProvider watched
-      // continuously for as long as a chat is open — without an active
-      // listener like this, Riverpod has no reason to eagerly recompute
-      // dependents when connectionConfigProvider changes underneath it.
+      // A real ConversationView keeps conversationProvider watched while a chat is
+      // open; without a listener, Riverpod would not recompute dependents when
+      // connectionConfigProvider changes.
       localContainer.listen(conversationProvider, (_, _) {});
       localContainer.read(activeChatIdProvider.notifier).select('chatX');
 
@@ -301,17 +292,14 @@ void main() {
       await localContainer.read(conversationProvider.future);
       expect(wsClients, hasLength(1));
 
-      // Simulate the connection config changing after that subscription —
-      // this must produce a second, distinct ChatWebSocketClient instance
-      // and the notifier must notice on its own (nothing here calls
-      // `read(chatWebSocketClientProvider)` again) and re-subscribe to it.
+      // Change the connection config after subscribing: this must create a second
+      // ChatWebSocketClient, and the notifier must re-subscribe to it on its own.
       await localContainer.read(connectionConfigProvider.notifier).update(token: 'later-token');
       await _flush();
       expect(wsClients, hasLength(2));
 
       await localContainer.read(conversationProvider.notifier).send('hello');
-      // Events only arrive on the *new* (second) client from here on, per
-      // API_CONTRACT.md — nothing further ever happens on the first.
+      // From here on events arrive only on the new client.
       wsClients.last.emit(const StreamDelta('hi there'));
       await _flush();
 

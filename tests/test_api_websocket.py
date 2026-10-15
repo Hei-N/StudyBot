@@ -13,9 +13,7 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
 
 class ChunkedModel:
-    """Yields a fixed, ordered sequence of chunks — for testing ordering,
-    aggregation, and history persistence without depending on real model
-    output or timing."""
+    """Yields a fixed sequence of chunks, for testing ordering, aggregation and persistence."""
 
     name = "chunked"
 
@@ -35,7 +33,7 @@ class ChunkedModel:
 
 
 class FailingStreamModel:
-    """Yields one chunk, then raises — for model-failure tests."""
+    """Yields one chunk, then raises; for model-failure tests."""
 
     name = "failing"
 
@@ -55,8 +53,8 @@ class FailingStreamModel:
 
 
 class SlowStreamModel:
-    """Yields one chunk, then blocks on an event — lets a test deterministically
-    disconnect the client mid-stream before the rest is produced."""
+    """Yields one chunk, then blocks on an event, so a test can disconnect the client mid-stream.
+    """
 
     name = "slow"
 
@@ -90,8 +88,9 @@ def client(tmp_path):
 
 @pytest.fixture
 def client_with_model(tmp_path):
-    """Like `client`, but lets the test swap in a fake `ModelProvider`
-    (`studybot.app.create_model` is monkeypatched for the app's lifetime)."""
+    """Like ``client``, but swaps in a fake ``ModelProvider`` (monkeypatches
+    ``studybot.app.create_model`` for the app's lifetime).
+    """
 
     def _make(model_factory):
         original = app_module.create_model
@@ -120,9 +119,8 @@ def _create_chat(client) -> str:
 
 
 def _drain_until_completed(ws) -> dict:
-    """Consume events until `message_completed`, raising immediately (never
-    hanging) if an `error` event arrives instead — a test bug should fail
-    loudly, not block forever waiting for an event that will never come."""
+    """Consume events until ``message_completed``; fail immediately on an ``error`` event instead of hanging.
+    """
     while True:
         event = ws.receive_json()
         if event["type"] == "message_completed":
@@ -263,12 +261,8 @@ def test_unauthenticated_connection_is_rejected(client):
 
 
 def test_histories_remain_isolated_between_chat_ids(client):
-    # Both chats are created up front, before either is ever messaged —
-    # this used to be exactly the sequence that broke (see Stage 5.8's
-    # `test_creating_second_chat_does_not_break_sending_to_first` below,
-    # the direct regression test for that bug). It's safe now: every chat
-    # is a real persisted row from the moment POST returns, and each
-    # `send_message` loads its own chat fresh by id.
+    # Both chats are created before either is messaged; each send_message loads
+    # its own chat by id.
     chat_a = _create_chat(client)
     chat_b = _create_chat(client)
 
@@ -301,9 +295,8 @@ def test_invalid_payload_produces_validation_error_event(client):
 
 
 def test_delta_and_message_completed_events_carry_the_chat_id(client_with_model):
-    """Stage 5.8: every streaming event carries `chatId`, not just
-    `message_started` — so a client juggling multiple chats/connections can
-    always attribute an event to the right one without guessing."""
+    """Every streaming event carries ``chatId``, so a client juggling several chats can attribute each event.
+    """
     app = client_with_model(lambda: ChunkedModel(["hi"]))
     with TestClient(app) as client:
         chat_id = _create_chat(client)
@@ -318,15 +311,12 @@ def test_delta_and_message_completed_events_carry_the_chat_id(client_with_model)
     assert completed["chatId"] == chat_id
 
 
-# --- Stage 5.8: stateless multi-chat regression --------------------------------------
+# --- stateless multi-chat regression -------------------------------------------------
 
 
 def test_creating_second_chat_does_not_break_sending_to_first(client):
-    """The exact real bug this stage exists to fix: create chat A, do NOT
-    message it, create chat B, then send to A — A must not 404. On the old
-    `_activate()`-based implementation this failed because creating B (an
-    unpersisted, in-memory "pending" chat) silently evicted A's own
-    unpersisted in-memory state before A ever got a database row."""
+    """Regression: creating chat B before A was messaged used to evict A's unpersisted state, so sending to A returned 404.
+    """
     chat_a = _create_chat(client)
     chat_b = _create_chat(client)
 
@@ -347,9 +337,7 @@ def test_creating_second_chat_does_not_break_sending_to_first(client):
 
 
 def test_api_never_requires_opening_a_chat_before_addressing_it(client):
-    """Every chat-specific operation works purely by id, in any order,
-    without a preceding GET/open of any kind — proving there is no hidden
-    "activate this chat first" requirement anywhere in the route layer."""
+    """Every chat operation works by id alone, in any order, with no 'open' step."""
     chat_a = _create_chat(client)
     chat_b = _create_chat(client)
 
@@ -362,7 +350,7 @@ def test_api_never_requires_opening_a_chat_before_addressing_it(client):
     )
     assert client.put(f"/api/v1/chats/{chat_b}/rename", json={"title": "B"}, headers=HEADERS).status_code == 200
 
-    # Now address A directly — none of the above should have any bearing on it.
+    # Now address A directly; none of the above should have any bearing on it.
     response = client.get(f"/api/v1/chats/{chat_a}", headers=HEADERS)
     assert response.status_code == 200
     assert response.json()["teachingMode"] == "teach"
@@ -370,9 +358,8 @@ def test_api_never_requires_opening_a_chat_before_addressing_it(client):
 
 
 def test_websocket_send_works_for_a_chat_created_after_another_was_already_opened(client):
-    """A second WebSocket connection addressing a brand-new chat must work
-    even while an earlier connection already exists/has been used for a
-    different chat — no shared cursor between connections."""
+    """A second connection can address a brand-new chat while an earlier connection exists; there is no shared cursor.
+    """
     chat_a = _create_chat(client)
     with client.websocket_connect("/api/v1/ws/chat", headers=HEADERS) as ws_a:
         ws_a.send_json({"type": "send_message", "chat_id": chat_a, "content": "hello a"})
@@ -398,19 +385,11 @@ def test_websocket_send_works_for_a_chat_created_after_another_was_already_opene
     assert [m["content"] for m in messages_b] == ["hello b", "[Mock] You said: hello b"]
 
 
-# --- Stage 5.8: same-chat CHAT_BUSY -----------------------------------------------------
-#
-# CHAT_BUSY itself (the per-chat generation lock in `SessionService`) is
-# covered deterministically at the service layer in
-# `test_session_service.py` — both via manual generator interleaving and
-# via real OS threads racing on the same lock. It is deliberately not
-# re-tested end-to-end over two WebSocket connections here: this API's
-# engine dispatches every call through one dedicated single-worker
-# executor (see `api/engine.py`), so whether a second connection's request
-# is even *submitted* while the first is mid-generation is a genuine race
-# against that executor's queue and the test model's own timing, not a
-# property of the busy-detection logic itself — a WS-level test for it
-# would be flaky (or slow) by construction rather than a meaningful check.
+# --- same-chat CHAT_BUSY -----------------------------------------------------------
+# CHAT_BUSY is covered at the service layer in test_session_service.py (generator
+# interleaving and real threads). It is not re-tested over two WebSocket
+# connections: whether the second request is submitted mid-generation is a race
+# against the single-worker executor, so such a test would be flaky by design.
 
 
 def test_unknown_message_type_produces_validation_error_event(client):

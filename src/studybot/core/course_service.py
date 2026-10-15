@@ -1,11 +1,7 @@
-"""Course business logic: validation and CRUD orchestration on top of
-`CourseRepository`.
+"""Course validation and CRUD on top of ``CourseRepository``.
 
-Keeps validation rules out of the CLI (which only does I/O and formatting)
-and out of the repository (which stays a dumb data layer, like
-`ChatRepository`). Reads `ChatRepository` only for the read-only "how many
-chats does this course have" figure shown by `/course info` — it never
-writes to it; chat mutations belong to `SessionService`.
+Reads ``ChatRepository`` only for the chat count shown by ``/course info``;
+chat mutations belong to ``SessionService``.
 """
 
 from __future__ import annotations
@@ -21,7 +17,7 @@ _MAX_TERM_LENGTH = 50
 
 
 class CourseService:
-    """Create, look up, edit, and delete courses."""
+    """Create, look up, edit and delete courses."""
 
     def __init__(self, course_repository: CourseRepository, chat_repository: ChatRepository) -> None:
         self._courses = course_repository
@@ -47,10 +43,9 @@ class CourseService:
         return self._courses.list_courses()
 
     def resolve_course(self, id_or_prefix: str) -> Course:
-        """Find a course by exact id or unambiguous id prefix.
+        """Find a course by exact id or unambiguous prefix.
 
-        Raises `SessionError` if nothing matches, or if more than one
-        course matches — an ambiguous prefix must never silently pick one.
+        Raises ``SessionError`` if nothing matches or more than one course does.
         """
         courses = self._courses.list_courses()
 
@@ -80,35 +75,13 @@ class CourseService:
         return self._courses.update_course(course_id, name, code, term, description)
 
     def delete_course(self, course_id: str) -> Course:
-        """Delete a course. Its chats and their messages are untouched —
-        `SQLiteCourseRepository` relies on ON DELETE SET NULL for that.
+        """Delete a course; its chats and messages are kept.
 
-        Learning memory (Stage 6.1, made atomic in Stage 6.2): the
-        database's `ON DELETE SET NULL` on `learning_memories.course_id`
-        would, by itself, turn every *active* memory that belonged to this
-        course into an active *global* memory the instant the course
-        disappears — silently injecting that subject's context into every
-        other course's chats. `delete_course_archiving_memories` archives
-        every currently active memory in this course and deletes the
-        course as one atomic SQLite transaction (see
-        `CourseRepository.delete_course_archiving_memories`'s docstring):
-        either both happen or neither does — there is no window, on this
-        connection or any other, where the course is gone but an affected
-        memory is still active, or where memories are archived but the
-        course still exists forever. Only memories with `course_id ==
-        course_id` are touched — memories that were already global, or
-        belong to a different course, are never affected.
-
-        The memory itself is never deleted, and never loses its content:
-        after this call it is an archived, unassigned (course_id is now
-        `None`, via the same `ON DELETE SET NULL`) memory, fully visible
-        and editable via the usual `LearningMemoryService` operations. A
-        user who wants it back has two explicit choices — `restore()` it
-        (making it an active *global* memory, since its course is gone),
-        or `update()` its `course_id` to a different existing course first
-        (then optionally restore it into that course instead). Neither
-        happens automatically; both require the same deliberate action a
-        brand-new global/reassigned memory would.
+        The course's active learning memories are archived in the same transaction
+        (``CourseRepository.delete_course_archiving_memories``). Otherwise
+        ``ON DELETE SET NULL`` would turn them into active global memories. Archived
+        memories keep their content and can be restored (as global) or reassigned to
+        another course.
         """
         course = self._courses.get_course(course_id)
         if course is None:

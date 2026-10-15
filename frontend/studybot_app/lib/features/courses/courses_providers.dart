@@ -3,10 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/models/course.dart';
 import '../connection/connection_providers.dart';
 
-/// The full course list, fetched from `GET /api/v1/courses`. Mutations
-/// (create/update/delete) re-fetch afterward rather than optimistically
-/// patching local state — simpler and always consistent with the backend,
-/// which remains authoritative.
+/// The full course list from `GET /api/v1/courses`. Mutations re-fetch instead
+/// of patching local state, so the backend stays authoritative.
 class CoursesNotifier extends AsyncNotifier<List<Course>> {
   @override
   Future<List<Course>> build() => _fetch();
@@ -39,8 +37,7 @@ class CoursesNotifier extends AsyncNotifier<List<Course>> {
     return course;
   }
 
-  /// Deletes the course. Per API_CONTRACT.md / Stage 4 semantics, this
-  /// never deletes chats or messages — they become General (unassigned).
+  /// Deletes the course. Its chats and messages are kept and become General.
   Future<void> delete(String courseId) async {
     await ref.read(studyBotApiProvider).deleteCourse(courseId);
     await refresh();
@@ -49,10 +46,9 @@ class CoursesNotifier extends AsyncNotifier<List<Course>> {
 
 final coursesProvider = AsyncNotifierProvider<CoursesNotifier, List<Course>>(CoursesNotifier.new);
 
-/// The course currently selected in the UI. `null` means "General" — there
-/// is no server-side "active course" concept for the API to track (each
-/// request is explicit by id, per API_CONTRACT.md), so this is purely
-/// local UI state and is not persisted across restarts.
+/// The course selected in the UI; `null` means "General". The API has no
+/// active-course concept (requests are explicit by id), so this is local UI
+/// state and is not persisted across restarts.
 class ActiveCourseIdNotifier extends Notifier<String?> {
   @override
   String? build() => null;
@@ -62,8 +58,8 @@ class ActiveCourseIdNotifier extends Notifier<String?> {
 
 final activeCourseIdProvider = NotifierProvider<ActiveCourseIdNotifier, String?>(ActiveCourseIdNotifier.new);
 
-/// The [Course] object for [activeCourseIdProvider], or null for General /
-/// while courses are still loading.
+/// The [Course] for [activeCourseIdProvider], or null for General or while
+/// courses are loading.
 final activeCourseProvider = Provider<Course?>((ref) {
   final courseId = ref.watch(activeCourseIdProvider);
   if (courseId == null) return null;

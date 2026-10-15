@@ -1,7 +1,7 @@
 /// Stable, machine-readable error codes from API_CONTRACT.md.
 ///
-/// Widgets must switch on [ApiException.code], never parse [ApiException.message]
-/// — `message` is human-readable and fine to display, but not a contract.
+/// Widgets switch on [ApiException.code] and never parse [ApiException.message],
+/// which is for display only.
 abstract final class ApiErrorCode {
   static const chatNotFound = 'CHAT_NOT_FOUND';
   static const chatBusy = 'CHAT_BUSY';
@@ -17,16 +17,14 @@ abstract final class ApiErrorCode {
   static const unauthorized = 'UNAUTHORIZED';
   static const internalError = 'INTERNAL_ERROR';
 
-  /// Client-side only: the engine could not be reached at all (no HTTP
-  /// response), as opposed to the engine responding with a structured
-  /// error. Never sent by the Python API — synthesized locally so the UI
-  /// has one type to handle for both cases.
+  /// Client-side only: the engine could not be reached (no HTTP response).
+  /// Never sent by the Python API; synthesized locally so the UI handles both
+  /// cases with one type.
   static const disconnected = 'DISCONNECTED';
 }
 
-/// A structured API error — either a real `{code, message}` body from the
-/// engine, or a locally-synthesized [ApiErrorCode.disconnected] when the
-/// engine couldn't be reached at all. Never a raw exception/stack trace.
+/// A structured API error: a `{code, message}` body from the engine, or a
+/// locally synthesized [ApiErrorCode.disconnected] when it couldn't be reached.
 class ApiException implements Exception {
   const ApiException({required this.code, required this.message, this.statusCode});
 

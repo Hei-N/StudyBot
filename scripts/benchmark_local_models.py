@@ -1,38 +1,34 @@
 #!/usr/bin/env python3
-"""Benchmark local Ollama models through the real StudyBot stack (Stage 6.4).
+"""Benchmark local Ollama models through the real StudyBot stack.
 
-DEVELOPMENT TOOLING — never imported by the application.
+Development tooling; never imported by the application.
 
-Every measurement goes through `Settings -> StudyBotApp -> SessionService ->
-ChatService -> ModelProvider -> OllamaModel`, so system prompts, teaching
-modes, reasoning modes, output integrity and persistence are all part of
-what's measured. Each candidate gets its own freshly created temporary data
-directory (never the real StudyBot database); `assert_safe_for_verification`
-runs before any app is constructed, and a rejection aborts the whole run.
+Every measurement goes through ``Settings -> StudyBotApp -> SessionService ->
+ChatService -> ModelProvider -> OllamaModel``, so prompts, modes, output
+integrity and persistence are all exercised. Each model gets a fresh temporary
+data directory (never the real database); ``assert_safe_for_verification`` runs
+before any app is built.
 
-Run (measure):
+Measure:
 
-    python scripts/benchmark_local_models.py \\
-        --models qwen3:4b qwen3.5:4b gemma3:4b --output results.json
+    python scripts/benchmark_local_models.py \
+        --models qwen3:4b qwen3.5:4b --output results.json
+    python scripts/benchmark_local_models.py --show-answers ...   # print final answers
 
-    # development-only: also print FINAL visible answers for manual grading
-    python scripts/benchmark_local_models.py --show-answers ...
+The practice and exam scenarios need a learner answer that fits the generated
+question. Use ``--answer-dir DIR`` to write each question to a file and wait for
+an answer file, or ``--learner-answers FILE`` containing
+``{"<model>": {"<scenario_id>": ["<answer>"]}}``. Otherwise a generic answer is
+used and the turn is flagged ``used_fallback_answer``.
 
-Two scenarios (practice and exam) need a learner answer that fits whatever
-question the model generated. Run once with `--show-answers`, read the
-questions, write a small JSON file `{"<model>": {"<scenario_id>": ["<answer>"]}}`
-and re-run just those scenarios with `--only ... --learner-answers FILE`.
-Without it a generic fallback answer is used and the measurement is flagged
-`used_fallback_answer`.
+Score, after writing manual grades to a JSON file:
 
-Score (after grading the visible answers by hand into a grades file):
+    python scripts/benchmark_local_models.py \
+        --score-from results.json --grades grades.json
 
-    python scripts/benchmark_local_models.py \\
-        --score-from results.json [more.json ...] --grades grades.json
-
-Saved output contains scenario ids, timings, lengths, capability values and
-scores only — never prompts, answers, hidden reasoning or paths. Answers are
-only ever printed to the terminal, and only with `--show-answers`.
+Saved results contain scenario ids, timings, lengths, capability values and
+scores only, never prompts, answers or paths. Answers are printed only with
+``--show-answers``.
 """
 
 from __future__ import annotations
@@ -144,7 +140,7 @@ class ModelBenchmarkSummary:
 
 
 class BenchmarkInvariantError(RuntimeError):
-    """An internal benchmark invariant failed; the run's results can't be trusted."""
+    """An internal benchmark invariant failed; the results can't be trusted."""
 
 
 # --- scenarios ----------------------------------------------------------------------
@@ -232,9 +228,8 @@ SCENARIOS: tuple[BenchmarkScenario, ...] = (
 
 FAST_SCENARIO_IDS = frozenset(s.id for s in SCENARIOS if s.reasoning_mode is ReasoningMode.FAST)
 
-# Quality points per scenario (50 in total). Scenarios not listed here
-# (eng303 regression, instruction, bat/ball) are pass/fail checks without
-# quality points; calculus and physics are also hard gates.
+# Quality points per scenario (50 in total). The other scenarios are
+# pass/fail; calculus and physics are also hard gates.
 QUALITY_POINTS: dict[str, int] = {
     "teach_acceleration_fast": 4,
     "teach_acceleration_deep": 4,
@@ -272,17 +267,14 @@ def measure_turn(
     reasoning_mode: ReasoningMode | None = None,
     budget: GenerationBudget | None = None,
 ) -> tuple[TurnMeasurement, str]:
-    """Run one turn through `SessionService` and measure it. Returns the
-    measurement and the final visible text (for optional terminal display).
+    """Run one turn through ``SessionService`` and measure it.
 
-    A turn that runs longer than `max_seconds` (measured on the same clock,
-    so time the machine spends asleep doesn't count) is abandoned and
-    recorded as a `TurnTimeout` failure: closing the stream makes Ollama stop
-    generating, so one runaway generation can't hang the whole benchmark.
-
-    The first-visible time is that of the first NON-EMPTY chunk: `""` is a
-    progress signal, not content. Success means the persisted assistant
-    message equals the concatenated visible stream exactly.
+    Returns the measurement and the final visible text. First-visible time is the
+    first non-empty chunk (``""`` is a progress signal). A turn longer than
+    ``max_seconds`` on the injected clock is abandoned and recorded as
+    ``TurnTimeout``; closing the stream makes Ollama stop generating. Success
+    requires the persisted assistant message to equal the concatenated visible
+    stream.
     """
     assistants_before = _assistant_count(sessions, chat_id)
     chunks: list[str] = []
@@ -353,12 +345,12 @@ def run_scenario(
     max_turn_seconds: float | None = DEFAULT_MAX_TURN_SECONDS,
     budget_for: Callable[[ReasoningMode], GenerationBudget] | None = None,
 ) -> list[TurnMeasurement]:
-    """One attempt at a scenario in a brand-new chat.
+    """Run one attempt at a scenario in a new chat.
 
-    `answer_provider(scenario_id, turn_number, last_visible_answer)` supplies
-    a learner answer fitted to the question the model just asked (after any
-    pre-supplied `learner_answers` are used up); returning None means "use
-    the flagged generic fallback"."""
+    ``answer_provider(scenario_id, turn_number, last_visible)`` supplies a learner
+    answer once any preset ``learner_answers`` are used up; returning None uses the
+    flagged generic fallback.
+    """
     courses = courses if courses is not None else {}
     course_id = None
     if scenario.course_name is not None:
@@ -405,14 +397,13 @@ def run_scenario(
 
 
 class FileAnswerProvider:
-    """Lets a human (or a reviewing agent) write each learner answer after
-    reading the model's actual question — needed because generation is not
-    deterministic, so an answer prepared from an earlier run may not fit.
+    """Collects learner answers from files, so a person can write each one after
+    reading the model's actual question (generation is not deterministic).
 
-    For each learner-answer turn it writes `<dir>/<key>.question.txt` (the
-    model's final VISIBLE answer to the previous turn) and waits for
-    `<dir>/<key>.answer.txt`. The wait is outside every measured interval.
-    On timeout it returns None (the flagged generic fallback is used).
+    For each learner-answer turn it writes ``<dir>/<key>.question.txt`` (the
+    previous visible answer) and waits for ``<dir>/<key>.answer.txt``. The wait is
+    outside every measured interval; on timeout it returns None and the generic
+    fallback is used.
     """
 
     def __init__(self, directory: Path, model_name: str, *, timeout: float = 900.0, sleep=time.sleep, clock=time.monotonic):
@@ -442,7 +433,7 @@ Runner = Callable[[Sequence[str]], str | None]
 
 
 def run_command(argv: Sequence[str]) -> str | None:
-    """Stdout of a short system command, or None if unavailable/failing."""
+    """Stdout of a short system command, or None if unavailable or failing."""
     try:
         result = subprocess.run(list(argv), capture_output=True, text=True, timeout=20, check=False)
     except (OSError, subprocess.SubprocessError):
@@ -513,8 +504,7 @@ def probe_resources(model_name: str, runner: Runner | None = None) -> dict:
 
 
 def classify_thinking(capabilities: ModelCapabilities | None) -> str:
-    """The provider's internal thinking classification, recovered from the
-    neutral capability flags (so no private provider state is touched)."""
+    """Recover the thinking classification from the neutral capability flags."""
     if capabilities is None or capabilities.supports_thinking is None:
         return "unknown"
     if not capabilities.supports_thinking:
@@ -573,9 +563,9 @@ def benchmark_model(
 ) -> ModelBenchmarkSummary:
     """Benchmark one model in its own temporary data directory.
 
-    Raises `UnsafeVerificationEnvironmentError` (never swallowed) if the
-    verification guard rejects the directory. Any other failure becomes a
-    "not evaluated" summary so the remaining candidates still run.
+    A guard rejection (``UnsafeVerificationEnvironmentError``) is never swallowed.
+    Any other failure becomes a "not evaluated" summary so remaining candidates
+    still run.
     """
     learner_answers = learner_answers or {}
     runner = runner or run_command  # resolved at call time so tests can patch it
@@ -648,8 +638,8 @@ def _benchmark_in_app(
     installed_gb = parse_installed_size_gb(runner(["ollama", "list"]), model_name)
     swap_before = probe_resources(model_name, runner)["swap"]
 
-    # One warm-up request: excluded from scored latency, but its cold-load
-    # time is recorded on its own.
+    # One warm-up request, excluded from scored latency; its cold-load time is
+    # recorded separately.
     warm_chat = app.sessions.create_chat(None)
     app.sessions.set_teaching_mode_for_chat(warm_chat.id, TeachingMode.QUICK)
     warm, _ = measure_turn(
@@ -766,9 +756,9 @@ def results_document(summaries: Sequence[ModelBenchmarkSummary]) -> dict:
 
 
 def merge_summaries(summaries: Sequence[ModelBenchmarkSummary]) -> list[ModelBenchmarkSummary]:
-    """Combine several runs of the same model: a later run's measurement for
-    a (scenario, turn) replaces an earlier one's (e.g. a re-run of the
-    practice/exam scenarios with real learner answers)."""
+    """Combine runs of the same model; a later measurement for a (scenario, turn)
+    replaces an earlier one, e.g. a re-run with real learner answers.
+    """
     merged: dict[str, ModelBenchmarkSummary] = {}
     for summary in summaries:
         previous = merged.get(summary.model_name)
@@ -806,13 +796,13 @@ def merge_summaries(summaries: Sequence[ModelBenchmarkSummary]) -> list[ModelBen
     return list(merged.values())
 
 
-# --- scoring and selection (pure functions; see the Stage 6.4 contract) ----------------
+# --- scoring and selection (pure functions) ----------------------------------------
 
 PERFORMANCE_WEIGHTS = {"fast_first_visible": 15, "overall_first_visible": 5, "overall_total": 5, "warmup": 5}
 SIZE_LIMIT_GB = 3.5
 SWAP_REGRESSION_LIMIT_MB = 1024.0
 """Warm-benchmark swap growth below this counts as "no severe swap
-regression". An explicit, documented threshold — the OS gives no better
+regression". An explicit, documented threshold; the OS gives no better
 single number."""
 DISTINCT_MODES_QUALITY_MARGIN = 10
 TIE_WINDOW_POINTS = 3
@@ -905,7 +895,7 @@ def score_candidates(
     fast_ids: frozenset[str] = FAST_SCENARIO_IDS,
 ) -> list[CandidateScore]:
     """`grades_by_model[model] = {"grades": {scenario_id: PASS|PARTIAL|FAIL},
-    "flags": {...}}` — the manual review of FINAL visible answers."""
+    "flags": {...}}`; the manual review of FINAL visible answers."""
     reviews = {
         s.model_name: (
             dict(grades_by_model.get(s.model_name, {}).get("grades", {})),
@@ -962,14 +952,13 @@ def score_candidates(
 
 
 def prefer(a: CandidateScore, b: CandidateScore) -> bool:
-    """True if `a` should be chosen over `b` (neither disqualified).
+    """True if ``a`` should be chosen over ``b`` (neither disqualified).
 
-    1. Distinct Fast/Deep: a model without it must lead an otherwise
-       comparable model that has it by >= 10 quality points to even be
-       considered ahead.
-    2. Totals more than 3 points apart: higher total.
-    3. Otherwise: higher quality; then lower Fast first-visible latency if it
-       differs by 10% or more; then the smaller installed model.
+    1. A model without distinct Fast/Deep modes needs at least 10 more quality
+       points than one with them.
+    2. Totals more than 3 points apart: the higher total wins.
+    3. Otherwise: higher quality, then Fast first-visible latency if it differs by
+       10% or more, then the smaller model.
     """
     a_distinct, b_distinct = a.reasoning_modes_distinct is True, b.reasoning_modes_distinct is True
     if b_distinct and not a_distinct and a.quality < b.quality + DISTINCT_MODES_QUALITY_MARGIN:
@@ -999,8 +988,9 @@ class Selection:
 
 
 def select_default(scores: Sequence[CandidateScore], baseline: str = BASELINE_MODEL) -> Selection:
-    """The baseline stays unless a non-disqualified challenger is preferred
-    over it by `prefer`. Disqualified candidates can never win."""
+    """Keep the baseline unless a non-disqualified challenger is preferred over it
+    by ``prefer``. Disqualified candidates never win.
+    """
     eligible = [s for s in scores if not s.disqualified]
     if not eligible:
         return Selection(baseline, False, "No eligible candidate; keeping the baseline.")

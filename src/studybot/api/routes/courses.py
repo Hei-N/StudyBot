@@ -1,9 +1,5 @@
-"""Course endpoints — thin translation onto the existing `CourseService`.
-
-No course business logic (validation, delete semantics) lives here; it's
-all in `core.course_service.CourseService`, exactly as the CLI uses it.
-Every call to it is dispatched via `Engine.call` — see `api/engine.py` for
-why that's necessary (SQLite connection thread-affinity).
+"""Course endpoints: thin translation onto ``CourseService``, which holds all
+validation and delete semantics. Calls are dispatched via ``Engine.call``.
 """
 
 from __future__ import annotations
@@ -66,8 +62,6 @@ async def delete_course(course_id: str, engine: Engine = Depends(get_engine)) ->
         await engine.call(engine.app.courses.delete_course, course_id)
     except SessionError as exc:
         raise ApiError(404, COURSE_NOT_FOUND, str(exc)) from exc
-    # Chats/messages are untouched by design (ON DELETE SET NULL) — this
-    # only refreshes this process's in-memory active-chat context in case
-    # it was showing the now-deleted course, mirroring the CLI's own
-    # `/course delete` handling. A no-op if unrelated to the active chat.
+    # Chats are untouched (ON DELETE SET NULL); this only refreshes the in-memory
+    # active-chat context if it showed the deleted course.
     await engine.call(engine.app.sessions.sync_active_chat_course)

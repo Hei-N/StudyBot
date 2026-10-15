@@ -2,11 +2,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// Where the Study Bot engine is and how to authenticate with it.
 ///
-/// Stage 5.5's Python API is launched separately (see API_CONTRACT.md) and
-/// prints its port + bearer token to stdout on startup; there is no
-/// auto-launch or discovery here yet, so the user enters both once in
-/// Settings and they're remembered for next time. The token is never
-/// hardcoded and never bundled with the app.
+/// The Python API is launched separately (see API_CONTRACT.md) and prints its
+/// port and bearer token to stdout on startup. There is no auto-launch or
+/// discovery, so the user enters both once and they are remembered. The token
+/// is never hardcoded or bundled with the app.
 class ConnectionConfig {
   const ConnectionConfig({required this.baseUrl, required this.token});
 

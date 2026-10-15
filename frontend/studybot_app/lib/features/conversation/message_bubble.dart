@@ -7,23 +7,19 @@ import '../../core/theme/app_radii.dart';
 import '../../core/theme/app_spacing.dart';
 
 /// One message turn. User messages are right-aligned in a tinted surface;
-/// assistant messages are left-aligned, full-width-reading, selectable
-/// Markdown text — not a narrow mobile-style bubble, per the desktop-first
-/// design brief.
+/// assistant messages are left-aligned, full-width, selectable Markdown.
 class MessageBubble extends StatelessWidget {
   const MessageBubble({super.key, required this.message, this.isStreaming = false, this.onSaveToMemory});
 
   final ChatMessage message;
 
-  /// True only for the single in-progress assistant turn — used to avoid a
-  /// jarring "no content yet" flash before the first delta arrives.
+  /// True only for the in-progress assistant turn; avoids an empty flash before
+  /// the first delta arrives.
   final bool isStreaming;
 
-  /// Shows a small "Save to Learning Memory" action beneath the message
-  /// when provided (Stage 6) — omitted entirely for the in-flight
-  /// streaming bubble, which has no persisted id yet to use as
-  /// provenance. Kept deliberately simple: one action, no annotation
-  /// system, no text selection required.
+  /// Shows a "Save to Learning Memory" action beneath the message when provided.
+  /// Omitted for the in-flight streaming bubble, which has no persisted id to
+  /// use as provenance.
   final VoidCallback? onSaveToMemory;
 
   @override

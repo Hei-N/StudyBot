@@ -11,10 +11,9 @@ def test_a_fresh_temp_directory_is_considered_safe(tmp_path):
 
 
 def test_no_data_dir_override_at_all_is_unsafe():
-    """The exact real-world mistake this stage fixes: forgetting to set
-    STUDYBOT_DATA_DIR (or setting an unrecognized variable that has no
-    effect, like the nonexistent STUDYBOT_DB_PATH) silently resolves to
-    the real default — must be caught, not silently allowed."""
+    """Forgetting to set STUDYBOT_DATA_DIR (or setting an unrecognized variable such
+    as STUDYBOT_DB_PATH) silently resolves to the real default; it must be caught.
+    """
     settings = Settings.from_env(env={})
 
     with pytest.raises(UnsafeVerificationEnvironmentError):
@@ -51,7 +50,7 @@ def test_a_parent_directory_of_the_real_default_is_unsafe():
 
 def test_a_sibling_directory_is_safe(tmp_path):
     """Not every path that happens to share a common ancestor with the
-    real default is unsafe — only the real default itself, or something
+    real default is unsafe; only the real default itself, or something
     that contains it or is contained by it."""
     sibling = default_data_dir().parent / "SomeOtherApp"
 

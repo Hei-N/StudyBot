@@ -146,7 +146,7 @@ def test_delete_actually_removes_it(service):
         service.get(memory.id)
 
 
-# --- duplicate policy (Stage 6 §16) -------------------------------------------------------
+# --- duplicate policy ----------------------------------------------------------------------
 
 
 def test_creating_exact_duplicate_topic_and_kind_raises_conflict(service):
@@ -226,7 +226,7 @@ def test_restore_into_a_duplicate_raises_conflict(service):
         service.restore(memory.id)
 
 
-# --- conflicting/superseding memory (Stage 6 §17) -----------------------------------------
+# --- conflicting/superseding memory --------------------------------------------------------
 
 
 def test_creating_understands_archives_existing_active_needs_review_same_topic(service):
@@ -297,7 +297,7 @@ def test_restore_that_supersedes_archives_the_other_active_entry(service):
     assert service.get(needs_review.id).status is MemoryStatus.ARCHIVED
 
 
-# --- context building (Stage 6 §13-14) -----------------------------------------------------
+# --- context building ----------------------------------------------------------------------
 
 
 def test_no_active_memories_returns_none_context(service):
@@ -402,7 +402,7 @@ def test_context_composition_is_deterministic(service, course_repository):
 
 def test_changing_teaching_mode_does_not_alter_stored_memory(service, course_repository):
     """Sanity check at the service layer: nothing here reads or writes
-    teaching mode at all — memory context is entirely independent of it."""
+    teaching mode at all; memory context is entirely independent of it."""
     course = course_repository.create_course("c1", "Physics", None, None, None)
     memory = service.create(topic="Vectors", kind=MemoryKind.NEEDS_REVIEW, summary="s", course_id=course.id)
 

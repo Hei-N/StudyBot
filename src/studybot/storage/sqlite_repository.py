@@ -1,11 +1,8 @@
-"""SQLite-backed `ChatRepository`.
+"""SQLite-backed ``ChatRepository``.
 
-This is one of two modules allowed to contain SQL (the other is
-`sqlite_course_repository.py`). Everything else — CLI, `SessionService`,
-`CourseService`, a future GUI — talks to the `ChatRepository` protocol.
-
-Schema creation and migration are handled by `storage.database`, which owns
-the shared `sqlite3.Connection` this repository is given.
+One of three modules that contain SQL (with ``sqlite_course_repository.py`` and
+``sqlite_learning_memory_repository.py``). Schema creation and migration live in
+``storage.database``, which owns the shared connection this repository receives.
 """
 
 from __future__ import annotations
@@ -27,10 +24,11 @@ def _now() -> str:
 
 
 def _parse_stored_mode(value: str) -> TeachingMode:
-    """Convert a stored mode string to `TeachingMode` at the repository
-    boundary. An unrecognized value (e.g. from manual DB tampering or a
-    future downgrade) never propagates as a raw string — it deliberately
-    falls back to the default mode, logged for visibility."""
+    """Convert a stored mode string to ``TeachingMode``.
+
+    An unrecognized value (manual edits, a downgrade) falls back to the default
+    mode and is logged.
+    """
     try:
         return TeachingMode(value)
     except ValueError:
@@ -39,7 +37,7 @@ def _parse_stored_mode(value: str) -> TeachingMode:
 
 
 def _parse_stored_reasoning_mode(value: str) -> ReasoningMode:
-    """Like `_parse_stored_mode`, for the independent `reasoning_mode` column."""
+    """Like ``_parse_stored_mode``, for ``reasoning_mode``."""
     try:
         return ReasoningMode(value)
     except ValueError:
@@ -60,7 +58,7 @@ def _row_to_session(row: sqlite3.Row) -> ChatSession:
 
 
 class SQLiteChatRepository:
-    """Talks to a shared SQLite connection via the standard-library `sqlite3`."""
+    """``ChatRepository`` over a shared SQLite connection."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._conn = connection

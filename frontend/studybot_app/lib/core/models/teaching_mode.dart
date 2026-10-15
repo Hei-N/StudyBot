@@ -1,10 +1,9 @@
 /// Display metadata for one teaching mode, as returned by
 /// `GET /api/v1/modes` and `GET/PUT /api/v1/chats/{id}/mode`.
 ///
-/// Mirrors `ModeInfoOut` in API_CONTRACT.md. The set of modes and their
-/// wording are backend-owned (`core.teaching_mode`/`core.mode_prompts` in
-/// Python) — nothing here duplicates that as business logic; this is pure
-/// display data fetched from the engine.
+/// Mirrors `ModeInfoOut` in API_CONTRACT.md. The modes and their wording are
+/// owned by the backend (`core.teaching_mode`/`core.mode_prompts`); this is
+/// display data only.
 class TeachingModeInfo {
   const TeachingModeInfo({required this.id, required this.displayName, required this.description});
 

@@ -374,12 +374,13 @@ def test_delete_not_found(client):
     assert response.json()["code"] == "MEMORY_NOT_FOUND"
 
 
-# --- explicit-by-id (Stage 5.8 style) regression ------------------------------------------
+# --- explicit-by-id regression -------------------------------------------------------
 
 
 def test_memory_operations_never_require_opening_a_chat_or_course_first(client):
-    """No hidden "activate" step anywhere in this router — every route
-    works purely by the ids in the URL/body, exactly like chats (Stage 5.8)."""
+    """No hidden "activate" step: every route works from the ids in the URL/body,
+    like the chat routes.
+    """
     course = client.post("/api/v1/courses", json={"name": "Physics"}, headers=HEADERS).json()
     memory = create_memory(client, courseId=course["id"]).json()
 

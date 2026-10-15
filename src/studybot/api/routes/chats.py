@@ -1,22 +1,8 @@
-"""Chat endpoints — thin translation onto `SessionService`'s explicit-by-id
-operations (Stage 5.8).
+"""Chat endpoints: thin translation onto ``SessionService``'s explicit-by-id operations.
 
-Every route below addresses its chat purely by the `chat_id` in the URL,
-via `SessionService`'s explicit layer (`send_to_chat`, `rename_chat`,
-`set_teaching_mode_for_chat`, ...) — never the CLI-style active-chat
-cursor. This is deliberate: an earlier version of this file switched a
-single mutable "active chat" to `chat_id` before every write (see
-API_CONTRACT.md's git history / Stage 5.7 report for the old
-`_activate()` helper), which made two different chat ids unsafe to
-interleave against one running server process — creating a second chat
-before the first had ever been messaged could silently evict the first's
-unpersisted in-memory state and make it 404. `SessionService.create_chat`
-now always persists immediately, and the explicit layer always loads a
-chat fresh from the repository by id, so no such coupling exists anymore.
-
-Every call to `SessionService`/`CourseService` is dispatched via
-`Engine.call` — see `api/engine.py` for why (SQLite connection thread
-affinity), not for chat-cursor safety.
+Every route addresses its chat by the ``chat_id`` in the URL and never uses the
+CLI's active-chat cursor. Calls are dispatched via ``Engine.call`` (see
+``api/engine.py``).
 """
 
 from __future__ import annotations
@@ -72,9 +58,7 @@ async def create_chat(body: ChatCreateIn, engine: Engine = Depends(get_engine)) 
         course = await engine.call(engine.app.courses.get_course, body.course_id)
         if course is None:
             raise ApiError(404, COURSE_NOT_FOUND, f"No course found with id '{body.course_id}'.")
-    # Immediately persisted (Stage 5.8) — the returned id is a real row
-    # from this point on, addressable by every route below even with zero
-    # messages, unlike the CLI's lazy `/new`.
+    # Persisted immediately: the returned id is addressable even with zero messages.
     chat = await engine.call(engine.app.sessions.create_chat, body.course_id)
     return chat_to_out(chat)
 

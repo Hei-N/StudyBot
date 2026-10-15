@@ -1,14 +1,9 @@
-"""Model provider abstraction.
+"""Model provider interface.
 
-Every backend (mock, Ollama, a hosted API, a future router, ...) implements
-`ModelProvider`. Nothing outside this module and its implementations should
-know or care which concrete backend is in use.
-
-`generate` returns a complete response and is the simplest path for callers
-(and tests) that don't need progressive output. `stream` yields response
-content incrementally for interfaces that want to display tokens as they
-arrive; both exist side by side rather than streaming replacing the
-non-streaming path.
+Every backend (mock, Ollama, a hosted API, ...) implements ``ModelProvider``;
+code outside this module and its implementations does not depend on which one
+is in use. ``generate`` returns a complete response and ``stream`` yields it
+incrementally.
 """
 
 from __future__ import annotations
@@ -30,49 +25,36 @@ class ModelResponse:
 
 @dataclass(frozen=True, slots=True)
 class ProviderStatus:
-    """A point-in-time snapshot of a provider's health.
-
-    Produced on demand (e.g. for a CLI `/status` command) — providers must
-    not poll continuously to keep this up to date.
-    """
+    """A snapshot of a provider's health, produced on demand rather than polled."""
 
     provider_name: str
     server_reachable: bool
     model_name: str
     model_available: bool | None
-    """True/False if known; None if it couldn't be determined (e.g. the
-    server itself is unreachable, or the provider has no such concept)."""
+    """None if unknown (e.g. the server is unreachable)."""
     detail: str | None = None
-    """Optional human-readable elaboration, e.g. a connection error hint."""
+    """Optional human-readable detail, e.g. a connection hint."""
 
 
 @dataclass(frozen=True, slots=True)
 class ModelCapabilities:
-    """What a provider's *model* reports it can do (Stage 6.4).
+    """What a provider's model reports it can do.
 
-    Each flag is three-valued: `True` = the provider positively reports
-    support, `False` = it positively reports a lack of support, `None` =
-    it couldn't be safely determined (metadata unavailable or malformed).
-
-    This describes the MODEL, not StudyBot. `supports_vision=True` means
-    the model can accept visual input — NOT that StudyBot's text-only
-    `Message` pipeline can send it an image today. Likewise for tools.
-    Nothing in the application changes behavior because of these values
-    yet; they exist so future stages (vision, tools, model selection) can
-    be designed against measured facts instead of model-family guesses.
+    Each flag is True (reported supported), False (reported unsupported) or None
+    (could not be determined). This describes the model, not StudyBot:
+    ``supports_vision=True`` does not mean the text-only ``Message`` pipeline can
+    send an image.
     """
 
     supports_vision: bool | None
     supports_tools: bool | None
     supports_thinking: bool | None
     reasoning_modes_distinct: bool | None
-    """Whether Fast and Deep genuinely differ for this model. False for an
-    always-thinking model (both must reason so the reasoning can be kept
-    out of the answer) and for a model without thinking; None if unknown."""
+    """Whether Fast and Deep genuinely differ. False for an always-thinking
+    model (both modes must reason) and for a model without thinking."""
     context_window: int | None
-    """The model's advertised maximum context length in tokens, when safely
-    discoverable. Not the context a server is currently configured to
-    use — that is a separate, smaller runtime setting."""
+    """Advertised maximum context length in tokens. Not the (smaller) context
+    the server is currently configured to use."""
 
 
 class ModelProvider(Protocol):
@@ -80,62 +62,44 @@ class ModelProvider(Protocol):
 
     @property
     def name(self) -> str:
-        """A short identifier for the backend (e.g. 'mock', 'ollama')."""
+        """Short backend identifier, e.g. 'mock' or 'ollama'."""
         ...
 
     def generate(
         self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
     ) -> ModelResponse:
-        """Produce a complete response given the full conversation so far.
+        """Return a complete response for the conversation so far.
 
-        `reasoning_mode` is a generic preference — how much inference-time
-        "thinking" to do before answering — passed through explicitly by
-        the caller rather than left to the backend's own default. A
-        provider with no such concept is free to ignore it, deliberately
-        (see e.g. `MockModel`); nothing above this layer (`ChatService`,
-        `SessionService`) knows or cares which concrete backend, if any,
-        actually acts on it.
-
-        Implementations should raise `studybot.core.exceptions.ModelError`
-        on failure rather than letting backend-specific exceptions escape.
-        A provider must never return hidden reasoning/thinking text as part
-        of `ModelResponse.content` — only the final, user-visible answer.
+        ``reasoning_mode`` is a generic preference for how much hidden "thinking" to
+        do; a provider with no such concept may ignore it. Implementations raise
+        ``ModelError`` on failure and must never return hidden reasoning, only the
+        final answer.
         """
         ...
 
     def stream(
         self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
     ) -> Iterator[str]:
-        """Produce a response incrementally, yielding content chunks.
+        """Yield the response incrementally.
 
-        Concatenating all yielded chunks must equal what `generate` would
-        have returned as `ModelResponse.content` for the same input, given
-        the same `reasoning_mode` (see `generate`). Implementations should
-        raise `ModelError` (before yielding anything, or by letting the
-        exception propagate out of iteration) rather than letting
-        backend-specific exceptions escape. Hidden reasoning/thinking
-        chunks, if the backend emits them, must never be yielded here —
-        only user-visible content.
+        The concatenated chunks equal what ``generate`` returns for the same input.
+        Failures raise ``ModelError``; hidden reasoning is never yielded.
 
-        An empty string is a *progress signal*, not content: providers may
-        yield `""` while the model is working without producing visible
-        text yet (e.g. reasoning). Callers that display or send chunks
-        skip empty ones. It exists because the API runs each `next()` on
-        its single engine thread (`api/websocket.py`): a provider that sat
-        silently inside one `next()` for a minute of reasoning would block
-        every other request — health checks included — for that long.
+        An empty string is a progress signal, not content. Providers yield it while
+        the model is working without visible output so the API's single engine thread
+        can serve other requests in between. Consumers skip empty chunks.
         """
         ...
 
     def get_status(self) -> ProviderStatus:
-        """Check current health: is the backend reachable, is the
-        configured model available. Call only when status is actually
-        needed (e.g. a `/status` command) — not on a timer."""
+        """Return current backend health. Call on demand, not on a timer."""
         ...
 
     def get_capabilities(self) -> ModelCapabilities:
-        """What the configured model reports it supports. Discovered, never
-        assumed from a model's name; unknowns are `None`. May perform a
-        lazy, cached metadata lookup — never on every request, and never
-        raises for an unreachable backend (returns unknowns instead)."""
+        """Return what the model reports it supports.
+
+        Values are discovered, never inferred from the model name; unknown values are
+        None. May perform a cached metadata lookup and does not raise if the backend
+        is unreachable.
+        """
         ...

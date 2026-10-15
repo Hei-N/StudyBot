@@ -1,9 +1,7 @@
-"""GET /api/v1/reasoning-modes — the reasoning-mode catalog for a Flutter
-reasoning picker.
+"""``GET /api/v1/reasoning-modes``: the reasoning-mode catalog, derived from
+``core.reasoning_mode.all_modes()``.
 
-Derived directly from `core.reasoning_mode.all_modes()` — the mode
-definitions are never duplicated here. Pure domain data with no I/O, so
-(like `routes/modes.py`) this needs no `Engine` dispatch at all.
+Pure domain data, so no ``Engine`` dispatch is needed.
 """
 
 from __future__ import annotations

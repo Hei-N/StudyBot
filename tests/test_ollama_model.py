@@ -215,7 +215,7 @@ def test_stream_turns_empty_or_none_content_into_progress_signals():
 
 def test_stream_never_yields_hidden_thinking_chunks():
     """Ollama's streaming chunks carry `thinking` and `content` as separate
-    fields on the same message — a chunk that's *only* thinking (as real
+    fields on the same message; a chunk that's *only* thinking (as real
     Qwen3 output looks like before the visible answer starts) must never
     leak into what this provider yields."""
 
@@ -369,7 +369,7 @@ def test_status_does_not_raise_on_unexpected_error():
     assert status.model_available is None
 
 
-# --- Stage 6.4: provider-neutral capabilities ---------------------------------------
+# --- provider-neutral capabilities ---------------------------------------------------
 
 
 def show_payload(

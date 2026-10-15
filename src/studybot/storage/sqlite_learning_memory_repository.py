@@ -1,16 +1,9 @@
-"""SQLite-backed `LearningMemoryRepository`.
+"""SQLite-backed ``LearningMemoryRepository``.
 
-One of three modules allowed to contain SQL (the others are
-`sqlite_repository.py` for chats and `sqlite_course_repository.py` for
-courses). Everything else — CLI, API routes, `LearningMemoryService`, a
-future GUI — talks to the `LearningMemoryRepository` protocol.
-
-Schema creation and migration are handled by `storage.database`, which owns
-the shared `sqlite3.Connection` this repository is given. `ON DELETE SET
-NULL` on both foreign keys (declared in that schema) is what makes deleting
-a course or a chat clear `course_id`/`source_chat_id` here without ever
-deleting the memory row itself — this repository issues no cleanup SQL of
-its own for that.
+One of three modules that contain SQL; see ``sqlite_repository.py``.
+``ON DELETE SET NULL`` on both foreign keys (declared in ``storage.database``)
+clears ``course_id``/``source_chat_id`` when a course or chat is deleted; this
+repository issues no cleanup SQL for that.
 """
 
 from __future__ import annotations
@@ -30,12 +23,11 @@ def _now() -> str:
 
 
 def _parse_stored_kind(value: str) -> MemoryKind:
-    """Convert a stored kind string to `MemoryKind` at the repository
-    boundary. An unrecognized value (manual DB tampering, a future
-    downgrade) never propagates as a raw string — callers of `list`/`get`
-    would otherwise crash on a value outside the closed enum; instead this
-    logs a warning and falls back to `LEARNING_GOAL`, the most neutral
-    kind (it never participates in the conflict/supersession policy)."""
+    """Convert a stored kind string to ``MemoryKind``.
+
+    An unrecognized value (manual edits, a downgrade) is logged and falls back to
+    ``LEARNING_GOAL``, which never takes part in conflict resolution.
+    """
     try:
         return MemoryKind(value)
     except ValueError:
@@ -66,7 +58,7 @@ def _row_to_memory(row: sqlite3.Row) -> LearningMemory:
 
 
 class SQLiteLearningMemoryRepository:
-    """Talks to a shared SQLite connection via the standard-library `sqlite3`."""
+    """``LearningMemoryRepository`` over a shared SQLite connection."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._conn = connection

@@ -59,11 +59,8 @@ void main() {
     'a freshly created (unpersisted) chat stays visible even though the backend '
     'would not list it yet — API_CONTRACT.md "Lazy persistence"',
     () async {
-      // Regression test: found via real end-to-end verification against the
-      // running API server — a brand-new chat has no database row until its
-      // first message completes, so GET /chats excludes it. create() must
-      // not blindly refresh() afterward, or the chat the user just made
-      // would disappear immediately.
+      // create() must patch state locally instead of refreshing: the fake simulates a
+      // list that does not return the new chat yet, which would make it vanish.
       final api = FakeStudyBotApi();
       final container = ProviderContainer(overrides: [studyBotApiProvider.overrideWithValue(api)], retry: kNoRetry);
       addTearDown(container.dispose);
@@ -72,9 +69,8 @@ void main() {
       final created = await container.read(chatsProvider.notifier).create();
       api.phantomChatIds.add(created.id);
 
-      // The real backend's GET /chats would exclude this id entirely right
-      // now — confirm the fake agrees, then confirm our provider still
-      // shows it because it patched state locally instead of refreshing.
+      // The fake's list excludes this id; confirm the provider still shows it
+      // because it patched state locally.
       expect(await api.listChats(), isNot(contains(created)));
       expect(container.read(chatsProvider).value!.map((c) => c.id), contains(created.id));
     },

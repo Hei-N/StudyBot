@@ -1,21 +1,18 @@
-"""Audit (and, only on explicit request, repair) stored assistant replies
-that contain leaked model reasoning (Stage 6.3).
+"""Audit, and optionally repair, stored assistant replies that contain leaked
+model reasoning.
 
-Replies saved before the provider-boundary fix may hold a thinking model's
-chain-of-thought ahead of the real answer. `ChatService` already keeps that
-reasoning out of every new model request without touching storage (see
-`core.output_integrity.strip_confident_reasoning`); this module is for the
-user who also wants the stored text itself cleaned up.
+New requests already keep confidently identified reasoning out of the model's
+context (``core.output_integrity.strip_confident_reasoning``) without touching
+storage; this module is for cleaning up the stored text itself.
 
-* `audit_database` is strictly read-only: it opens SQLite with
-  `mode=ro`, so it cannot write even by accident, and its report holds ids
-  and counts only — never message content.
-* `repair_database` changes only replies classified CONTAMINATED, only
-  after writing a full backup copy of the database, in one transaction,
-  and returns a manifest (message ids only) that `rollback_repair` uses
-  to restore exactly those rows from the backup. Nothing calls it
-  automatically; it exists for `scripts/audit_reasoning_contamination.py
-  --apply`, which the user runs deliberately.
+* ``audit_database`` is read-only (SQLite ``mode=ro``) and reports ids and
+  counts, never message content.
+* ``repair_database`` rewrites only CONTAMINATED replies, after writing a full
+  backup, in one transaction, and returns a manifest of message ids.
+  ``rollback_repair`` restores exactly those rows from the backup.
+
+Nothing runs a repair automatically; it is exposed through
+``scripts/audit_reasoning_contamination.py --apply``.
 """
 
 from __future__ import annotations
@@ -115,11 +112,9 @@ class RepairManifest:
 def repair_database(db_path: Path, backup_dir: Path) -> RepairManifest:
     """Replace each CONTAMINATED reply with its answer alone.
 
-    Order: full backup first (SQLite's online backup API, so it's a
-    consistent copy), then every update in a single transaction that
-    re-classifies each row inside it — a reply that changed since the
-    audit is judged on its current content. AMBIGUOUS replies are never
-    touched. The returned manifest is also written next to the backup.
+    Writes a consistent backup first (SQLite's backup API), then updates all rows
+    in one transaction, re-classifying each row inside it. AMBIGUOUS replies are
+    never touched. The manifest is also written next to the backup.
     """
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -157,9 +152,9 @@ def repair_database(db_path: Path, backup_dir: Path) -> RepairManifest:
 
 
 def rollback_repair(manifest: RepairManifest) -> int:
-    """Restore exactly the rows a repair changed, from its backup. Returns
-    the number of rows restored. Rows deleted since (e.g. the chat was
-    deleted) are skipped, never re-created."""
+    """Restore the rows a repair changed from its backup and return how many were
+    restored. Rows deleted since are skipped, not re-created.
+    """
     backup = _connect_read_only(Path(manifest.backup))
     try:
         originals = {

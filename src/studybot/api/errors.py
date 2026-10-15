@@ -1,9 +1,8 @@
 """Stable, machine-readable API error codes.
 
-Flutter (or any client) should switch on `code`, never parse `message` —
-`message` is a human-readable, user-safe string for display, not a contract.
-Python tracebacks never reach a client; `server.py`'s catch-all handler logs
-unexpected exceptions server-side and returns `INTERNAL_ERROR` instead.
+Clients switch on ``code`` and never parse ``message``, which is for display.
+Tracebacks never reach a client; ``server.py``'s catch-all handler logs them
+and returns ``INTERNAL_ERROR``.
 """
 
 from __future__ import annotations
@@ -25,13 +24,7 @@ INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
 class ApiError(Exception):
-    """Raised by route handlers to produce a structured error response.
-
-    Route handlers translate domain exceptions (`SessionError`, `ModelError`,
-    ...) into one of these with the appropriate HTTP status and stable
-    `code` — that translation is transport-layer plumbing, not business
-    logic, so it stays here rather than changing what the domain layer
-    raises.
+    """Raised by route handlers to produce a structured error response with an HTTP status and stable ``code``.
     """
 
     def __init__(self, status_code: int, code: str, message: str) -> None:

@@ -1,9 +1,9 @@
-"""Stage 6.3: no model reasoning reaches any visible, persisted or re-sent
-surface — for every teaching mode × reasoning mode, streaming and not.
+"""No model reasoning reaches any visible, persisted or re-sent output, for every
+teaching mode and reasoning mode, streaming and not.
 
-Everything runs against `FakeThinkingModelClient` (tests/fake_ollama.py),
-which reproduces how Ollama serves thinking Qwen3 models; no real Ollama
-is involved.
+Everything runs against ``FakeThinkingModelClient`` (tests/fake_ollama.py),
+which reproduces how Ollama serves thinking Qwen3 models; no real Ollama is
+involved.
 """
 
 import logging
@@ -152,9 +152,10 @@ def test_thinking_only_model_answer_is_clean_in_both_modes(mode):
 
 
 def test_legacy_fast_mapping_on_thinking_only_model_would_leak():
-    """Documents the pre-6.3 root cause: think=False on a thinking-only
-    model puts reasoning in `content`. With capability UNKNOWN the filter's
-    implicit mode still recovers the answer."""
+    """Root cause of the original leak: ``think=False`` on a thinking-only model puts
+    reasoning in ``content``. With capability UNKNOWN, the filter's implicit mode
+    still recovers the answer.
+    """
     client = FakeThinkingModelClient(thinking_only=True)
     raw = client.chat("qwen3:4b", [], stream=False, think=False).message.content
     assert REASONING_SENTINEL in raw
@@ -164,9 +165,9 @@ def test_legacy_fast_mapping_on_thinking_only_model_would_leak():
 
 
 def test_misreported_toggleable_model_leak_fails_closed_in_fast():
-    """If a model claims to be toggleable but leaks untagged reasoning
-    under think=False anyway, the tripwire fails the generation rather than
-    let the rest stream on."""
+    """If a model claims to be toggleable but leaks untagged reasoning under
+    ``think=False``, the filter fails the generation instead of streaming on.
+    """
     model = make_model(FakeThinkingModelClient(thinking_only=True), ThinkingCapability.TOGGLEABLE)
     with pytest.raises(UnsafeModelOutputError):
         list(model.stream([Message.user("x")], reasoning_mode=ReasoningMode.FAST))
@@ -246,9 +247,9 @@ def ws_send(client, chat_id, content):
 
 
 def seed_messages(client, chat_id, *pairs):
-    """Write raw messages straight to storage (as a pre-6.3 build would
-    have), on the engine's own worker thread — SQLite connections are
-    thread-bound."""
+    """Write raw messages straight to storage, as an older build would have, on the
+    engine's worker thread (SQLite connections are thread-bound).
+    """
     engine = client.app.state.engine
     repository = engine.app.sessions._repository
 
@@ -316,8 +317,9 @@ def test_matrix_non_streaming_integrity(tmp_path, monkeypatch, teaching, reasoni
 
 @pytest.mark.parametrize("reasoning", list(ReasoningMode))
 def test_original_eng303_practice_scenario(api, reasoning):
-    """The reported failure: Practice mode, 'help me to work practice
-    quizzes', then 'ok'."""
+    """The reported failure: Practice mode, "help me to work practice quizzes",
+    then "ok".
+    """
     course = api.post("/api/v1/courses", json={"name": "ENG303"}, headers=HEADERS).json()
     chat_id = new_chat(api, TeachingMode.PRACTICE, reasoning)
     api.put(f"/api/v1/chats/{chat_id}/course", json={"courseId": course["id"]}, headers=HEADERS)
@@ -401,8 +403,8 @@ def test_unsafe_output_error_maps_to_model_error_for_callers():
 
 
 class SlowThinkingClient(FakeThinkingModelClient):
-    """Streams thinking-only chunks until `release` is set, then the answer
-    — like a real thinking model's long, silent reasoning phase."""
+    """Streams thinking-only chunks until ``release`` is set, then the answer, like a long silent reasoning phase.
+    """
 
     def __init__(self):
         super().__init__()
@@ -418,10 +420,10 @@ class SlowThinkingClient(FakeThinkingModelClient):
 
 
 def test_health_stays_responsive_while_a_reply_is_reasoning(tmp_path, monkeypatch):
-    """Regression (found in manual testing): with reasoning no longer leaking
-    as visible chunks, a stream sat inside a single `next()` on the API's one
-    engine thread for the whole reasoning phase, so `/health` (and every
-    other request) timed out and the app showed "engine unavailable"."""
+    """Regression: with reasoning hidden, a stream could sit in one ``next()`` on the
+    engine thread for the whole reasoning phase, so ``/health`` timed out and the
+    app showed "engine unavailable".
+    """
     fake = SlowThinkingClient()
     monkeypatch.setattr(app_module, "create_model", lambda settings: make_model(fake))
     settings = Settings.from_env(env={"STUDYBOT_MODEL_PROVIDER": "mock", "STUDYBOT_DATA_DIR": str(tmp_path)})

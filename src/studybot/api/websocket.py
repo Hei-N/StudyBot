@@ -1,20 +1,12 @@
-"""WebSocket streaming chat — the primary way a client sends a message and
-receives a response.
+"""WebSocket streaming chat.
 
-Reuses `SessionService.send_streaming_to_chat()` (Stage 5.8's explicit-by-id
-layer) — there is no second streaming implementation, and no "activate this
-chat first" step: each `send_message` loads exactly the chat it names,
-fresh from the repository, regardless of what other chats have been
-created or messaged on this or any other connection in the meantime. See
-`core/session_service.py`'s module docstring for the full rationale, and
-API_CONTRACT.md for the event protocol and documented client-disconnect
-behavior.
+Reuses ``SessionService.send_streaming_to_chat``: each ``send_message`` loads
+exactly the chat it names, so chats and connections do not affect each other.
+See API_CONTRACT.md for the event protocol.
 
-`SessionService.send_streaming_to_chat` is a plain (synchronous) generator
-— each `next()` call is dispatched to the same dedicated engine thread
-every other API call uses (see `api/engine.py`), both so a slow/blocking
-Ollama call never stalls the event loop for other connections, and so it
-never touches the shared SQLite connection from the wrong thread.
+The service method is a synchronous generator. Each ``next()`` runs on the
+shared engine thread (``api/engine.py``), so a slow model call never blocks
+the event loop and the SQLite connection is only used from its own thread.
 """
 
 from __future__ import annotations
@@ -38,12 +30,13 @@ _UNAUTHORIZED_WS_CLOSE_CODE = 4401
 
 
 async def _iterate_in_thread(engine: Engine, generator: Iterator[str]) -> AsyncIterator[str]:
-    """Adapt a synchronous generator to an async one, running each `next()`
-    call on the engine's dedicated thread. Exceptions raised inside the
-    generator (e.g. `ModelError`, `ChatBusyError`) propagate through
-    normally — including on the very first `next()`, since
-    `send_streaming_to_chat` resolves the chat id and acquires its
-    generation lock lazily, not at generator-construction time."""
+    """Adapt a synchronous generator to an async one, running each ``next()`` on the
+    engine thread.
+
+    Errors from the generator (``ModelError``, ``ChatBusyError``) propagate,
+    including from the first ``next()``, since the chat lookup and lock
+    acquisition happen lazily.
+    """
     sentinel = object()
     while True:
         chunk = await engine.call(next, generator, sentinel)
@@ -57,8 +50,7 @@ async def chat_stream(websocket: WebSocket) -> None:
     engine: Engine = websocket.app.state.engine
     provided = extract_bearer_token(websocket.headers.get("authorization"))
     if not token_matches(provided, websocket.app.state.api_token):
-        # Reject before accept(): no data is exchanged with an unauthenticated
-        # client at all.
+        # Reject before accept(): exchange no data with unauthenticated clients.
         await websocket.close(code=_UNAUTHORIZED_WS_CLOSE_CODE)
         return
 
@@ -87,13 +79,8 @@ async def _handle_message(websocket: WebSocket, engine: Engine, payload: Any) ->
         )
         return
 
-    # Checked explicitly (and stateless-ly — no cursor touched) before
-    # `message_started` is sent, so an unknown chat id fails fast with just
-    # an `error` event, exactly like the old cursor-based `_activate()`
-    # pre-check did — `send_streaming_to_chat` would also raise
-    # `ChatNotFoundError`, but only lazily on the first `next()`, which
-    # would otherwise leave a stray `message_started` for a chat that was
-    # never going to work.
+    # Check the chat first so an unknown id yields a single error event
+    # instead of a stray message_started.
     if await engine.call(engine.app.sessions.get_chat, chat_id) is None:
         await _send_error(websocket, CHAT_NOT_FOUND, f"No chat found with id '{chat_id}'.", chat_id)
         return
@@ -112,9 +99,8 @@ async def _handle_message(websocket: WebSocket, engine: Engine, payload: Any) ->
         await _send_error(websocket, CHAT_BUSY, str(exc), chat_id)
         return
     except ModelError as exc:
-        # A failed generation persists only the user's message (the same
-        # guarantee ChatService/SessionService have had since Stage 2) — no
-        # incomplete assistant reply is ever sent as if it were complete.
+        # A failed generation persists only the user's message; an incomplete
+        # reply is never sent as complete.
         await _send_error(websocket, MODEL_ERROR, str(exc), chat_id)
         return
     finally:

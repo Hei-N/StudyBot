@@ -1,17 +1,11 @@
-"""Runs synchronous `StudyBotApp`/service calls on one dedicated thread.
+"""Runs ``StudyBotApp`` calls on one dedicated thread.
 
-`StudyBotApp` (like the rest of Study Bot, designed for the single-threaded
-CLI) owns a single `sqlite3.Connection`, which Python's `sqlite3` module
-ties to the thread that created it. FastAPI dispatches sync route handlers
-to a worker *pool* — a different thread per call, sometimes concurrently —
-so calling into `StudyBotApp` directly from a route handler intermittently
-raises `sqlite3.ProgrammingError: SQLite objects created in a thread can
-only be used in that same thread` (verified empirically). Routing every
-call (including the `StudyBotApp` constructor itself, in `server.py`'s
-lifespan) through one dedicated single-worker executor fixes this without
-adding any concurrency-control code to the engine itself: only one call
-ever runs at a time, on the one thread that owns the connection, exactly
-mirroring the single-threaded CLI's own access pattern.
+``StudyBotApp`` owns a single ``sqlite3.Connection``, which Python ties to the
+thread that created it. FastAPI runs sync handlers on a worker pool, so calling
+the app directly intermittently raises ``sqlite3.ProgrammingError``. Routing
+every call (including construction, in ``server.py``'s lifespan) through one
+single-worker executor avoids that without any locking: one call runs at a
+time, on the thread that owns the connection.
 """
 
 from __future__ import annotations
@@ -29,10 +23,11 @@ T = TypeVar("T")
 
 
 class Engine:
-    """Bundles the `StudyBotApp` instance with the executor its calls must
-    run on. `engine.app` is safe to read directly for plain attributes
-    (e.g. `engine.app.settings`); anything that touches a service or the
-    database must go through `engine.call(...)`."""
+    """Bundles the ``StudyBotApp`` with the executor its calls must run on.
+
+    Plain attributes (e.g. ``engine.app.settings``) can be read directly; anything
+    touching a service or the database must go through ``engine.call(...)``.
+    """
 
     def __init__(self, app: StudyBotApp, executor: ThreadPoolExecutor) -> None:
         self.app = app

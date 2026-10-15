@@ -1,8 +1,6 @@
-"""Domain object → transport DTO conversion.
+"""Domain object to transport DTO conversion.
 
-The only place that knows both the domain dataclasses (`storage.base`,
-`core.teaching_mode`) and the transport schemas (`api.schemas`). Route
-handlers call these rather than constructing DTOs field-by-field inline.
+The only place that knows both the domain types and ``api.schemas``.
 """
 
 from __future__ import annotations

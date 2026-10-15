@@ -1,7 +1,6 @@
-"""GET /api/v1/health — engine/provider status for the Flutter launcher.
+"""``GET /api/v1/health``: engine and provider status.
 
-Never exposes conversation content, file paths, or anything beyond what
-the CLI's own `/status` command already shows.
+Exposes nothing beyond what the CLI's ``/status`` command shows.
 """
 
 from __future__ import annotations

@@ -18,8 +18,8 @@ def test_factory_resolves_mock_provider():
 
 def test_factory_resolves_ollama_provider_without_touching_network():
     # Building an OllamaModel (and the ollama.Client it holds) is designed to
-    # be side-effect-free — no connection is attempted until a request is
-    # actually made — so this must succeed with no server running and no
+    # be side-effect-free; no connection is attempted until a request is
+    # actually made; so this must succeed with no server running and no
     # patched client at all.
     settings = Settings.from_env(
         env={
@@ -57,7 +57,7 @@ def test_factory_raises_configuration_error_for_unknown_provider():
 
 @pytest.mark.parametrize(
     "tag",
-    ["qwen3:4b", "qwen3.5:4b", "gemma3:4b", "some-future-yourai:1b", "registry.example/org/custom:Q4_K_M", "x"],
+    ["qwen3:4b", "qwen3.5:4b", "gemma3:4b", "custom-finetune:1b", "registry.example/org/custom:Q4_K_M", "x"],
 )
 def test_factory_accepts_any_ollama_model_tag_without_a_whitelist(tag):
     settings = Settings.from_env(env={"STUDYBOT_MODEL_PROVIDER": "ollama", "STUDYBOT_OLLAMA_MODEL": tag})
@@ -83,7 +83,7 @@ def test_factory_accepts_any_ollama_model_tag_without_a_whitelist(tag):
     ],
 )
 def test_every_boundary_module_imports_first_in_a_fresh_interpreter(module):
-    """The model layer must be importable on its own, in any order — a
+    """The model layer must be importable on its own, in any order; a
     circular import used to break `import studybot.models.ollama` unless
     `studybot.core` happened to be imported first (tests always did)."""
     import subprocess

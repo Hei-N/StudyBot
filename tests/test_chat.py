@@ -282,7 +282,7 @@ def test_streaming_failure_propagates_and_does_not_record_assistant_message():
 
 class CapabilitiesModel:
     """Returns a distinctive capabilities object and records how often it
-    was asked — to prove `ChatService` is a pure pass-through."""
+    was asked; to prove `ChatService` is a pure pass-through."""
 
     name = "capabilities"
     CAPABILITIES = ModelCapabilities(True, False, True, False, 4096)

@@ -6,18 +6,14 @@ import '../../core/theme/app_spacing.dart';
 import '../chats/chats_providers.dart';
 import 'reasoning_providers.dart';
 
-/// A small icon for a reasoning mode id — purely presentational, kept
-/// separate from the backend-owned display name/description.
+/// A small icon for a reasoning mode id; presentational only (display names and
+/// descriptions come from the backend).
 IconData _iconFor(String reasoningModeId) => reasoningModeId == 'deep' ? Icons.psychology : Icons.bolt;
 
-/// The compact Reasoning Mode selector, shown next to [ModePicker] in the
-/// composer. Shows the active chat's current mode (from
-/// [Chat.reasoningMode]) and, on selection, calls
-/// [ChatsNotifier.setReasoningMode] — display names/descriptions always
-/// come from the backend catalog, never hardcoded here. Deliberately
-/// smaller/quieter than the teaching-mode picker so the composer stays
-/// uncluttered; defaults to showing "Fast", matching every new chat's
-/// actual default.
+/// The compact reasoning-mode selector, shown next to [ModePicker] in the
+/// composer. Shows the active chat's mode ([Chat.reasoningMode]) and calls
+/// [ChatsNotifier.setReasoningMode] on selection. Names and descriptions come
+/// from the backend catalog. Defaults to "Fast", the default for new chats.
 class ReasoningPicker extends ConsumerWidget {
   const ReasoningPicker({super.key});
 
@@ -49,11 +45,8 @@ class ReasoningPicker extends ConsumerWidget {
                   children: [
                     Icon(_iconFor(mode.id), size: 16, color: theme.colorScheme.onSurfaceVariant),
                     const SizedBox(width: AppSpacing.xs),
-                    // Flexible (not a bare Column) so the description text
-                    // wraps within the popup menu's own max width instead
-                    // of overflowing — a Row's non-flex children are sized
-                    // to their natural/unwrapped width, and this
-                    // description is long enough to exceed that.
+                    // Flexible so the description wraps within the popup's max width; a Row's
+                    // non-flex children are sized unwrapped and this text would overflow.
                     Flexible(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,

@@ -1,9 +1,7 @@
-"""Interactive terminal chat shell.
+"""Interactive terminal shell on top of ``StudyBotApp``.
 
-This is one interface on top of `StudyBotApp` / `SessionService` /
-`CourseService`. It contains no core logic of its own — it only reads
-input, dispatches commands, and prints output. It does not know (and must
-not import) anything Ollama- or SQLite-specific.
+Reads input, dispatches commands and prints output. It contains no core logic
+and imports nothing Ollama- or SQLite-specific.
 """
 
 from __future__ import annotations
@@ -53,7 +51,7 @@ _SHORT_ID_LENGTH = 8
 
 
 def run() -> int:
-    """Run the interactive chat shell. Returns a process exit code."""
+    """Run the interactive shell and return a process exit code."""
     app = StudyBotApp.from_env()
     try:
         return _run_loop(app)
@@ -112,13 +110,9 @@ def _print_banner(app: StudyBotApp) -> None:
 def _send_and_print(app: StudyBotApp, text: str) -> None:
     """Stream a reply to the terminal.
 
-    The "Bot > " prefix is only printed once the first chunk actually
-    arrives, so a failure before any content is produced shows a clean
-    error line instead of a dangling empty prompt. If a failure happens
-    after some content has streamed, that partial text stays visible
-    followed by the error on its own line — it is never mistaken for a
-    complete answer, and it is never persisted, because `SessionService`
-    only writes an assistant message once `ChatService` records one.
+    The "Bot > " prefix appears only once the first chunk arrives, so an early
+    failure shows a clean error line. If a failure occurs after some text has
+    streamed, that text stays visible followed by the error; it is never persisted.
     """
     prefix_printed = False
     try:
@@ -175,9 +169,8 @@ def _handle_command(command: str, app: StudyBotApp) -> bool:
 
 
 def _print_history(app: StudyBotApp) -> None:
-    # The system prompt is always present in `history` (it's re-seeded on
-    # every new/cleared/reloaded chat) but is never shown to the user, so
-    # emptiness must be judged after filtering it out — not before.
+    # The system prompt is always in history but never shown, so judge
+    # emptiness after filtering it out.
     messages = [m for m in app.sessions.history if m.role is not Role.SYSTEM]
     if not messages:
         print("(empty)")
@@ -541,8 +534,7 @@ def _chat_course(app: StudyBotApp, argument: str) -> None:
 
 
 def _prompt(text: str) -> str | None:
-    """Read one line of input; returns None (instead of raising) on
-    EOF/Ctrl+C so a multi-step interactive flow can cancel cleanly."""
+    """Read one line; returns None on EOF/Ctrl+C so multi-step flows can cancel cleanly."""
     try:
         return input(text)
     except (EOFError, KeyboardInterrupt):
@@ -551,8 +543,7 @@ def _prompt(text: str) -> str | None:
 
 
 def _prompt_fields(fields: list[tuple[str, str]]) -> dict[str, str] | None:
-    """Prompt for each (key, prompt_text) pair in order; returns None if
-    the user cancels (EOF/Ctrl+C) partway through."""
+    """Prompt for each (key, prompt) pair in order; returns None if the user cancels partway."""
     answers: dict[str, str] = {}
     for key, prompt_text in fields:
         value = _prompt(prompt_text)
@@ -563,8 +554,7 @@ def _prompt_fields(fields: list[tuple[str, str]]) -> dict[str, str] | None:
 
 
 def _confirm(prompt: str) -> bool:
-    """Ask a yes/no question, defaulting to No on any non-'y' answer,
-    including EOF/Ctrl+C (which cancel the action rather than exiting)."""
+    """Ask a yes/no question. Anything but 'y', including EOF/Ctrl+C, means No."""
     answer = _prompt(f"{prompt} [y/N] ")
     if answer is None:
         return False

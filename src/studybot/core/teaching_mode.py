@@ -1,11 +1,7 @@
-"""Teaching modes: how the assistant should behave in a given chat.
+"""Teaching modes: how the assistant behaves in a chat.
 
-A strict, closed set rather than free-form strings, so callers can't drift
-into typos and a future UI can enumerate `TeachingMode` (via `all_modes()`)
-directly to populate a mode picker without duplicating this list anywhere
-else. This module is pure domain data — no I/O, no CLI concepts, no model
-provider knowledge — so it's reusable by the CLI today and by any future UI
-without change.
+A closed set rather than free-form strings, so a UI can list ``all_modes()`` to
+build a picker. Pure domain data with no I/O.
 """
 
 from __future__ import annotations
@@ -15,7 +11,7 @@ from enum import Enum
 
 
 class TeachingMode(str, Enum):
-    """Stable, persisted identifier for how a chat's assistant should behave."""
+    """Stable, persisted identifier for how a chat's assistant behaves."""
 
     TEACH = "teach"
     HOMEWORK = "homework"
@@ -29,8 +25,7 @@ DEFAULT_TEACHING_MODE = TeachingMode.TEACH
 
 @dataclass(frozen=True, slots=True)
 class TeachingModeInfo:
-    """Display metadata for one mode — what a mode picker (CLI today, a
-    future GUI later) needs and nothing more."""
+    """Display metadata for one mode."""
 
     mode: TeachingMode
     display_name: str
@@ -55,8 +50,7 @@ _MODE_INFO: dict[TeachingMode, TeachingModeInfo] = {
     ),
 }
 
-# A couple of short, unambiguous aliases for CLI convenience. Kept
-# deliberately small — this is not a general alias/fuzzy-matching system.
+# Short aliases for CLI convenience; not a general fuzzy matcher.
 _ALIASES: dict[str, TeachingMode] = {
     "hw": TeachingMode.HOMEWORK,
     "qa": TeachingMode.QUICK,
@@ -68,17 +62,14 @@ def get_mode_info(mode: TeachingMode) -> TeachingModeInfo:
 
 
 def all_modes() -> list[TeachingModeInfo]:
-    """Every mode's display metadata, in a stable order — the catalog a
-    mode picker (CLI or future GUI) should render."""
+    """Every mode's display metadata, in a stable order."""
     return [_MODE_INFO[mode] for mode in TeachingMode]
 
 
 def parse_teaching_mode(value: str) -> TeachingMode:
-    """Parse a stable identifier or short alias into a `TeachingMode`.
+    """Parse a stable identifier or short alias into a ``TeachingMode``.
 
-    Raises `ValueError` for anything else — callers (the CLI today) are
-    expected to catch this and show a clean message rather than letting it
-    propagate as a crash.
+    Raises ``ValueError`` for anything else.
     """
     normalized = value.strip().lower()
     try:

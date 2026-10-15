@@ -147,8 +147,8 @@ def test_append_and_load_messages_preserve_order(repo):
 
 
 def test_load_messages_never_returns_system_role(repo):
-    # The repository has no concept of a system message — nothing ever
-    # inserts one — but this documents the guarantee explicitly.
+    # The repository has no concept of a system message; nothing ever
+    # inserts one; but this documents the guarantee explicitly.
     repo.create_chat("chat-1", "Title")
     repo.append_message("chat-1", Role.USER, "hello")
 
@@ -404,7 +404,7 @@ def test_set_reasoning_mode_does_not_touch_messages(repo):
 
 
 def test_set_reasoning_mode_does_not_touch_teaching_mode(repo):
-    """Reasoning mode and teaching mode are fully independent — changing
+    """Reasoning mode and teaching mode are fully independent; changing
     one must never affect the other, in either direction."""
     repo.create_chat("chat-1", "Title", teaching_mode=TeachingMode.HOMEWORK)
 

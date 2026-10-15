@@ -1,17 +1,14 @@
-# Study Bot API Contract (v1)
+# StudyBot API Contract (v1)
 
-This document is the reference for building a client (Flutter or
-otherwise) against the Study Bot engine API added in Stage 5.5. It is
-deliberately written by hand rather than left to auto-generated OpenAPI
-docs, since the things a client author needs most — auth, the WebSocket
-protocol, error codes, and the documented architectural limitations — are
-exactly the things auto-generated docs describe worst.
+Reference for building a client (Flutter or otherwise) against the StudyBot
+engine API. It is written by hand because the parts a client author needs most
+(auth, the WebSocket protocol, error codes, known limitations) are the parts
+generated OpenAPI docs describe worst.
 
-The API is a thin transport layer over the same application services the
-CLI (`python -m studybot`) uses (`SessionService`, `CourseService`). It
-contains no course/chat/mode business logic of its own — every endpoint
-translates a request into an existing service call and translates the
-result back into JSON.
+The API is a thin transport layer over the same services the CLI uses
+(`SessionService`, `CourseService`, `LearningMemoryService`). It contains no
+course, chat or mode business logic: each endpoint translates a request into a
+service call and the result back into JSON.
 
 ## Startup
 
@@ -21,43 +18,39 @@ python -m studybot.api
 studybot-server
 ```
 
-This is a **separate process** from the CLI (`python -m studybot`), which
-is unchanged and keeps working exactly as before. Both can run at the same
-time against the same local SQLite database (each opens its own
-connection); that's fine for the sequential, single-user usage this stage
-targets (see "Known limitations" below for the one caveat).
+This is a separate process from the CLI (`python -m studybot`). Both can run
+at the same time against the same SQLite database (each opens its own
+connection), which is fine for sequential, single-user use.
 
-The server binds to **`127.0.0.1` only** — this is not configurable, by
-design, so there is no way to accidentally expose it on the local network.
+The server binds to **`127.0.0.1` only**. This is not configurable, so it
+cannot be exposed on the local network by accident.
 
-On startup, exactly one line of JSON is printed to **stdout** (not through
-the logging system, so it never ends up in a log file):
+On startup exactly one JSON line is printed to **stdout** (not through
+logging, so it never reaches a log file):
 
 ```json
 {"event": "studybot_api_ready", "host": "127.0.0.1", "port": 8765, "token": "<random>"}
 ```
 
-A launcher (Flutter, or a dev harness) reads this one line to learn the
-port and the auth token for this process. Neither value is persisted
-anywhere or logged again after this line.
+A launcher reads this line to learn the port and auth token. Neither is
+persisted or logged again.
 
 ### Configuration
 
 | Environment variable | Default | Purpose |
 |---|---|---|
-| `STUDYBOT_API_PORT` | `8765` | Port to bind. Set to `0` to request an OS-assigned ephemeral port — the actual bound port is always reported in the startup line above, so this works even when `0` was requested. |
-| `STUDYBOT_API_TOKEN` | *(random)* | Deliberate development/test hook: pin a known token instead of generating a random one, so a dev harness doesn't have to scrape stdout. **Do not rely on this for anything but local development** — a real launcher should always read the token from the startup line. |
+| `STUDYBOT_API_PORT` | `8765` | Port to bind. `0` requests an OS-assigned port; the bound port is always reported in the startup line. |
+| `STUDYBOT_API_TOKEN` | *(random)* | Development/test hook that pins a known token. A real launcher should read the token from the startup line. |
 
-All the usual `STUDYBOT_*` settings (`STUDYBOT_MODEL_PROVIDER`,
-`STUDYBOT_DATA_DIR`, `STUDYBOT_OLLAMA_MODEL`, ...) apply identically to the
-API server and the CLI — see the main README.
+The usual `STUDYBOT_*` settings (`STUDYBOT_MODEL_PROVIDER`,
+`STUDYBOT_DATA_DIR`, `STUDYBOT_OLLAMA_MODEL`, ...) apply to the API server and
+the CLI alike; see the README.
 
 ### Shutdown
 
-`Ctrl+C` (SIGINT) or SIGTERM triggers a graceful shutdown: in-flight
-requests are allowed to finish, the SQLite connection is closed cleanly,
-and the process exits without a traceback. Verified manually with both
-signals against a real server.
+`Ctrl+C` (SIGINT) or SIGTERM triggers a graceful shutdown: in-flight requests
+finish, the SQLite connection closes cleanly, and the process exits without a
+traceback.
 
 ## Authentication
 
@@ -67,30 +60,25 @@ Every request (HTTP and WebSocket) must carry:
 Authorization: Bearer <token>
 ```
 
-using the token from the startup line. There is no user-account system —
-this is a single, high-entropy, per-process token, generated fresh every
-time the server starts (`secrets.token_urlsafe(32)` unless overridden by
-`STUDYBOT_API_TOKEN`), that authorizes anything on the local machine that
-knows it, for exactly as long as this process lives. It is:
+There is no user-account system: one random token per server process
+(`secrets.token_urlsafe(32)` unless `STUDYBOT_API_TOKEN` is set) authorizes
+anything on the local machine that knows it, for as long as the process lives.
+The token is never persisted, never written to a log file (only the one-time
+stdout line), and never accepted in a URL or query string.
 
-- never persisted to disk,
-- never written to a log file (only to the one-time stdout startup line),
-- never accepted via a query string or any other part of a URL.
-
-A missing or incorrect token gets `401` with `{"code": "UNAUTHORIZED", ...}`
-on HTTP, or the WebSocket connection is closed (code `4401`) before
-`accept()` — no data is exchanged with an unauthenticated client at all.
+A missing or wrong token gets `401` with `{"code": "UNAUTHORIZED", ...}` over
+HTTP. A WebSocket connection is closed with code `4401` before `accept()`, so
+no data is exchanged with an unauthenticated client.
 
 ## Versioning
 
-Every route is under `/api/v1/...`. A future breaking change gets a new
-`/api/v2/...` prefix added *alongside* v1, not a replacement — existing
-clients on v1 keep working.
+Every route lives under `/api/v1/`. A breaking change would add `/api/v2/`
+alongside v1 rather than replace it.
 
 ## Error model
 
 Errors are JSON with a stable, machine-readable `code` and a human-readable
-`message`. **Clients should switch on `code`, never parse `message`.**
+`message`. **Switch on `code`; never parse `message`.**
 
 ```json
 {"code": "CHAT_NOT_FOUND", "message": "No chat found with id '...'."}
@@ -99,27 +87,24 @@ Errors are JSON with a stable, machine-readable `code` and a human-readable
 | Code | HTTP status | Meaning |
 |---|---|---|
 | `CHAT_NOT_FOUND` | 404 | No chat with that id exists. |
-| `CHAT_BUSY` | — (WebSocket `error` event) | That chat already has a generation (`send_message`) in progress on some connection; this one was rejected rather than allowed to race it — see "Concurrency and chat identity" below. Retry once the first one finishes. |
+| `CHAT_BUSY` | WebSocket `error` event | The chat already has a generation in progress; this request was rejected instead of racing it. Retry after the first finishes. |
 | `COURSE_NOT_FOUND` | 404 | No course with that id exists. |
 | `MEMORY_NOT_FOUND` | 404 | No learning memory with that id exists. |
-| `MEMORY_CONFLICT` | 409 | Creating/reactivating this memory would produce two *active* memories with the same normalized topic and kind in the same scope — see "Learning memory" below. |
-| `INVALID_MODE` | 422 | The `mode` string isn't a recognized teaching mode. |
-| `INVALID_REASONING_MODE` | 422 | The `reasoningMode` string isn't a recognized reasoning mode. |
-| `INVALID_MEMORY_KIND` | 422 | The `kind` string isn't one of the five recognized learning-memory kinds. |
-| `INVALID_MEMORY_STATUS` | 422 | The `status` filter isn't `active` or `archived`. |
-| `MODEL_UNAVAILABLE` | — | Reported via `GET /health`'s `providerReachable: false`, not as an error response — see below. |
-| `MODEL_ERROR` | — (WebSocket `error` event) | The model failed to produce a response (connection issue, missing model, timeout, reply whose reasoning couldn't be safely separated from the answer, no answer at all, ...). Covers every generation-time failure uniformly; `message` carries the same user-safe detail text `OllamaModel` already produces for the CLI (e.g. the exact `ollama pull ...` command for a missing model). There is no finer-grained code because the underlying domain exception (`ModelError`) doesn't currently distinguish sub-cases either — see "Known limitations". |
-| `VALIDATION_ERROR` | 422 | A business-rule validation failed (e.g. an empty course/chat name) or a WebSocket message was malformed. |
-| `UNAUTHORIZED` | 401 | Missing/invalid auth token. |
-| `INTERNAL_ERROR` | 500 | An unexpected server-side exception. The traceback is logged server-side (method + path only — never a request body) and never sent to the client. |
-
-Python tracebacks never reach a client under any circumstance.
+| `MEMORY_CONFLICT` | 409 | Creating or reactivating the memory would produce two active memories with the same normalized topic and kind in the same scope. |
+| `INVALID_MODE` | 422 | `mode` is not a recognized teaching mode. |
+| `INVALID_REASONING_MODE` | 422 | `reasoningMode` is not a recognized reasoning mode. |
+| `INVALID_MEMORY_KIND` | 422 | `kind` is not one of the five memory kinds. |
+| `INVALID_MEMORY_STATUS` | 422 | The `status` filter is not `active` or `archived`. |
+| `MODEL_UNAVAILABLE` | n/a | Reported through `GET /health` (`providerReachable: false`), not as an error response. |
+| `MODEL_ERROR` | WebSocket `error` event | The model failed to produce a usable reply: connection problem, missing model, timeout, output whose reasoning could not be safely separated, no answer, or a generation limit reached (see [Generation limits](#generation-limits)). `message` is user-safe text. All generation failures share this one code. |
+| `VALIDATION_ERROR` | 422 | A business-rule validation failed (e.g. an empty name) or a WebSocket message was malformed. |
+| `UNAUTHORIZED` | 401 | Missing or invalid auth token. |
+| `INTERNAL_ERROR` | 500 | Unexpected server error. The traceback is logged server-side (method and path only, never a request body) and never sent to the client. |
 
 ## Endpoints
 
-All request/response bodies are JSON with **camelCase** field names (the
-`ApiModel` base class aliases Python's snake_case attributes to camelCase
-on the wire — Dart/Flutter's own JSON convention).
+Request and response bodies are JSON with **camelCase** field names (the
+`ApiModel` base class aliases Python's snake_case attributes).
 
 ### Health
 
@@ -136,9 +121,8 @@ GET /api/v1/health
   "modelAvailable": true
 }
 ```
-`providerReachable`/`modelAvailable` mirror the CLI's `/status` command
-(via `SessionService.get_status()` → `ProviderStatus`) — `null` when not
-applicable (e.g. always `true`/non-null for `mock`).
+`providerReachable` and `modelAvailable` mirror the CLI's `/status` command and
+are `null` when not applicable.
 
 ### Courses
 
@@ -161,16 +145,14 @@ DELETE /api/v1/courses/{id}             -> 204
 { "name": "...", "code": null, "term": null, "description": null }
 ```
 
-**`PUT` is a full replace**, matching `CourseService.edit_course`'s
-existing contract exactly: send back the fields you want kept unchanged.
-There is no "omit a field to keep it" merge semantics here — that's a
-CLI-only presentation behavior (`/course edit`'s blank-means-keep,
-`-`-means-clear prompts), not something the underlying service supports,
-and the API does not duplicate it.
+**`PUT` is a full replace**, matching `CourseService.edit_course`: send back the
+fields you want to keep. There is no "omit to keep" behavior; that is a CLI
+prompt convention.
 
-**Deleting a course never deletes chats or messages** — they become
-unassigned (`courseId: null`). This is enforced by the database (`ON
-DELETE SET NULL`), not reimplemented here.
+**Deleting a course never deletes its chats or messages.** They become
+unassigned (`courseId: null`), enforced by the database (`ON DELETE SET NULL`).
+The course's active learning memories are archived in the same transaction (see
+[Learning memory](#learning-memory)).
 
 ### Teaching modes
 
@@ -181,11 +163,10 @@ GET /api/v1/modes -> [ModeInfoOut]
 [{"id": "teach", "displayName": "Teach", "description": "..."}, ...]
 ```
 Always all five modes (`teach`, `homework`, `quick`, `practice`, `exam`),
-sourced directly from `core.teaching_mode.all_modes()` — never duplicated
-in the API layer, so this catalog can't drift from what the mode prompts
-actually implement.
+sourced from `core.teaching_mode.all_modes()` so the catalog cannot drift from
+the mode prompts.
 
-### Reasoning modes (Stage 5.7)
+### Reasoning modes
 
 ```
 GET /api/v1/reasoning-modes -> [ModeInfoOut]
@@ -194,61 +175,54 @@ GET /api/v1/reasoning-modes -> [ModeInfoOut]
 [{"id": "fast", "displayName": "Fast", "description": "..."},
  {"id": "deep", "displayName": "Deep Think", "description": "..."}]
 ```
-Always both modes (`fast`, `deep`), sourced from
-`core.reasoning_mode.all_modes()`. Uses the same `ModeInfoOut` shape as
-`GET /modes` (an id plus display metadata) — the two catalogs are
-otherwise unrelated: **reasoning mode is completely independent of
-teaching mode.** Teaching mode (Teach/Homework/Quick/Practice/Exam)
-controls instructional behavior via the system prompt; reasoning mode
-(Fast/Deep) controls the model's inference-time "thinking" depth and
-latency and never touches the system prompt at all. A chat can be in any
-combination of the two, and changing one never affects the other.
+Always both modes (`fast`, `deep`), from `core.reasoning_mode.all_modes()`, in
+the same `ModeInfoOut` shape as the teaching modes.
 
-How a mode maps to Ollama's `think` parameter depends on the configured
-model, which the engine reads once from Ollama's `/api/show` (Stage 6.3 —
-see `models/ollama.py`):
+**Reasoning mode is independent of teaching mode.** Teaching mode controls
+instructional behavior through the system prompt; reasoning mode controls the
+model's inference-time thinking depth and latency and never touches the prompt.
+A chat can use any combination.
+
+How a mode maps to Ollama's `think` parameter depends on the configured model,
+which the engine reads once from Ollama's `/api/show` (`models/ollama.py`):
 
 | Model's thinking capability | `fast` | `deep` |
 |---|---|---|
 | Toggleable (hybrid, e.g. original Qwen3) | `think=False` | `think=True` |
-| Thinking-only (e.g. `qwen3:4b` = Qwen3-4B-Thinking-2507) | `think=True` | `think=True` |
+| Thinking-only (e.g. `qwen3:4b`, Qwen3-4B-Thinking-2507) | `think=True` | `think=True` |
 | Not a thinking model | not sent | not sent |
-| Unknown (probe failed) | `think=False`, output fully buffered and filtered | `think=True` |
+| Unknown (lookup failed) | `think=False`, output fully buffered and filtered | `think=True` |
 
-A thinking-only model reasons whether or not it's asked to, and
-`think=False` only stops Ollama from *separating* that reasoning from the
-answer — it then arrives inside the answer text (the Stage 6.3 leak). So
-for such a model Fast and Deep behave identically: **Fast offers no
-speed-up with `qwen3:4b`**; it does with a toggleable model.
+A thinking-only model reasons whether or not it is asked to. `think=False` only
+stops Ollama from separating that reasoning from the answer, so it would appear
+inside the answer text. Such models therefore always get `think=True`, and Fast
+and Deep behave the same for them: **Fast is no faster with `qwen3:4b`.**
 
-**Hidden reasoning/thinking text is never sent to a client and never
-persisted** — only the final, user-visible answer is ever included in a
-`delta` event, `MessageOut.content`, or a WebSocket `message_completed`
-payload, regardless of reasoning or teaching mode. Beyond using Ollama's
-structured separation, every response (streamed or not) passes through
-one reasoning filter at the provider boundary (`core/output_integrity.py`)
-that strips a leading `<think>…</think>` span — split across any number of
-chunks, never shown and then retracted — and **fails closed** with
-`MODEL_ERROR` when reasoning can't be separated confidently (an
-unterminated span, or a `</think>` marker in answer prose outside code) or
-when no answer remains. Mentions of the tags inside Markdown code (fenced
-blocks, inline code) are left alone.
+**Hidden reasoning is never sent to a client or persisted.** Only the final
+answer appears in a `delta` event, `MessageOut.content` or `message_completed`,
+whatever the modes. Besides using Ollama's structured separation, every
+response (streamed or not) passes through one reasoning filter at the provider
+boundary (`core/output_integrity.py`). It strips a leading `<think>...</think>`
+span, even when split across chunks and never displaying it, and fails closed
+with `MODEL_ERROR` if reasoning cannot be separated confidently (an
+unterminated span, a `</think>` in answer text outside code) or if no answer
+remains. Tags inside Markdown code are left alone.
 
 ### Chats
 
 ```
-GET    /api/v1/chats?course_id=...      -> [ChatOut]
-POST   /api/v1/chats                    <- ChatCreateIn  -> ChatOut (201)
-GET    /api/v1/chats/{id}               -> ChatOut
-GET    /api/v1/chats/{id}/messages      -> [MessageOut]
-PUT    /api/v1/chats/{id}/rename        <- {"title": "..."}  -> ChatOut
-POST   /api/v1/chats/{id}/clear         -> ChatOut
-DELETE /api/v1/chats/{id}               -> 204
-PUT    /api/v1/chats/{id}/course        <- {"courseId": "..." | null}  -> ChatOut
-GET    /api/v1/chats/{id}/mode          -> ModeInfoOut
-PUT    /api/v1/chats/{id}/mode          <- {"mode": "homework"}  -> ModeInfoOut
-GET    /api/v1/chats/{id}/reasoning-mode -> ModeInfoOut
-PUT    /api/v1/chats/{id}/reasoning-mode <- {"reasoningMode": "deep"}  -> ModeInfoOut
+GET    /api/v1/chats?course_id=...        -> [ChatOut]
+POST   /api/v1/chats                      <- ChatCreateIn  -> ChatOut (201)
+GET    /api/v1/chats/{id}                 -> ChatOut
+GET    /api/v1/chats/{id}/messages        -> [MessageOut]
+PUT    /api/v1/chats/{id}/rename          <- {"title": "..."}  -> ChatOut
+POST   /api/v1/chats/{id}/clear           -> ChatOut
+DELETE /api/v1/chats/{id}                 -> 204
+PUT    /api/v1/chats/{id}/course          <- {"courseId": "..." | null}  -> ChatOut
+GET    /api/v1/chats/{id}/mode            -> ModeInfoOut
+PUT    /api/v1/chats/{id}/mode            <- {"mode": "homework"}  -> ModeInfoOut
+GET    /api/v1/chats/{id}/reasoning-mode  -> ModeInfoOut
+PUT    /api/v1/chats/{id}/reasoning-mode  <- {"reasoningMode": "deep"}  -> ModeInfoOut
 ```
 
 ```jsonc
@@ -262,63 +236,45 @@ PUT    /api/v1/chats/{id}/reasoning-mode <- {"reasoningMode": "deep"}  -> ModeIn
 { "id": 1, "role": "user", "content": "...", "createdAt": "..." }
 ```
 
-- `GET /chats` with no query param lists every chat. `?course_id=<id>`
-  filters to that course; `?course_id=none` filters to unassigned
-  ("General") chats specifically.
-- `POST /chats` with an omitted/`null` `courseId` always creates a
-  **General** chat — unlike the CLI's `/new`, it never inherits "whatever
-  course happens to be active" (there is no such ambient state from an API
-  client's point of view — every chat-specific operation is addressed by
-  `chat_id` alone; see "Explicit chat-id semantics" below).
-- **Chat ids are full stable UUIDs.** The CLI's short-id-prefix convenience
-  (`/open a3f1`) is a terminal-typing affordance and is *not* part of the
-  API contract — always send the complete id you were given.
-- `MessageOut` never includes the system prompt, course context, or
-  teaching-mode instructions — only real, persisted user/assistant turns,
-  exactly what `ChatRepository.load_message_records` returns.
-- Every new chat starts at `reasoningMode: "fast"`, exactly like teaching
-  mode always starts at `"teach"` — a new chat never inherits whatever
-  reasoning mode was active elsewhere.
+- `GET /chats` with no query parameter lists every chat. `?course_id=<id>`
+  filters to one course; `?course_id=none` filters to unassigned ("General")
+  chats.
+- `POST /chats` with an omitted or `null` `courseId` creates a General chat.
+  Unlike the CLI's `/new`, it never inherits an ambient "active" course.
+- **Chat ids are full UUIDs.** The CLI's id-prefix shortcut is not part of the
+  API; always send the complete id.
+- `MessageOut` never includes the system prompt, course context or
+  teaching-mode instructions, only persisted user and assistant turns.
+- New chats start in `teach` teaching mode and `fast` reasoning mode; they never
+  inherit modes from other chats.
 
-**Immediate persistence (Stage 5.8):** `POST /chats` writes a real database
-row before responding — the returned `id` is retrievable via `GET`, has an
-empty message history, and accepts every operation below immediately, with
-zero messages sent. This is deliberately *not* what the CLI's `/new` does
-(the CLI still defers writing a row until the first message, so a terminal
-chat opened and abandoned leaves no trace — see "Known limitations" in the
-main README for that CLI-only convenience); an API client has no such
-concept, and an earlier version of this API used to defer persistence the
-same way the CLI does, which caused a real bug: creating a second chat
-before the first had ever been messaged could silently make the first
-chat's id 404. It cannot anymore — see "Explicit chat-id semantics" below.
+**Immediate persistence.** `POST /chats` writes a database row before it
+responds. The returned `id` can be fetched, has an empty history, and accepts
+every operation below with no messages sent. (The CLI's `/new` still defers the
+row until the first message so an abandoned terminal chat leaves nothing
+behind.)
 
-**Explicit chat-id semantics:** every chat-specific endpoint above operates
-on exactly the `chat_id` in its URL, loaded fresh from storage on every
-call. There is no server-side "current chat" for the API to get out of
-sync with, no "open this chat first" step, and no ordering requirement
-between requests for different chat ids — creating, messaging, renaming,
-or reconfiguring one chat never affects any other chat's availability or
-state, no matter what order requests arrive in or how many other chats
-exist. (The CLI *does* still have a single current chat — `/open`, `/new`,
-etc. — but that's a terminal-only convenience built on top of the same
-explicit-by-id operations; it was never something the API needed and
-nothing here depends on it.)
+**Explicit chat-id semantics.** Every chat endpoint operates on exactly the
+`chat_id` in its URL, loaded from storage on each call. There is no server-side
+"current chat", no "open first" step and no ordering requirement between
+requests for different chats: creating, messaging, renaming or reconfiguring
+one chat never affects another's availability or state.
 
-### Learning memory (Stage 6)
+### Learning memory
 
 ```
-GET    /api/v1/memory-kinds                         -> [MemoryKindInfoOut]
-GET    /api/v1/memories?course_id=...&kind=...&status=...  -> [LearningMemoryOut]
-POST   /api/v1/memories                              <- LearningMemoryCreateIn  -> LearningMemoryOut (201)
-GET    /api/v1/memories/{id}                         -> LearningMemoryOut
-PATCH  /api/v1/memories/{id}                         <- LearningMemoryUpdateIn  -> LearningMemoryOut
-POST   /api/v1/memories/{id}/archive                 -> LearningMemoryOut
-POST   /api/v1/memories/{id}/restore                 -> LearningMemoryOut
-DELETE /api/v1/memories/{id}                         -> 204
+GET    /api/v1/memory-kinds                                   -> [MemoryKindInfoOut]
+GET    /api/v1/memories?course_id=...&kind=...&status=...     -> [LearningMemoryOut]
+POST   /api/v1/memories                  <- LearningMemoryCreateIn  -> LearningMemoryOut (201)
+GET    /api/v1/memories/{id}                                  -> LearningMemoryOut
+PATCH  /api/v1/memories/{id}             <- LearningMemoryUpdateIn  -> LearningMemoryOut
+POST   /api/v1/memories/{id}/archive                          -> LearningMemoryOut
+POST   /api/v1/memories/{id}/restore                          -> LearningMemoryOut
+DELETE /api/v1/memories/{id}                                  -> 204
 ```
 
 ```jsonc
-// MemoryKindInfoOut — GET /memory-kinds always returns exactly these five
+// MemoryKindInfoOut: GET /memory-kinds always returns exactly these five
 [{"id": "understands", "displayName": "Understands", "description": "..."},
  {"id": "needs_review", "displayName": "Needs review", "description": "..."},
  {"id": "misconception", "displayName": "Misconception", "description": "..."},
@@ -337,139 +293,75 @@ DELETE /api/v1/memories/{id}                         -> 204
 { "topic": "...", "kind": "needs_review", "summary": "...",
   "courseId": null, "sourceChatId": null }
 
-// LearningMemoryUpdateIn (PATCH — every field optional; see below)
+// LearningMemoryUpdateIn (PATCH; every field optional)
 { "topic": "...", "kind": "...", "summary": "...", "courseId": "..." | null }
 ```
 
-**What this is, and what it isn't:** a learning memory is one deliberately
-recorded, durable piece of learning information ("needs review: vector
-components", "understands significant figures") — completely separate from
-chat history, which just answers "what was said?". Clearing or deleting a
-chat never destroys a memory it produced (see `sourceChatId` below). This
-is **not** a mastery/scoring engine: there is no percentage, numeric
-weight, or aggregation anywhere in this API, deliberately — see the main
-README's "Learning memory" section for the full rationale.
+A learning memory is one deliberately recorded, durable piece of learning
+information ("needs review: vector components"), separate from chat history.
+Clearing or deleting a chat never deletes the memories it produced. This is not
+a mastery or scoring system: there are no percentages or weights.
 
-**The five kinds are a closed, strict set** (`understands`, `needs_review`,
-`misconception`, `learning_goal`, `useful_strategy`) — always fetch them
-from `GET /memory-kinds` rather than hardcoding them, exactly like teaching
-modes. `status` is `active` or `archived`; archiving (not deleting) is the
-normal way a memory is retired — a superseded memory is still visible via
-`?status=archived`, never silently lost. `DELETE` is a separate, explicit
-hard delete.
+**Kinds** are a closed set (`understands`, `needs_review`, `misconception`,
+`learning_goal`, `useful_strategy`); fetch them from `GET /memory-kinds`.
+`status` is `active` or `archived`. Archiving is the normal way to retire a
+memory (it stays visible via `?status=archived`); `DELETE` is a separate hard
+delete.
 
-**Course scope:** `courseId: null` means a genuinely general/global memory
-(shown in every course's context, and in a General chat's), not the common
-case — most memories should belong to a course. A course-scoped memory
-never appears in a different course's context, no matter how similar the
-wording (see "Context injection" below).
+**Scope.** `courseId: null` is a global memory, shown in every course's context
+and in General chats. A course-scoped memory never appears in another course's
+context.
 
-**`sourceChatId` is provenance only.** It records which chat (if any)
-produced a memory, but the memory's validity never depends on that chat
-still existing: clearing or deleting the source chat leaves the memory
-completely intact and simply sets `sourceChatId` to `null` (`ON DELETE SET
-NULL`, like `chats.courseId` → `courses.id`). Neither foreign key ever
-cascades a delete into a memory.
+**`sourceChatId` is provenance only.** If the source chat is cleared or
+deleted, the memory is untouched and `sourceChatId` becomes `null`
+(`ON DELETE SET NULL`). Neither foreign key cascades a delete into a memory.
 
-**Deleting a course atomically archives its memories first (Stage 6.1,
-made a real SQLite transaction in Stage 6.2).** The database's `ON DELETE
-SET NULL` on `learning_memories.courseId` would, on its own, turn every
-*active* memory in a deleted course into an active *global* one the
-instant the course disappears — silently injecting that subject's context
-into every other course's (and every General chat's) requests from then
-on. `DELETE /courses/{id}` prevents that: every currently active memory
-belonging to that course is archived, and the course is deleted, as **one
-atomic SQLite transaction** — `BEGIN`/`COMMIT`/`ROLLBACK` around both
-statements on the shared connection, not two independent calls. If
-anything causes the delete to fail, the archiving is rolled back with
-it — verified by actually injecting a failure between the two statements,
-confirming a subsequent retry succeeds cleanly, and confirming a second,
-fully independent `sqlite3.Connection` to the same database file never
-observes an in-between state (course gone but a memory still active, or
-memories archived but the course still there). Only that course's
-memories are touched — memories that were already global, or that belong
-to a different course, are completely unaffected. The archived memory
-keeps all its content (topic,
-kind, summary) and is fully visible via `?status=archived` and editable —
-it is never hard-deleted by this. Its `courseId` still becomes `null` (the
-same `ON DELETE SET NULL` as before), so recovering it is a **separate,
-explicit** decision: `POST /memories/{id}/restore` makes it an active
-*global* memory (since its course is gone), or `PATCH
-{"courseId": "<a-different-course>"}` reassigns it to a different existing
-course first (in either order relative to restoring). Neither happens
-automatically — both require the same deliberate action a brand-new
-global/reassigned memory would need. This applies uniformly everywhere a
-course can be deleted (the HTTP API and the CLI's `/course delete` both go
-through the same `CourseService.delete_course`, so there is only one
-implementation of this policy to keep correct).
+**Deleting a course archives its memories.** Without this, `ON DELETE SET NULL`
+on `learning_memories.course_id` would turn every active memory of the deleted
+course into an active global one, injecting that subject into every other
+course. `DELETE /courses/{id}` therefore archives the course's active memories
+and deletes the course in **one SQLite transaction**; if the delete fails, the
+archiving rolls back, and no other connection ever sees an in-between state.
+Memories that are already global or belong to another course are untouched.
+Archived memories keep their content. Recovering one is a separate, explicit
+choice: `POST /memories/{id}/restore` makes it an active global memory, or
+`PATCH {"courseId": "<other-course>"}` reassigns it. The HTTP API and the CLI's
+`/course delete` share `CourseService.delete_course`, so there is one
+implementation of this policy.
 
-**`PATCH` is a true partial update**, unlike course's full-replace `PUT`:
-omit a field to leave it unchanged. `topic`/`kind`/`summary` additionally
-treat an explicit `null` the same as omission (a valid value can never
-legitimately be `null`). `courseId` is the one field where explicit `null`
-is meaningful (unassign to General) and distinct from omitting it
-(leave unchanged) — send the key only when you actually want to change it.
+**`PATCH` is a true partial update**, unlike the course `PUT`: omit a field to
+leave it unchanged. For `topic`, `kind` and `summary` an explicit `null` is
+treated as omission. For `courseId`, explicit `null` means "unassign to
+General" and is distinct from omitting it, so send the key only when you want
+to change it.
 
-**Duplicate and conflict policy (deliberately simple — no fuzzy/semantic
-matching in Stage 6):** topics are compared case-insensitively with
-whitespace collapsed, within one scope (the same `courseId`, including
-`null`==`null` for global).
-- Creating (or restoring) an *active* memory whose normalized topic and
-  exact kind already has an active match in that scope is rejected with
-  `MEMORY_CONFLICT` — edit the existing memory via `PATCH` instead of
-  creating a duplicate.
-- Creating (or restoring) an *active* memory whose normalized topic
-  matches an active memory in an **opposing** learning state (`understands`
-  vs. `needs_review`/`misconception`) automatically **archives** the
-  superseded one — learning changes, and the old state is preserved via
-  archiving, never silently kept active forever or hard-deleted.
-  `learning_goal`/`useful_strategy` never oppose anything or trigger this.
-- Anything else (different topic, or a different non-opposing kind on the
-  same topic, e.g. an existing `needs_review` alongside a new
-  `learning_goal`) creates normally, with no conflict.
+**Duplicate and conflict policy** (deliberately simple; no fuzzy matching).
+Topics are compared case-insensitively with whitespace collapsed, within one
+scope (the same `courseId`, with `null` meaning global):
+- Creating or restoring an active memory whose normalized topic and exact kind
+  already exist as an active memory in that scope is rejected with
+  `MEMORY_CONFLICT`; edit the existing memory with `PATCH`.
+- Creating or restoring an active memory whose normalized topic matches an
+  active memory in an opposing state (`understands` vs `needs_review` or
+  `misconception`) archives the superseded one.
+  `learning_goal` and `useful_strategy` never oppose anything.
+- Anything else creates normally.
 
-**Context injection into chat responses:** every chat request (both the
-WebSocket `send_message` path and the CLI) automatically includes a
-compact block of that chat's course's active memories (plus any global
-ones) in the model's system prompt — there is no separate API call needed
-to "activate" memory for a chat, and no way to turn it off per-request. At
-most 12 entries and roughly 1200 characters are included, most recently
-updated first, course-specific entries preferred over global ones — never
-the full memory history. This costs well under a millisecond of extra
-request-preparation time regardless of how many memories exist (measured;
-see the main README's "Performance" notes), so it never materially affects
-first-token latency.
+**Context injection.** Every chat request, over the WebSocket and in the CLI,
+adds a compact block of the chat's course memories (plus global ones) to the
+system prompt: at most 12 entries and about 1200 characters, most recently
+updated first, course-specific before global. No API call is needed to activate
+it and it cannot be turned off per request. The model is told to treat the
+block as a soft, possibly outdated hint, never as proof of what the student
+understands and never above their current question or the active teaching mode.
+If a memory says the student "understands" a topic and they ask about it
+anyway, the model should explain it in full. It is also told not to mention the
+block. This is prompt guidance only; model output is never post-processed. The
+injected text is never persisted as a chat message or exposed in `MessageOut`.
 
-The model is instructed (Stage 6.1 wording, refined after real testing) to
-treat this context as a soft, possibly outdated hint about where to
-focus — **never as proof of the student's current understanding**, and
-never authoritative over what they're actually asking right now. If a
-memory says the student "understands" a topic but they ask about it
-anyway, the instruction is to explain it in full, not shorten, skip, or
-refuse the explanation because of the memory — a real failure mode caught
-during testing (an earlier, less careful wording risked the model treating
-"understands" as a reason to under-explain). It's told never to mention,
-quote, or otherwise refer to this background or its existence in its
-reply, and to always follow the student's current question and the active
-teaching mode when they conflict with it (e.g. Quick Answer mode still
-answers quickly, even with a "needs review" memory for the topic asked
-about). None of this is enforced by post-processing the model's output —
-there is no text stripped or filtered after generation; it is prompt
-guidance only, verified against real `qwen3:4b` output in both Fast and
-Deep modes rather than assumed. Nothing about this is visible in
-`MessageOut`/`message_completed` — the
-composed context is injected the same way course context and teaching-mode
-instructions already were, and is never itself persisted as a chat
-message.
-
-**No automatic extraction (deliberate, for now):** nothing in this API
-calls a model to generate a learning memory automatically after a chat
-response. Every memory is created by an explicit `POST /memories` — driven
-by the user (a "Save to Learning Memory" action in the Flutter app) or a
-future application feature, but never as a hidden side effect of sending a
-message. This is a deliberate Stage 6 scope decision, not a technical
-limitation — see "Deferred" in the Stage 6 report for what a later stage
-might add here.
+**No automatic extraction.** Nothing in the API calls a model to create
+memories. Every memory comes from an explicit `POST /memories` (for example the
+Flutter app's "Save to Learning Memory" action).
 
 ### WebSocket streaming chat
 
@@ -477,176 +369,119 @@ might add here.
 GET /api/v1/ws/chat   (upgrade to WebSocket)
 ```
 
-Authenticate the same way as HTTP: `Authorization: Bearer <token>` on the
-handshake request. One connection can be reused for any number of
-messages, to any chat id, in sequence.
+Authenticate like HTTP, with `Authorization: Bearer <token>` on the handshake.
+One connection can be reused for any number of messages to any chat, in
+sequence.
 
-**Client → server** (only one message type):
+**Client to server** (one message type):
 ```json
 {"type": "send_message", "chat_id": "...", "content": "Explain acceleration"}
 ```
 
-**Server → client**, in order, for each `send_message`:
+**Server to client**, in order, for each `send_message`:
 ```json
 {"type": "message_started", "chatId": "..."}
 {"type": "delta", "content": "Accel", "chatId": "..."}
 {"type": "delta", "content": "eration", "chatId": "..."}
-...
 {"type": "message_completed", "chatId": "...", "message": {"id": 12, "role": "assistant", "content": "...", "createdAt": "..."}}
 ```
-or, instead of the above, at any point:
+or, instead, at any point:
 ```json
 {"type": "error", "code": "MODEL_ERROR", "message": "...", "chatId": "..."}
 ```
 
-**Every event carries `chatId`** (Stage 5.8) — since one connection can be
-reused for any number of chats in sequence, this lets a client attribute
-each event to the right chat without having to track "whichever chat I
-sent to last" itself. (`chatId` is omitted only for a malformed
-`send_message` payload that never named a valid chat id to begin with —
-e.g. a missing/non-string `chat_id` field.)
+Every event carries `chatId`, so a client reusing one connection for several
+chats can attribute each event. (`chatId` is omitted only for a malformed
+`send_message` that named no valid chat id.) An `error` event does not close the
+connection; send another `send_message` to retry or move to another chat.
 
-An `error` event **does not close the connection** — send another
-`send_message` on the same socket to try again or move to a different chat.
+`delta` events never contain empty content. Providers may produce empty progress
+chunks while a model reasons; the server drops them.
 
-**Concurrency and chat identity (Stage 5.8):** `send_message` addresses its
-`chat_id` explicitly and independently every time — sending to chat A and
-then chat B on the same connection (or on two different connections) never
-mixes their history, course, or teaching/reasoning mode, and creating or
-messaging other chats in between has no effect. Within one chat, however,
-**only one generation may be in flight at a time**: if a `send_message` for
-a chat that already has a generation in progress arrives (from this or any
-other connection), the server rejects it immediately with a `CHAT_BUSY`
-error rather than letting two assistant replies race and append to that
-chat's history in a nondeterministic order. `message_started` is still
-sent first (the busy check happens once generation actually begins); retry
-once the first generation's `message_completed`/`error` arrives. A
-different chat id is entirely unaffected by another chat being busy.
+**Concurrency.** Each `send_message` addresses its `chat_id` independently:
+sending to chat A and then chat B on one connection, or on two connections,
+never mixes history, course, or modes. Within one chat only one generation may
+run at a time. A `send_message` for a chat that is already generating (from any
+connection) is rejected with `CHAT_BUSY` instead of racing the first reply.
+`message_started` is still sent first, because the busy check happens when
+generation begins. Other chats are unaffected.
 
-**Reasoning mode and streaming (Stage 5.7):** the chat's current reasoning
-mode (see "Reasoning modes" above) is applied automatically to every
-`send_message` on that chat — there is no separate parameter on the
-WebSocket message itself; change it first via `PUT
-/chats/{id}/reasoning-mode`. In Fast mode, the first `delta` typically
-arrives quickly. In Deep mode, expect a materially longer gap between
-`message_started` and the first `delta` while the model reasons — this is
-expected, not a stall. **Whichever mode is active, only visible-answer
-`delta` chunks are ever sent** — if the backend model produces hidden
-"thinking" content, it is filtered out before reaching the WebSocket, never
-streamed and never included in the final `message_completed.message`. With
-a thinking-only model (the default `qwen3:4b`) both modes reason first, so
-both show that longer gap (see "Reasoning modes"). If the reasoning filter
-fails closed partway through a stream, some answer `delta`s may already
-have been sent; the stream then ends with a `MODEL_ERROR` `error` event
-instead of `message_completed` and — as for any failure — nothing but the
-user's message is persisted, so clients must discard the partial text (the
-Flutter app already does).
+**Reasoning mode and streaming.** The chat's current reasoning mode applies to
+every `send_message`; there is no parameter on the message, so change it first
+with `PUT /chats/{id}/reasoning-mode`. In Deep mode expect a longer gap between
+`message_started` and the first `delta` while the model reasons. With a
+thinking-only model such as the default `qwen3:4b`, both modes reason first and
+show that gap.
 
-This reuses `SessionService.send_streaming_to_chat()` (the explicit-by-id
-layer added in Stage 5.8) — there is no second streaming implementation,
-and no "activate this chat first" step. That means the existing Stage 2/3
-guarantee carries through unchanged:
+**Persistence.** The service method is `SessionService.send_streaming_to_chat`:
+- **Success:** the user message is persisted once, and the complete assistant
+  reply is persisted once, after the stream finishes.
+- **`MODEL_ERROR` or client disconnect mid-stream:** the user message may
+  already be stored (so a retry needs no retyping), but no partial assistant
+  message is ever persisted, and no synthetic "Error: ..." message either.
+  `delta`s sent before a failure are incomplete, and clients must discard them
+  (the Flutter app does).
 
-- **Success:** the user's message is persisted once; the complete assistant
-  reply is persisted once, only after the stream finishes.
-- **Failure (`MODEL_ERROR`) or client disconnect mid-stream:** the user's
-  message may already be persisted (so retrying doesn't require retyping),
-  but **no partial/incomplete assistant message is ever persisted** — not
-  one row per token, and never a synthetic "Error: ..." message standing in
-  for the assistant. This is enforced by `ChatService`/`SessionService`
-  themselves (see their docstrings), not reimplemented in the WebSocket
-  handler.
+**Client disconnects.** The server does not crash or keep generating: the
+in-flight generator is closed, so no more output is requested or persisted.
+Detection happens the next time the server tries to send a chunk, so it is not
+instantaneous.
 
-**Client disconnect handling:** if the client vanishes mid-generation, the
-server does not crash and does not attempt to keep generating in the
-background — the in-flight generator is closed (so no more of the model's
-output is persisted or requested) and the connection handler exits
-cleanly. Detection isn't instantaneous: since nothing is actively polling
-for the disconnect while a chunk is being produced, it's only noticed the
-next time the server tries to *send* a chunk to the now-gone client. This
-mirrors the CLI's own equivalent limitation (Ctrl+C doesn't instantly
-cancel an in-flight Ollama call either) — deliberately not solved with
-more complex cancellation plumbing in this stage.
+#### Generation limits
 
-## Known limitations (documented, not hacked around)
+Every generation is bounded by a token cap (hidden reasoning counts toward it)
+and a total wall-clock deadline, chosen by reasoning mode:
 
-**~~Single active-chat cursor~~ — resolved in Stage 5.8.** Earlier versions
-of this API switched a single mutable "active chat" (reused unchanged from
-the CLI) to the requested `chat_id` before every write, which made two
-different chat ids unsafe to interleave against one running server process
-— creating a second chat before the first had ever been messaged could
-silently evict the first's not-yet-persisted in-memory state and make it
-404 afterward. `SessionService` now has a separate explicit-by-id layer
-(`send_to_chat`, `rename_chat`, `set_teaching_mode_for_chat`, ...) that
-every route and the WebSocket handler use instead: each call loads its
-chat fresh from storage by id, with no cursor to evict, and `POST /chats`
-persists immediately (see "Immediate persistence" above) so there is no
-window where a chat exists only in one request's memory. The CLI keeps its
-own active-chat cursor as a terminal-only convenience built on top of the
-same explicit operations — nothing about its behavior changed.
+| Mode | Max generated tokens | Deadline |
+|---|---|---|
+| Fast | 4096 | 120 s |
+| Deep | 6144 | 300 s |
 
-**Per-chat generation exclusion, not true parallel inference.** Two
-different chat ids are now safe to *interleave* (in any order, from any
-number of connections) — but "safe" does not mean the actual model calls
-run in true OS-level parallel, because of the next limitation below
-(SQLite thread affinity): every call, for every chat, still funnels
-through one dedicated worker thread, so a long-running generation for chat
-A does temporarily delay a request for chat B that arrives while A's
-current chunk is being produced, exactly as it would delay any other
-request (a plain `GET`, say). What Stage 5.8 guarantees is *correctness*
-under that serialization, not concurrency the underlying engine doesn't
-have: chat B's state is never corrupted or mixed with chat A's regardless
-of arrival order, and within a single chat, a second generation attempt
-while one is already in flight gets `CHAT_BUSY` rather than racing it (see
-"Concurrency and chat identity" above) — enforced by a lock per chat id,
-not one process-wide lock.
+Both are configurable (see the README). A generation that hits either limit
+ends with a `MODEL_ERROR` `error` event (never `message_completed`), its partial
+text is discarded, only the user message is kept, and the chat and engine stay
+usable. The deadline is a total limit, not an inactivity timeout, and is checked
+whenever the model produces output; if the model server stops responding
+entirely, the Ollama HTTP timeout (`STUDYBOT_OLLAMA_TIMEOUT`) applies instead.
+There is no cancel message yet.
 
-**SQLite thread affinity.** `StudyBotApp` (and its one `sqlite3.Connection`)
-is not designed to be touched from multiple threads. FastAPI dispatches
-route handlers to a worker pool, so every call into `StudyBotApp` — the
-constructor itself included — is routed through one dedicated
-single-worker executor (`api/engine.py`) rather than left to land on
-whatever thread FastAPI happens to pick. This was found and fixed during
-Stage 5.7's own testing (`sqlite3.ProgrammingError: SQLite objects created
-in a thread can only be used in that same thread`), not anticipated in
-advance. Increasing the executor's worker count would need a thread-safe
-connection strategy (e.g. one connection per worker, or a connection
-pool) — out of scope here; the single-worker executor is a deliberate,
-still-correct trade-off, not an oversight.
+## Known limitations
 
-**One `MODEL_ERROR` code for all generation failures.** The underlying
-`ModelError` domain exception doesn't currently distinguish "connection
-refused" from "model not found" from "timeout" as separate types — only as
-different message text (already user-safe, written for the CLI). Rather
-than fragile string-matching in the API layer to recover a sub-code that
-doesn't structurally exist, every generation failure is `MODEL_ERROR`;
-`GET /health`'s `providerReachable` is the one place a *pre-flight*
-unavailability check is exposed with its own boolean, since that comes
-from `ProviderStatus` (a real structured type), not from parsing an
-exception.
+**Per-chat generation exclusion, not parallel inference.** Different chats can
+be interleaved safely, but all calls share one worker thread (see the next
+item), so a long generation for chat A delays a request for chat B that arrives
+meanwhile, as it would delay any other request. The guarantees are correctness
+(no mixed state, regardless of arrival order) and, within one chat, `CHAT_BUSY`
+instead of a race, enforced by one lock per chat id.
+
+**SQLite thread affinity.** `StudyBotApp` owns one `sqlite3.Connection`, which
+Python ties to its creating thread. FastAPI runs handlers on a worker pool, so
+every call into `StudyBotApp`, including its constructor, goes through one
+dedicated single-worker executor (`api/engine.py`). More workers would need a
+thread-safe connection strategy (a connection per worker or a pool); the single
+worker is a deliberate trade-off. Because a stream holds that thread during
+each `next()` call, providers yield empty progress chunks while reasoning so
+other requests, including `/health`, are served between tokens.
+
+**One `MODEL_ERROR` code.** `ModelError` does not distinguish connection,
+missing-model, timeout or limit failures by type that the API could map
+reliably, so every generation failure is `MODEL_ERROR`. `GET /health` exposes
+pre-flight availability separately through `providerReachable`.
 
 ## Privacy
 
-No analytics, telemetry, or remote reporting exist anywhere in this
-codebase. The API adds no exception to that. Specifically:
+There is no analytics, telemetry or remote reporting. For the API specifically:
 
-- Request bodies (which is where message/course content lives — never in a
-  URL or query string) are never logged.
-- The unexpected-error handler logs only the HTTP method and path (chat/
-  course ids only — UUIDs, not content) plus the exception, for developers;
-  the client only ever receives the generic `INTERNAL_ERROR` message.
-- Uvicorn's per-request access log is effectively disabled (`log_level=
-  "warning"`, above the access log's own `INFO` level) — verified: a real
-  run's server log contains only the one startup line, no per-request
-  lines at all, so there's no access-log surface to worry about leaking
-  anything.
-- The auth token is never logged (verified by test, including deliberately
-  wrong tokens).
-- The per-chat generation lock (`CHAT_BUSY`, Stage 5.8) never logs prompt
-  or response content — only a chat id and lock/busy state are ever
-  eligible for debug-level logging, never message content.
-- Learning memory (Stage 6) topic/summary text is never logged, including
-  when it's composed into a chat's system prompt — only a memory id, kind,
-  course id, and status transition (e.g. active → archived) are ever
-  eligible for debug-level logging (verified by test, including a memory
-  actually injected into a real chat request).
+- Request bodies, where message and course content lives, are never logged, and
+  content is never placed in a URL or query string.
+- The unexpected-error handler logs only the HTTP method and path (ids, not
+  content) plus the exception; the client receives a generic `INTERNAL_ERROR`.
+- Uvicorn's per-request access log is effectively disabled (`log_level` is
+  `"warning"`), so a server log contains only the startup line.
+- The auth token is never logged, including for wrong tokens (covered by tests).
+- Chat-lock handling never logs message content; only ids and busy state.
+- Learning-memory topic and summary text is never logged, including when
+  composed into a system prompt; only memory id, kind, course id and status
+  transitions may appear in debug logs.
+- Generation-failure logs contain only the model name, mode, failure kind,
+  limits, elapsed time and character and chunk counts.

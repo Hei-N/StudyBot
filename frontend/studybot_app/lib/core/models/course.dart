@@ -1,8 +1,7 @@
 /// A course, as returned by `GET/POST/PUT /api/v1/courses...`.
 ///
-/// Mirrors `CourseOut` in API_CONTRACT.md exactly. Study Bot never fakes a
-/// database row named "General" — a chat with no course is represented by
-/// `Chat.courseId == null`, not by a synthetic `Course`.
+/// Mirrors `CourseOut` in API_CONTRACT.md. A chat with no course has
+/// `Chat.courseId == null`; there is no synthetic "General" course.
 class Course {
   const Course({
     required this.id,

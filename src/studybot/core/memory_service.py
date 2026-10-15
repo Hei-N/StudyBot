@@ -1,17 +1,12 @@
-"""Learning memory business logic: validation, normalization, the
-duplicate/conflict and supersession policy, and the compact context
-builder used when composing a chat's system prompt (Stage 6).
+"""Learning-memory business logic.
 
-Keeps this logic out of the API routes, the SQLite repository (which stays
-a dumb data layer, like `ChatRepository`/`CourseRepository`), Flutter, and
-`OllamaModel` — none of those know anything about learning memory beyond
-"here is some optional text" (see `core.context.build_system_prompt`).
+Covers validation and normalization, the duplicate and supersession policy,
+course-scoped CRUD, and the compact context block added to a chat's system
+prompt. The repository stays a plain data layer, and nothing else (API,
+Flutter, the model provider) knows what a learning memory is.
 
-Deliberately NOT here: any automatic extraction of memories from a chat
-response. Stage 6 persistence is driven only by explicit user/application
-actions (`create`, `update`, `archive`, `restore`, `delete`) — see the
-module docstring's "no full automatic extraction yet" note in the spec.
-Nothing in this module runs a model or reads chat history.
+Memories are created only by explicit actions; this module never runs a model
+or reads chat history.
 """
 
 from __future__ import annotations
@@ -38,12 +33,8 @@ from studybot.storage.base import UNSET, ChatRepository, CourseRepository, Learn
 _MAX_TOPIC_LENGTH = 200
 _MAX_SUMMARY_LENGTH = 4000
 
-# Deterministic limits for the compact context block injected into a chat's
-# system prompt (Stage 6 §13: "impose deterministic limits... maximum
-# 10-20 entries or a conservative character/token budget"). Chosen and
-# documented here rather than left implicit: at most 12 memories, and the
-# composed block (header + bullets) capped around 1200 characters — small
-# enough to be cheap for every request, generous enough to matter.
+# Limits for the memory block in the system prompt: at most 12 entries and
+# about 1200 characters, to keep it cheap on every request.
 MAX_CONTEXT_ENTRIES = 12
 MAX_CONTEXT_CHARS = 1200
 _CONTEXT_SUMMARY_TRUNCATE = 200
@@ -65,16 +56,15 @@ _MEMORY_CONTEXT_HEADER = (
 
 
 def _normalize_topic(topic: str) -> str:
-    """Casefold + collapse whitespace, for exact-duplicate comparison only
-    (Stage 6 §16: "exact normalized topic+kind... is enough for Stage 6" —
-    deliberately no fuzzy/semantic matching)."""
+    """Casefold and collapse whitespace, for exact-duplicate comparison only (no fuzzy matching).
+    """
     return " ".join(topic.split()).casefold()
 
 
 class LearningMemoryService:
-    """Create, look up, edit, archive/restore, and delete learning
-    memories, and build the compact context text `SessionService` injects
-    into a chat's system prompt."""
+    """Create, look up, edit, archive/restore and delete learning memories, and
+    build the context text injected into a chat's system prompt.
+    """
 
     def __init__(
         self,
@@ -159,45 +149,31 @@ class LearningMemoryService:
     def restore(self, memory_id: str) -> LearningMemory:
         """Reactivate an archived memory.
 
-        Re-runs the same conflict/supersession policy `create` uses,
-        treating "restore" as "make active" — the exact situation that
-        policy exists to guard. Restoring a memory whose topic+kind
-        already has an active duplicate raises `MemoryConflictError`;
-        restoring one whose topic now has an active *opposing* memory
-        archives that opposing entry instead, exactly as a fresh `create`
-        would.
+        Applies the same conflict policy as ``create``: an active duplicate (same
+        topic and kind) raises ``MemoryConflictError``, and an active memory of the
+        opposing kind is archived.
         """
         existing = self.get(memory_id)
         self._apply_conflict_policy(existing.course_id, existing.topic, existing.kind, exclude_id=memory_id)
         return self._repository.restore(memory_id)
 
     def delete(self, memory_id: str) -> None:
-        """Permanently delete a memory. An explicit, separate action from
-        `archive` — see `LearningMemoryRepository.delete`."""
+        """Permanently delete a memory. Separate from ``archive``."""
         self.get(memory_id)
         self._repository.delete(memory_id)
 
-    # --- conflict / supersession policy (Stage 6 §16-17) ------------------------
+    # --- conflict / supersession policy ------------------------------------------
 
     def _apply_conflict_policy(
         self, course_id: str | None, topic: str, kind: MemoryKind, exclude_id: str | None
     ) -> None:
-        """Enforce, within one course (or the global scope), at most one
-        *active* memory per normalized topic+kind, and at most one *pole*
-        (understands vs. needs-review/misconception) active per topic.
+        """Enforce the duplicate and supersession rules within one course (or the global scope).
 
-        - An active memory with the same normalized topic and the exact
-          same kind already exists: reject with `MemoryConflictError`
-          (Stage 6 §16's chosen predictable duplicate rule — update the
-          existing entry via `update()` instead of creating a new one).
-        - An active memory with the same normalized topic and an
-          *opposing* kind exists (e.g. existing `needs_review`, new
-          `understands`): archive the superseded one automatically (Stage
-          6 §17) rather than letting both stay active forever. History is
-          preserved via archiving, never hard-deleted by this policy.
-        - Anything else (different topic, or a non-opposing different kind
-          such as an existing `needs_review` alongside a new
-          `learning_goal`): no conflict, proceed normally.
+        * Same normalized topic and same kind already active: raise
+          ``MemoryConflictError``; update the existing entry instead.
+        * Same topic with an opposing kind active (e.g. ``needs_review`` vs
+          ``understands``): archive the superseded memory.
+        * Otherwise: no conflict.
         """
         normalized = _normalize_topic(topic)
         active = [
@@ -218,13 +194,13 @@ class LearningMemoryService:
             if opposes(memory.kind, kind):
                 self._repository.archive(memory.id)
 
-    # --- context for the LLM (Stage 6 §13-14) -----------------------------------
+    # --- context for the model ---------------------------------------------------
 
     def get_active_context_memories(self, course_id: str | None) -> list[LearningMemory]:
-        """Active memories relevant to `course_id`, course-specific ones
-        first (freshest first), then global ones (freshest first),
-        capped at `MAX_CONTEXT_ENTRIES`. `course_id=None` (a General chat)
-        returns only global memories — there is no "course" to prefer."""
+        """Active memories relevant to ``course_id``: course-specific first, then global,
+        newest first, capped at ``MAX_CONTEXT_ENTRIES``. A General chat (None) gets
+        only global memories.
+        """
         if course_id is None:
             return self._repository.list(course_id=None, status=MemoryStatus.ACTIVE)[:MAX_CONTEXT_ENTRIES]
 
@@ -233,11 +209,11 @@ class LearningMemoryService:
         return (course_specific + global_memories)[:MAX_CONTEXT_ENTRIES]
 
     def build_memory_context_text(self, course_id: str | None) -> str | None:
-        """The compact, model-facing text block for this course (or global
-        scope), or `None` if there's nothing active to include — never
-        dumps every memory ever created (see `MAX_CONTEXT_ENTRIES`/
-        `MAX_CONTEXT_CHARS`). Fed to `core.context.build_system_prompt` as
-        its `memory_context` argument; never persisted anywhere."""
+        """Return the compact model-facing memory block for this scope, or None if
+        nothing is active.
+
+        Bounded by ``MAX_CONTEXT_ENTRIES`` and ``MAX_CONTEXT_CHARS``; never persisted.
+        """
         memories = self.get_active_context_memories(course_id)
         return self._compose_context_text(memories)
 
@@ -280,8 +256,7 @@ class LearningMemoryService:
 
     @staticmethod
     def _validate_summary(summary: str) -> str:
-        # `.strip()` only — unlike topic, a summary may be multiline
-        # (Stage 6 §8), so internal whitespace/newlines are preserved.
+        # strip() only: a summary may be multiline, so inner whitespace is kept.
         normalized = summary.strip()
         if not normalized:
             raise SessionError("A learning memory summary cannot be empty.")

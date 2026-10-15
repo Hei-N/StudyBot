@@ -1,11 +1,8 @@
-"""Chat and course persistence abstractions.
+"""Persistence interfaces and domain types for chats, courses and learning memories.
 
-Mirrors the `ModelProvider` pattern in `studybot.models`: everything outside
-this package and its concrete implementations talks only to `ChatRepository`
-/ `CourseRepository` and their domain types, never to raw SQL or database
-rows. A future backend (e.g. an encrypted store, or a sync-capable one) can
-replace `SQLiteChatRepository` / `SQLiteCourseRepository` without touching
-`SessionService`, `CourseService`, the CLI, or a future GUI.
+Code outside ``studybot.storage`` talks only to these protocols and never sees
+SQL or database rows, so a backend can be replaced without touching the
+services.
 """
 
 from __future__ import annotations
@@ -18,33 +15,19 @@ from studybot.core.messages import Message, Role
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
 
-#: Sentinel distinguishing "don't filter/change this field" from a real
-#: value that happens to be `None` (which is itself meaningful — e.g.
-#: `course_id=None` means "General"/global). Used by
-#: `LearningMemoryRepository.list`/`update`, mirroring the
-#: `_KEEP_CURRENT_COURSE` idiom `SessionService` already uses for the same
-#: reason.
+#: Sentinel for "don't filter or change this field", distinct from ``None``
+#: (which means General/global).
 UNSET = object()
 
 
 @dataclass(slots=True)
 class ChatSession:
-    """Metadata for one persisted (or about-to-be-persisted) chat.
+    """Metadata for one chat.
 
-    `title` is `None` for a chat that hasn't received its first user message
-    yet — the CLI displays this as "Untitled" and `SessionService` fills it
-    in automatically once there's something to derive a title from.
-
-    `course_id` is `None` for a "General" chat not associated with any
-    course. Course membership is purely organizational: it never merges or
-    shares conversation history between chats.
-
-    `teaching_mode` is per-chat (see `core.teaching_mode`): switching a
-    chat's mode never affects any other chat, even one in the same course.
-
-    `reasoning_mode` is per-chat too (see `core.reasoning_mode`) and
-    entirely independent of `teaching_mode` — one controls instructional
-    behavior, the other controls inference depth/latency.
+    ``title`` is None until the first user message. ``course_id`` is None for a
+    "General" chat; course membership is organizational only and never shares
+    history between chats. ``teaching_mode`` and ``reasoning_mode`` are per chat
+    and independent of each other.
     """
 
     id: str
@@ -58,12 +41,11 @@ class ChatSession:
 
 @dataclass(frozen=True, slots=True)
 class MessageRecord:
-    """A persisted message with its stable id and timestamp — distinct from
-    `Message` (the plain role/content pair `ChatService`/`ModelProvider`
-    exchange). Nothing about LLM context construction needs an id or a
-    timestamp, so `Message` stays exactly as it was; `MessageRecord` exists
-    purely for callers (the HTTP/WebSocket API) that need to display or
-    reference a specific persisted message."""
+    """A persisted message with its id and timestamp.
+
+    For callers (the API) that need to reference a specific message; ``Message``
+    stays a plain role/content pair.
+    """
 
     id: int
     role: Role
@@ -73,8 +55,7 @@ class MessageRecord:
 
 @dataclass(slots=True)
 class Course:
-    """Metadata for one persisted course. Chats reference it by `id`, but a
-    course never holds or aggregates chat history itself."""
+    """Metadata for one course. Chats reference it by ``id``; a course holds no chat history."""
 
     id: str
     name: str
@@ -86,12 +67,11 @@ class Course:
 
 
 class ChatRepository(Protocol):
-    """Durable storage for chats and their messages.
+    """Durable storage for chats and messages.
 
-    Implementations must enforce foreign keys (so deleting a chat deletes
-    its messages, and deleting a course clears `course_id` on its chats
-    without touching the chats themselves), use parameterized SQL only,
-    and preserve message insertion order exactly.
+    Implementations must enforce foreign keys (deleting a chat deletes its
+    messages; deleting a course clears ``course_id`` on its chats), use
+    parameterized SQL, and preserve message order.
     """
 
     def create_chat(
@@ -102,20 +82,21 @@ class ChatRepository(Protocol):
         teaching_mode: TeachingMode = DEFAULT_TEACHING_MODE,
         reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE,
     ) -> ChatSession:
-        """Insert a new chat row and return it (with server-assigned timestamps)."""
+        """Insert a chat and return it with its assigned timestamps."""
         ...
 
     def get_chat(self, chat_id: str) -> ChatSession | None:
-        """Fetch one chat by its exact id, or None if it doesn't exist."""
+        """Return a chat by exact id, or None."""
         ...
 
     def list_chats(self) -> list[ChatSession]:
-        """All chats regardless of course, most recently updated first."""
+        """All chats, most recently updated first."""
         ...
 
     def list_chats_by_course(self, course_id: str | None) -> list[ChatSession]:
-        """Chats belonging to one course (or, if `course_id` is None, the
-        "General" chats with no course), most recently updated first."""
+        """Chats in a course (or General chats if ``course_id`` is None), most recently
+        updated first.
+        """
         ...
 
     def rename_chat(self, chat_id: str, title: str) -> ChatSession:
@@ -123,15 +104,14 @@ class ChatRepository(Protocol):
         ...
 
     def move_chat_to_course(self, chat_id: str, course_id: str | None) -> ChatSession:
-        """Reassign a chat's course (None = unassign to General).
+        """Reassign a chat's course (None = General).
 
-        Preserves the chat's id, title, and messages — only `course_id`
-        (and `updated_at`) change.
+        Only ``course_id`` and ``updated_at`` change.
         """
         ...
 
     def delete_chat(self, chat_id: str) -> None:
-        """Delete a chat and (via cascade) all of its messages."""
+        """Delete a chat and, by cascade, its messages."""
         ...
 
     def touch_chat(self, chat_id: str) -> ChatSession:
@@ -139,63 +119,49 @@ class ChatRepository(Protocol):
         ...
 
     def set_teaching_mode(self, chat_id: str, mode: TeachingMode) -> ChatSession:
-        """Set a chat's teaching mode and bump its `updated_at`.
+        """Set a chat's teaching mode and bump ``updated_at``.
 
-        Never touches messages, title, or course — mode is independent of
-        all three.
+        Messages, title and course are untouched.
         """
         ...
 
     def set_reasoning_mode(self, chat_id: str, mode: ReasoningMode) -> ChatSession:
-        """Set a chat's reasoning mode and bump its `updated_at`.
+        """Set a chat's reasoning mode and bump ``updated_at``.
 
-        Never touches messages, title, course, or teaching mode — reasoning
-        mode is independent of all of them.
+        Messages, title, course and teaching mode are untouched.
         """
         ...
 
     def append_message(self, chat_id: str, role: Role, content: str) -> None:
-        """Persist one message, preserving insertion order for later loads."""
+        """Persist one message in insertion order."""
         ...
 
     def load_messages(self, chat_id: str) -> list[Message]:
-        """All persisted user/assistant messages for a chat, in order.
+        """Return a chat's user/assistant messages in order.
 
-        Never includes a system message — the system prompt (and any course
-        context) is application configuration, injected by `ChatService`,
-        and is never persisted.
+        The system prompt is never persisted, so it is never included.
         """
         ...
 
     def load_message_records(self, chat_id: str) -> list[MessageRecord]:
-        """Like `load_messages`, but with each message's stable id and
-        timestamp — for callers (the API layer) that need to reference or
-        display a specific message, not feed it to a model."""
+        """Like ``load_messages``, with each message's id and timestamp."""
         ...
 
     def clear_messages(self, chat_id: str) -> None:
-        """Delete all messages for a chat, leaving the chat itself intact."""
+        """Delete a chat's messages; the chat itself is kept."""
         ...
 
     def count_chats_for_course(self, course_id: str) -> int:
-        """How many chats currently belong to a course."""
+        """Number of chats in a course."""
         ...
 
 
 @dataclass(slots=True)
 class LearningMemory:
-    """One durable, course-scoped piece of learning information — separate
-    from and independent of chat history (Stage 6). See
-    `core.learning_memory` for `MemoryKind`/`MemoryStatus`.
+    """A durable, course-scoped learning fact, independent of chat history.
 
-    `course_id` is `None` for genuinely general/global learning
-    information — not the common case, but supported (see
-    `LearningMemoryService`).
-
-    `source_chat_id` is provenance only: which chat this memory was
-    created from, if any. It remains valid (and the memory itself remains
-    fully intact) even after that chat is cleared or deleted — see
-    `LearningMemoryRepository`'s `ON DELETE SET NULL` foreign key.
+    ``course_id`` is None for a global memory. ``source_chat_id`` is provenance
+    only: it becomes None if that chat is deleted, and the memory is unaffected.
     """
 
     id: str
@@ -212,12 +178,9 @@ class LearningMemory:
 class LearningMemoryRepository(Protocol):
     """Durable storage for learning memories.
 
-    Implementations must enforce foreign keys with `ON DELETE SET NULL` on
-    both `course_id` (→ `courses.id`) and `source_chat_id` (→ `chats.id`)
-    — deleting a course or a chat must never delete a learning memory, only
-    clear the now-dangling reference. Archiving (not deleting) is the
-    normal way a memory is retired; `delete` is a separate, explicit hard
-    delete.
+    The foreign keys on ``course_id`` and ``source_chat_id`` must be
+    ``ON DELETE SET NULL``: deleting a course or chat never deletes a memory.
+    Retire memories with ``archive``; ``delete`` is a separate hard delete.
     """
 
     def create(
@@ -230,13 +193,11 @@ class LearningMemoryRepository(Protocol):
         summary: str,
         status: MemoryStatus = DEFAULT_MEMORY_STATUS,
     ) -> LearningMemory:
-        """Insert a new learning memory row and return it (with
-        server-assigned timestamps)."""
+        """Insert a memory and return it with its assigned timestamps."""
         ...
 
     def get(self, memory_id: str) -> LearningMemory | None:
-        """Fetch one learning memory by its exact id, or None if it
-        doesn't exist."""
+        """Return a memory by exact id, or None."""
         ...
 
     def list(
@@ -246,10 +207,11 @@ class LearningMemoryRepository(Protocol):
         kind: MemoryKind | None = None,
         status: MemoryStatus | None = None,
     ) -> list[LearningMemory]:
-        """All memories matching the given filters, most recently updated
-        first. `course_id=UNSET` (the default) means "any course";
-        `course_id=None` means "global memories only"; a real id filters to
-        exactly that course. `kind`/`status` of `None` mean "any"."""
+        """Memories matching the filters, most recently updated first.
+
+        ``course_id=UNSET`` means any course, ``None`` means global only, and an id
+        selects that course. ``kind`` and ``status`` of None mean any.
+        """
         ...
 
     def update(
@@ -261,78 +223,65 @@ class LearningMemoryRepository(Protocol):
         kind: MemoryKind | None = None,
         summary: str | None = None,
     ) -> LearningMemory:
-        """Partially update a memory: only fields that are provided
-        change. `course_id=UNSET` (the default) leaves it unchanged;
-        `course_id=None` explicitly unassigns it to General/global.
-        `topic`/`kind`/`summary` of `None` mean "leave unchanged" (a real
-        value can never legitimately be `None` once validated)."""
+        """Partially update a memory; only the fields provided change.
+
+        ``course_id=UNSET`` leaves it unchanged and ``None`` makes the memory global.
+        ``topic``, ``kind`` and ``summary`` of None are left unchanged.
+        """
         ...
 
     def archive(self, memory_id: str) -> LearningMemory:
-        """Set a memory's status to archived and bump `updated_at`."""
+        """Mark a memory archived and bump ``updated_at``."""
         ...
 
     def restore(self, memory_id: str) -> LearningMemory:
-        """Set a memory's status back to active and bump `updated_at`."""
+        """Mark a memory active again and bump ``updated_at``."""
         ...
 
     def delete(self, memory_id: str) -> None:
-        """Permanently delete a memory. An explicit, separate operation
-        from `archive` — normal retirement should archive, not delete."""
+        """Permanently delete a memory. Prefer ``archive`` for normal retirement."""
         ...
 
 
 class CourseRepository(Protocol):
-    """Durable storage for course metadata (not chats — see `ChatRepository`)."""
+    """Durable storage for course metadata."""
 
     def create_course(
         self, course_id: str, name: str, code: str | None, term: str | None, description: str | None
     ) -> Course:
-        """Insert a new course row and return it (with server-assigned timestamps)."""
+        """Insert a course and return it with its assigned timestamps."""
         ...
 
     def get_course(self, course_id: str) -> Course | None:
-        """Fetch one course by its exact id, or None if it doesn't exist."""
+        """Return a course by exact id, or None."""
         ...
 
     def list_courses(self) -> list[Course]:
-        """All courses, most recently *edited* first (chat activity within a
-        course never bumps the course's own `updated_at`)."""
+        """All courses, most recently edited first.
+
+        Chat activity does not change a course's ``updated_at``.
+        """
         ...
 
     def update_course(
         self, course_id: str, name: str, code: str | None, term: str | None, description: str | None
     ) -> Course:
-        """Fully replace a course's editable fields and bump its `updated_at`."""
+        """Replace a course's editable fields and bump ``updated_at``."""
         ...
 
     def delete_course(self, course_id: str) -> None:
-        """Delete a course. Its chats and their messages are preserved —
-        implementations must use ON DELETE SET NULL on `chats.course_id`,
-        never cascade a course deletion into its chats."""
+        """Delete a course. Its chats are kept (``ON DELETE SET NULL`` on
+        ``chats.course_id``).
+        """
         ...
 
     def delete_course_archiving_memories(self, course_id: str) -> None:
-        """Delete a course and, in the *same* SQLite transaction, archive
-        every currently-active learning memory that belongs to it (Stage
-        6.2). This is the one method `CourseService.delete_course` actually
-        calls — plain `delete_course` above is kept for callers (and
-        existing tests) that only care about the course/chat FK behavior
-        in isolation.
+        """Delete a course and archive its active learning memories in one transaction.
 
-        Why this lives here instead of being two separate calls (one to
-        this repository, one to `LearningMemoryRepository`): a SQLite
-        transaction is scoped to a connection, not to a repository object,
-        so getting a real `BEGIN ... COMMIT/ROLLBACK` around *both*
-        statements requires one method holding the connection for the
-        whole operation. This is a deliberate, narrow exception to "one
-        repository, one table" — not a general precedent — made because
-        `ON DELETE SET NULL` alone cannot express "and also flip this
-        other column"; only a hand-written statement pair can. If either
-        statement fails, both are rolled back: no course-deleted-but-
-        memories-still-active (or memories-archived-but-course-still-
-        there-forever) state is ever visible to any reader, on this
-        connection or any other. Memories that were already global, or
-        belong to a different course, are never touched.
+        This is what ``CourseService.delete_course`` calls. It lives on this
+        repository because a transaction is scoped to a connection, not a repository;
+        ``ON DELETE SET NULL`` alone would turn the course's memories into global
+        ones. If either statement fails, both are rolled back. Memories that are
+        already global or belong to another course are untouched.
         """
         ...

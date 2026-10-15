@@ -11,10 +11,10 @@ import 'package:studybot_app/core/models/teaching_mode.dart';
 
 const _testConfig = ConnectionConfig(baseUrl: 'http://fake', token: 'fake-token');
 
-/// An in-memory stand-in for [StudyBotApi] used by provider tests, so
-/// notifier logic (fetch/refresh/mutate) is exercised without any real HTTP
-/// traffic. Seed the lists in the constructor; call sites record via the
-/// `calls` log for assertions like "listChats was called with courseId=none".
+/// An in-memory stand-in for [StudyBotApi] for provider tests, so notifier
+/// logic runs without HTTP. Seed the lists in the constructor; calls are
+/// recorded in `calls` for assertions like "listChats was called with
+/// courseId=none".
 class FakeStudyBotApi extends StudyBotApi {
   FakeStudyBotApi({
     List<Course>? courses,
@@ -48,10 +48,9 @@ class FakeStudyBotApi extends StudyBotApi {
   final List<String> calls = [];
   ApiException? nextError;
 
-  /// Chat ids that simulate API_CONTRACT.md's "Lazy persistence": no
-  /// database row yet, so they're excluded from [listChats] and 404 from
-  /// [getChatMessages]/[getChat] until [persist] is called (as sending a
-  /// first real message would, in the real backend).
+  /// Chat ids that the list endpoint does not return yet: excluded from
+  /// [listChats] and 404 from [getChatMessages]/[getChat] until [persist] is
+  /// called.
   final Set<String> phantomChatIds = {};
 
   void persist(String chatId) => phantomChatIds.remove(chatId);
@@ -259,7 +258,7 @@ class FakeStudyBotApi extends StudyBotApi {
         ReasoningModeInfo(id: reasoningMode, displayName: reasoningMode, description: '');
   }
 
-  // --- learning memory (Stage 6) -----------------------------------------------
+  // --- learning memory --------------------------------------------------------
 
   int _memoryIdSeed = 100;
 

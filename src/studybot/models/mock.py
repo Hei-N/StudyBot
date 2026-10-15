@@ -1,4 +1,4 @@
-"""A deterministic, non-intelligent model used for development and tests."""
+"""A deterministic, non-intelligent model for development and tests."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from studybot.models.base import ModelCapabilities, ModelResponse, ProviderStatu
 
 
 class MockModel:
-    """Echoes the latest user message. Makes no attempt to be intelligent."""
+    """Echoes the latest user message."""
 
     def __init__(self) -> None:
         self._name = "mock"
@@ -32,11 +32,8 @@ class MockModel:
     def generate(
         self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
     ) -> ModelResponse:
-        # The mock has no concept of "thinking" at all — a deliberate no-op
-        # rather than silently accepting and discarding a meaningful
-        # request, per ModelProvider's "handle unsupported capability
-        # deliberately" contract. Accepted (not rejected) so callers can
-        # treat every provider uniformly.
+        # The mock has no notion of thinking; the mode is accepted so every provider
+        # can be called the same way.
         del reasoning_mode
         return ModelResponse(content=self._reply_to(messages), model_name=self._name)
 
@@ -44,8 +41,7 @@ class MockModel:
         self, messages: Sequence[Message], *, reasoning_mode: ReasoningMode = DEFAULT_REASONING_MODE
     ) -> Iterator[str]:
         del reasoning_mode
-        # Deterministic single chunk: the mock has nothing to stream
-        # progressively, but must still satisfy the streaming interface.
+        # One deterministic chunk satisfies the streaming interface.
         yield self._reply_to(messages)
 
     def get_status(self) -> ProviderStatus:

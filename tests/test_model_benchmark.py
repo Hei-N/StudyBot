@@ -1,7 +1,7 @@
-"""Stage 6.4: the local-model benchmark tool (scripts/benchmark_local_models.py).
+"""Tests for the local-model benchmark tool (scripts/benchmark_local_models.py).
 
 Nothing here contacts Ollama or runs a system command: models are scripted
-fakes injected through `studybot.app.create_model`, and every `runner` is a
+fakes injected through ``studybot.app.create_model``, and every ``runner`` is a
 stub.
 """
 
@@ -111,7 +111,7 @@ class ScriptedModel:
         return self.capabilities
 
 
-NO_COMMANDS = lambda argv: None  # noqa: E731 — a runner that finds nothing
+NO_COMMANDS = lambda argv: None  # noqa: E731; a runner that finds nothing
 
 
 @pytest.fixture
@@ -299,7 +299,7 @@ def test_unreachable_or_missing_model_is_not_evaluated_not_a_crash(models):
 
 
 def test_unexpected_exception_while_benchmarking_becomes_not_evaluated(models):
-    models["m1"] = ScriptedModel(capabilities=None)  # get_capabilities returns None -> weird, but fine
+    models["m1"] = ScriptedModel(capabilities=None)  # unused here
     class Broken(ScriptedModel):
         def get_capabilities(self):
             raise RuntimeError("boom")

@@ -55,9 +55,8 @@ def test_create_chat_with_unknown_course_is_rejected(client):
 
 
 def test_get_chat_found_immediately_after_creation(client):
-    # Stage 5.8: an API-created chat is a real, persisted row from the
-    # moment POST returns — it must never need a first message (or any
-    # other "activation") to become addressable. See API_CONTRACT.md.
+    # An API-created chat is a persisted row as soon as POST returns; it needs
+    # no first message to become addressable.
     created = client.post("/api/v1/chats", json={}, headers=HEADERS).json()
 
     response = client.get(f"/api/v1/chats/{created['id']}", headers=HEADERS)
@@ -205,12 +204,13 @@ def test_assign_chat_to_unknown_course(client):
     assert response.json()["code"] == "COURSE_NOT_FOUND"
 
 
-# --- Stage 5.8: stateless multi-chat regressions --------------------------------------
+# --- stateless multi-chat regressions -------------------------------------------------
 
 
 def test_creating_chat_b_does_not_break_addressing_chat_a(client):
-    """The exact real bug this stage fixes, at the HTTP layer: create A, do
-    NOT message it, create B, then operate on A by id — must not 404."""
+    """Regression: create A without messaging it, create B, then operate on A by id;
+    A must not 404.
+    """
     chat_a = client.post("/api/v1/chats", json={}, headers=HEADERS).json()
     client.post("/api/v1/chats", json={}, headers=HEADERS)  # chat B, never touched again
 
@@ -231,7 +231,7 @@ def test_restart_both_chats_remain_independently_addressable(tmp_path):
         client1.put(f"/api/v1/chats/{chat_b['id']}/reasoning-mode", json={"reasoningMode": "deep"}, headers=HEADERS)
         send(client1, chat_b["id"], "hello b")
 
-    # A brand-new app/engine, same on-disk database — simulates a server restart.
+    # A brand-new app/engine, same on-disk database; simulates a server restart.
     with TestClient(create_app(settings=Settings.from_env(env=env), token=TOKEN)) as client2:
         response_a = client2.get(f"/api/v1/chats/{chat_a['id']}", headers=HEADERS)
         response_b = client2.get(f"/api/v1/chats/{chat_b['id']}", headers=HEADERS)

@@ -17,12 +17,10 @@ const _kindAll = '__all__';
 const _courseAll = '__all__';
 const _courseGeneral = '__general__';
 
-/// Full-page learning-memory management: filter by course/kind/status,
-/// create, edit, archive/restore, delete. Reachable from the nav rail at
-/// every breakpoint (mirroring how Settings is reached) and via "View all"
-/// from the Study Panel's compact summary. Deliberately not a database
-/// admin screen — natural-language wording throughout, no raw enum ids, no
-/// mastery percentages.
+/// Full-page learning-memory management: filter by course/kind/status, create,
+/// edit, archive/restore and delete. Reachable from the nav rail at every
+/// breakpoint and via "View all" in the Study Panel summary. Uses plain-language
+/// wording (no raw enum ids).
 class MemoryManagementView extends ConsumerStatefulWidget {
   const MemoryManagementView({super.key});
 

@@ -1,11 +1,7 @@
 """Logging setup.
 
-Design goals:
-  * quiet by default (no noisy console spam during normal use)
-  * configurable verbosity via Settings / STUDYBOT_LOG_LEVEL
-  * never log conversation content or other user data by default — this app
-    will eventually touch personal school files, so privacy-safe logging is
-    the default rather than an afterthought.
+Quiet by default, with verbosity set by ``STUDYBOT_LOG_LEVEL``. Conversation
+content and other personal data are never logged.
 """
 
 from __future__ import annotations

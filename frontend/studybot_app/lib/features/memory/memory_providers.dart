@@ -4,18 +4,15 @@ import '../../core/models/learning_memory.dart';
 import '../connection/connection_providers.dart';
 import '../courses/courses_providers.dart';
 
-/// The kind catalog (`GET /memory-kinds`) — always five entries with
-/// natural-language display metadata, never hardcoded here.
+/// The kind catalog (`GET /memory-kinds`): five entries with display metadata
+/// from the backend.
 final memoryKindCatalogProvider = FutureProvider<List<MemoryKindInfo>>((ref) {
   return ref.read(studyBotApiProvider).listMemoryKinds();
 });
 
-/// Every learning memory, unfiltered. The Study Panel and the management
-/// view both derive their own filtered views from this single fetch
-/// (client-side filtering) rather than each maintaining separate
-/// server-filtered queries — memory counts are small enough in Stage 6
-/// that this stays simple and keeps every view consistent after a single
-/// mutation triggers one `refresh()`.
+/// Every learning memory, unfiltered. The Study Panel and the management view
+/// filter this single fetch client-side, which keeps them consistent after one
+/// `refresh()`; memory counts are small enough for that.
 class MemoriesNotifier extends AsyncNotifier<List<LearningMemory>> {
   @override
   Future<List<LearningMemory>> build() => _fetch();
@@ -73,12 +70,9 @@ class MemoriesNotifier extends AsyncNotifier<List<LearningMemory>> {
 
 final memoriesProvider = AsyncNotifierProvider<MemoriesNotifier, List<LearningMemory>>(MemoriesNotifier.new);
 
-/// Active memories relevant to the currently active course (course-specific
-/// plus global), for the Study Panel's compact summary — mirrors the
-/// backend's own "course-specific first, then global" preference, though
-/// here it's just a filter (the backend already applies the real
-/// deterministic limit when composing model context; this is a small,
-/// already-fetched list for display, not sent to any model).
+/// Active memories relevant to the active course (course-specific plus global),
+/// for the Study Panel summary. A display filter only; the backend applies its
+/// own limits when composing model context.
 final activeCourseMemoriesProvider = Provider<List<LearningMemory>>((ref) {
   final all = ref.watch(memoriesProvider).value ?? const [];
   final activeCourseId = ref.watch(activeCourseIdProvider);

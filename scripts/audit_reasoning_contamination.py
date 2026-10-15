@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Find stored assistant replies containing leaked model reasoning (Stage 6.3).
+"""Find stored assistant replies that contain leaked model reasoning.
 
-Default: a read-only dry run. Prints chat ids, message ids and counts —
-never message content — and changes nothing:
+The default is a read-only dry run that prints chat ids, message ids and
+counts, never message content:
 
     python3 scripts/audit_reasoning_contamination.py            # default database
     python3 scripts/audit_reasoning_contamination.py --json
     python3 scripts/audit_reasoning_contamination.py --db PATH
 
-Repair (only with the database owner's explicit approval, with
-`studybot-server` stopped): backs the database up first, then rewrites only
-confidently-identified replies to their answer text. Ambiguous replies are
-never touched.
+Repair backs the database up first, then rewrites only confidently identified
+replies to their answer text; ambiguous replies are never touched. Stop
+``studybot-server`` first.
 
     python3 scripts/audit_reasoning_contamination.py --apply --backup-dir DIR --yes
 
@@ -19,8 +18,8 @@ Undo a repair (restores exactly the rows it changed, from its backup):
 
     python3 scripts/audit_reasoning_contamination.py --rollback DIR/<name>.manifest.json --yes
 
-Repairing is optional: StudyBot already keeps confidently-identified
-reasoning in old replies out of new model requests without modifying them.
+Repairing is optional: model requests already exclude confidently identified
+reasoning from old replies without modifying them.
 """
 
 from __future__ import annotations

@@ -1,8 +1,5 @@
-"""Centralized application configuration.
-
-Settings are plain, validated data. They are constructed once (see
-`Settings.from_env`) and passed to whatever needs them, rather than read
-from the environment ad hoc throughout the codebase.
+"""Application configuration, built once (see ``Settings.from_env``) and passed to
+whatever needs it.
 """
 
 from __future__ import annotations
@@ -26,9 +23,7 @@ from studybot.models.generation import (
 _ENV_PREFIX = "STUDYBOT_"
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
-# The name of the folder used under the OS application-support directory.
-# Kept in one place so the eventual user-facing product name can change
-# without touching data-directory logic elsewhere.
+# Folder name under the OS application-support directory.
 _APP_DIR_NAME = "StudyBot"
 
 DATABASE_FILENAME = "studybot.db"
@@ -39,14 +34,11 @@ DEFAULT_OLLAMA_TIMEOUT = 120.0
 
 
 def default_data_dir() -> Path:
-    """The OS-appropriate location for this app's *real* persistent data —
-    i.e. what `data_dir` resolves to when `STUDYBOT_DATA_DIR` is not set.
+    """The default location of the app's persistent data (what ``data_dir`` resolves
+    to without ``STUDYBOT_DATA_DIR``).
 
-    Public (Stage 6.2) specifically so verification tooling can compare a
-    resolved `Settings.data_dir` against this and refuse to run a
-    destructive operation if they match — see
-    `studybot.config.verification_guard`. Nothing else in the app should
-    need to call this directly; use `Settings.from_env().data_dir`.
+    Public so verification tooling can refuse to run against it; see
+    ``studybot.config.verification_guard``.
     """
     return Path.home() / "Library" / "Application Support" / _APP_DIR_NAME
 
@@ -61,9 +53,7 @@ class Settings:
     data_dir: Path = field(default_factory=default_data_dir)
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
-    # Ollama-specific. Read only when model_provider == "ollama", but kept
-    # on the shared Settings object (like the rest of the app's config)
-    # rather than introducing a separate per-provider config type.
+    # Ollama-specific; only used when model_provider == "ollama".
     ollama_host: str = DEFAULT_OLLAMA_HOST
     ollama_model: str = DEFAULT_OLLAMA_MODEL
     ollama_timeout: float = DEFAULT_OLLAMA_TIMEOUT
@@ -91,20 +81,21 @@ class Settings:
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
         """Build settings from environment variables, falling back to defaults.
 
-        Recognized variables (all optional):
-            STUDYBOT_ENV                 e.g. "development" or "production"
-            STUDYBOT_LOG_LEVEL           e.g. "DEBUG", "INFO", "WARNING", "ERROR"
+        All variables are optional:
+
+            STUDYBOT_ENV                 "development" or "production"
+            STUDYBOT_LOG_LEVEL           DEBUG, INFO, WARNING, ERROR or CRITICAL
             STUDYBOT_MODEL_PROVIDER      "mock" or "ollama"
-            STUDYBOT_DATA_DIR            path override for the app data directory
+            STUDYBOT_DATA_DIR            override the data directory
             STUDYBOT_SYSTEM_PROMPT       override the baseline system prompt
             STUDYBOT_OLLAMA_HOST         e.g. "http://localhost:11434"
             STUDYBOT_OLLAMA_MODEL        e.g. "qwen3:4b"
             STUDYBOT_OLLAMA_TIMEOUT      request timeout in seconds
-            STUDYBOT_OLLAMA_KEEP_ALIVE   e.g. "5m" (how long Ollama keeps the model loaded)
+            STUDYBOT_OLLAMA_KEEP_ALIVE   e.g. "5m"
+            STUDYBOT_{FAST,DEEP}_MAX_GENERATED_TOKENS
+            STUDYBOT_{FAST,DEEP}_GENERATION_DEADLINE_SECONDS
 
-        `env` may be supplied explicitly (instead of reading `os.environ`) so
-        tests can build settings deterministically without mutating global
-        process state or touching the real application data directory.
+        ``env`` can be passed explicitly so tests do not depend on ``os.environ``.
         """
         source = os.environ if env is None else env
 

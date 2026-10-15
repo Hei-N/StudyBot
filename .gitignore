@@ -33,3 +33,11 @@ htmlcov/
 # Application runtime data (local app data, logs, future chats/memory/indexes)
 .studybot/
 *.log
+
+# Local databases (including SQLite WAL/SHM sidecars) and benchmark output
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+benchmark_results/

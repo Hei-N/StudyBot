@@ -4,14 +4,13 @@ import '../../core/models/chat.dart';
 import '../connection/connection_providers.dart';
 import '../courses/courses_providers.dart';
 
-/// `course_id` query value for "General" (unassigned chats) — see
-/// API_CONTRACT.md: omitting the parameter lists *every* chat, which this
-/// UI's chat list never wants; it always shows either one course's chats
-/// or General's.
+/// `course_id` query value for "General" (unassigned chats). Omitting the
+/// parameter lists every chat, which the chat list never wants (see
+/// API_CONTRACT.md).
 const _generalCourseFilter = 'none';
 
 /// Chats for [activeCourseIdProvider] (or General), most recently updated
-/// first — exactly the order `GET /chats` already returns.
+/// first, as returned by `GET /chats`.
 class ChatsNotifier extends AsyncNotifier<List<Chat>> {
   @override
   Future<List<Chat>> build() async {
@@ -26,11 +25,7 @@ class ChatsNotifier extends AsyncNotifier<List<Chat>> {
     );
   }
 
-  /// Per API_CONTRACT.md's "Lazy persistence": a brand-new chat has no
-  /// database row until its first message completes, so it will not come
-  /// back from a `GET /chats` refresh yet — insert the `POST` response
-  /// locally instead of refreshing, or it would vanish from the list
-  /// immediately after being created.
+  /// Adds the created chat to the list directly instead of refetching.
   Future<Chat> create() async {
     final courseId = ref.read(activeCourseIdProvider);
     final chat = await ref.read(studyBotApiProvider).createChat(courseId: courseId);
@@ -38,10 +33,7 @@ class ChatsNotifier extends AsyncNotifier<List<Chat>> {
     return chat;
   }
 
-  /// Patches the renamed chat in place rather than refreshing — a
-  /// never-messaged chat can be renamed (the mutation endpoints work
-  /// against it even before it's persisted) but still wouldn't come back
-  /// from a list refresh yet; see [create].
+  /// Patches the renamed chat in place instead of refetching.
   Future<Chat> rename(String chatId, String title) async {
     final chat = await ref.read(studyBotApiProvider).renameChat(chatId, title);
     _replaceLocally(chat);
@@ -60,9 +52,7 @@ class ChatsNotifier extends AsyncNotifier<List<Chat>> {
     return chat;
   }
 
-  /// Patches the mode in place rather than refreshing — see [create] for
-  /// why a full refresh isn't safe for a chat that may still be
-  /// unpersisted.
+  /// Patches the mode in place instead of refetching.
   Future<void> setMode(String chatId, String mode) async {
     await ref.read(studyBotApiProvider).setChatMode(chatId, mode);
     final current = state.value;
@@ -73,8 +63,8 @@ class ChatsNotifier extends AsyncNotifier<List<Chat>> {
     ]);
   }
 
-  /// Reasoning mode is a fully independent per-chat setting from teaching
-  /// mode (see `core/models/reasoning_mode.dart`) — patched the same way.
+  /// Reasoning mode is independent of teaching mode (see
+  /// `core/models/reasoning_mode.dart`); patched the same way.
   Future<void> setReasoningMode(String chatId, String reasoningMode) async {
     await ref.read(studyBotApiProvider).setChatReasoningMode(chatId, reasoningMode);
     final current = state.value;
@@ -94,12 +84,10 @@ class ChatsNotifier extends AsyncNotifier<List<Chat>> {
 
 final chatsProvider = AsyncNotifierProvider<ChatsNotifier, List<Chat>>(ChatsNotifier.new);
 
-/// The chat currently open in the conversation view. Kept in sync with
-/// [chatsProvider] via `ref.listen` (not `ref.watch`, so this notifier's
-/// own `build()` never re-runs and its `state` is never implicitly reset):
-/// if the current selection disappears (deleted, or the course changed)
-/// the most recently updated chat in the new list is selected instead, or
-/// `null` if the list is empty.
+/// The chat open in the conversation view. Follows [chatsProvider] via
+/// `ref.listen` (not `ref.watch`, so `build()` never re-runs and `state` is not
+/// reset): if the selection disappears (deleted, or the course changed), the
+/// most recently updated chat in the new list is selected, or `null` if empty.
 class ActiveChatIdNotifier extends Notifier<String?> {
   @override
   String? build() {
@@ -123,8 +111,8 @@ class ActiveChatIdNotifier extends Notifier<String?> {
 
 final activeChatIdProvider = NotifierProvider<ActiveChatIdNotifier, String?>(ActiveChatIdNotifier.new);
 
-/// The [Chat] object for [activeChatIdProvider], looked up from the
-/// already-loaded list (no extra request).
+/// The [Chat] for [activeChatIdProvider], looked up from the loaded list (no
+/// extra request).
 final activeChatProvider = Provider<Chat?>((ref) {
   final chatId = ref.watch(activeChatIdProvider);
   if (chatId == null) return null;

@@ -1,10 +1,7 @@
 """Per-teaching-mode instruction text.
 
-Fed into `core.context.build_system_prompt` alongside the baseline prompt
-and optional course context — never read by `OllamaModel`/`MockModel`
-directly, and never persisted as a chat message. Kept in this one small
-module, deliberately short per mode, so the wording can be revised after
-real-world testing without hunting through the codebase.
+Passed to ``core.context.build_system_prompt``; never persisted as a chat
+message. Kept in one small module so the wording can be revised in one place.
 """
 
 from __future__ import annotations

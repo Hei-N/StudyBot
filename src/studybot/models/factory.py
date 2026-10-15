@@ -1,8 +1,6 @@
-"""Selects a concrete `ModelProvider` implementation by name.
+"""Selects a concrete ``ModelProvider`` from configuration.
 
-This is the single place that maps configuration (`model_provider`) to a
-concrete backend. Adding a new backend means adding one case here — no
-other module needs to change.
+Adding a backend means adding one case here.
 """
 
 from __future__ import annotations
@@ -16,11 +14,8 @@ from studybot.models.mock import MockModel
 from studybot.models.ollama import OllamaModel
 
 if TYPE_CHECKING:
-    # `studybot.config.settings` transitively imports `studybot.core`, which
-    # imports this package, so importing Settings here at runtime would be
-    # circular. `from __future__ import annotations` (above) means the
-    # `Settings` annotation below is never evaluated at runtime, so it's
-    # safe to make this import type-checking-only.
+    # Type-checking only: importing Settings at runtime would be circular
+    # (settings -> core -> models).
     from studybot.config.settings import Settings
 
 
