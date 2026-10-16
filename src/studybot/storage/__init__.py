@@ -1,6 +1,15 @@
-from studybot.storage.base import ChatRepository, ChatSession, Course, CourseRepository
+from studybot.storage.base import (
+    ChatRepository,
+    ChatSession,
+    Course,
+    CourseRepository,
+    LibraryFile,
+    LibraryRepository,
+    LibrarySource,
+)
 from studybot.storage.database import SCHEMA_VERSION, get_schema_version, open_database
 from studybot.storage.sqlite_course_repository import SQLiteCourseRepository
+from studybot.storage.sqlite_library_repository import SQLiteLibraryRepository
 from studybot.storage.sqlite_repository import SQLiteChatRepository
 
 __all__ = [
@@ -8,6 +17,10 @@ __all__ = [
     "ChatSession",
     "Course",
     "CourseRepository",
+    "LibraryFile",
+    "LibraryRepository",
+    "LibrarySource",
+    "SQLiteLibraryRepository",
     "SQLiteChatRepository",
     "SQLiteCourseRepository",
     "SCHEMA_VERSION",

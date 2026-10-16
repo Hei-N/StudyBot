@@ -1,7 +1,7 @@
 """Application wiring: builds the core services from configuration.
 
 Any interface constructs a ``StudyBotApp`` and talks to ``app.sessions``,
-``app.courses`` and ``app.memories``. Nothing here is CLI-specific.
+``app.courses``, ``app.memories`` and ``app.library``. Nothing here is CLI-specific.
 """
 
 from __future__ import annotations
@@ -10,12 +10,14 @@ import logging
 
 from studybot.config.settings import Settings
 from studybot.core.course_service import CourseService
+from studybot.core.library_service import LibraryService
 from studybot.core.memory_service import LearningMemoryService
 from studybot.core.session_service import SessionService
 from studybot.logging_config import configure_logging
 from studybot.models.factory import create_model
 from studybot.storage.database import open_database
 from studybot.storage.sqlite_course_repository import SQLiteCourseRepository
+from studybot.storage.sqlite_library_repository import SQLiteLibraryRepository
 from studybot.storage.sqlite_learning_memory_repository import SQLiteLearningMemoryRepository
 from studybot.storage.sqlite_repository import SQLiteChatRepository
 
@@ -38,6 +40,9 @@ class StudyBotApp:
         self.courses = CourseService(course_repository=course_repository, chat_repository=chat_repository)
         self.memories = LearningMemoryService(
             repository=memory_repository, course_repository=course_repository, chat_repository=chat_repository
+        )
+        self.library = LibraryService(
+            repository=SQLiteLibraryRepository(self._connection), course_repository=course_repository
         )
         self.sessions = SessionService(
             model=model,

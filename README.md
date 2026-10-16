@@ -367,8 +367,9 @@ chats keep their ids, titles, timestamps, courses and messages.
 | v2 to v3 | Adds `chats.teaching_mode` (default `teach`). |
 | v3 to v4 | Adds `chats.reasoning_mode` (default `fast`). |
 | v4 to v5 | Adds `learning_memories` (`course_id` and `source_chat_id` both `ON DELETE SET NULL`). |
+| v5 to v6 | Adds `library_sources` and `library_files` (study library metadata; see [STUDY_LIBRARY.md](STUDY_LIBRARY.md)). |
 
-A fresh database is created directly at the current version (v5).
+A fresh database is created directly at the current version (v6).
 
 ```bash
 # Reset (quit StudyBot first). This deletes all chats, courses and memories:
@@ -497,6 +498,12 @@ failed or abandoned one stores only the user row. Nothing is written per token.
 A failed model call leaves your message in the database so you can retry; no
 synthetic error message is ever inserted into a chat, and mode changes never
 appear in history either.
+
+### Study library (foundation only)
+
+The database tracks study-material sources and files (metadata, content hashes and
+processing state) for future features. It reads no files, has no UI and is not
+available in the app yet. See [STUDY_LIBRARY.md](STUDY_LIBRARY.md).
 
 ## Roadmap
 

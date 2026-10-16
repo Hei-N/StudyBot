@@ -1,6 +1,6 @@
 """SQLite-backed ``LearningMemoryRepository``.
 
-One of three modules that contain SQL; see ``sqlite_repository.py``.
+One of the modules that contain SQL; see ``sqlite_repository.py``.
 ``ON DELETE SET NULL`` on both foreign keys (declared in ``storage.database``)
 clears ``course_id``/``source_chat_id`` when a course or chat is deleted; this
 repository issues no cleanup SQL for that.

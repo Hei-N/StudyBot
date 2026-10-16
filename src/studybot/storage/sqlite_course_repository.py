@@ -1,6 +1,6 @@
 """SQLite-backed ``CourseRepository``.
 
-One of three modules that contain SQL; see ``sqlite_repository.py``.
+One of the modules that contain SQL; see ``sqlite_repository.py``.
 ``delete_course_archiving_memories`` also touches ``learning_memories``, a
 deliberate exception because a transaction is scoped to the connection (see
 ``CourseRepository``).

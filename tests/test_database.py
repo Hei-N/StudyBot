@@ -5,14 +5,14 @@ import pytest
 from studybot.storage.database import SCHEMA_VERSION, get_schema_version, open_database
 
 
-def test_schema_version_constant_is_5():
-    assert SCHEMA_VERSION == 5
+def test_schema_version_constant_is_6():
+    assert SCHEMA_VERSION == 6
 
 
-def test_fresh_database_starts_directly_at_v5(tmp_path):
+def test_fresh_database_starts_directly_at_current_version(tmp_path):
     connection = open_database(tmp_path / "studybot.db")
     try:
-        assert get_schema_version(connection) == 5
+        assert get_schema_version(connection) == 6
         tables = {
             row[0]
             for row in connection.execute(
@@ -85,7 +85,7 @@ def test_opening_the_same_database_twice_is_idempotent(tmp_path):
 
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 5
+        assert get_schema_version(conn2) == 6
         row = conn2.execute(
             "SELECT title, teaching_mode FROM chats WHERE id = 'chat-1'"
         ).fetchone()
@@ -96,7 +96,7 @@ def test_opening_the_same_database_twice_is_idempotent(tmp_path):
         conn2.close()
 
 
-# --- v1 -> v5 migration (chained through v2, v3, v4) ----------------------------------
+# --- v1 -> current migration (chained through v2 .. v5) ----------------------------------
 
 
 def _create_v1_database(db_path):
@@ -118,7 +118,7 @@ def _create_v1_database(db_path):
     return conn
 
 
-def test_migration_upgrades_v1_database_directly_to_v5(tmp_path):
+def test_migration_upgrades_v1_database_directly_to_current(tmp_path):
     db_path = tmp_path / "studybot.db"
     seed = _create_v1_database(db_path)
     seed.execute(
@@ -134,7 +134,7 @@ def test_migration_upgrades_v1_database_directly_to_v5(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 5
+        assert get_schema_version(connection) == 6
 
         chat = connection.execute("SELECT * FROM chats WHERE id = 'chat-1'").fetchone()
         assert chat["title"] == "Old Chat"
@@ -193,11 +193,11 @@ def test_v1_migration_is_idempotent_when_run_twice(tmp_path):
     conn1 = open_database(db_path)
     conn1.close()
 
-    # Reopening an already-migrated (v5) database must not re-run any
+    # Reopening an already-migrated (current) database must not re-run any
     # migration (which would fail trying to add a duplicate column/table).
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 5
+        assert get_schema_version(conn2) == 6
         assert conn2.execute("SELECT title FROM chats WHERE id = 'c1'").fetchone()[0] == "T"
     finally:
         conn2.close()
@@ -256,7 +256,7 @@ def _create_v2_database(db_path):
     return conn
 
 
-def test_migration_upgrades_v2_database_to_v5(tmp_path):
+def test_migration_upgrades_v2_database_to_current(tmp_path):
     db_path = tmp_path / "studybot.db"
     seed = _create_v2_database(db_path)
     seed.execute(
@@ -276,7 +276,7 @@ def test_migration_upgrades_v2_database_to_v5(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 5
+        assert get_schema_version(connection) == 6
 
         course = connection.execute("SELECT * FROM courses WHERE id = 'course-1'").fetchone()
         assert course["name"] == "Physics"
@@ -308,7 +308,7 @@ def test_v2_migration_is_idempotent_when_run_twice(tmp_path):
 
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 5
+        assert get_schema_version(conn2) == 6
         row = conn2.execute("SELECT title, teaching_mode, reasoning_mode FROM chats WHERE id = 'c1'").fetchone()
         assert row[0] == "T"
         assert row[1] == "teach"
@@ -366,7 +366,7 @@ def _create_v3_database(db_path):
     return conn
 
 
-def test_migration_upgrades_v3_database_to_v5(tmp_path):
+def test_migration_upgrades_v3_database_to_current(tmp_path):
     db_path = tmp_path / "studybot.db"
     seed = _create_v3_database(db_path)
     seed.execute(
@@ -386,7 +386,7 @@ def test_migration_upgrades_v3_database_to_v5(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 5
+        assert get_schema_version(connection) == 6
 
         course = connection.execute("SELECT * FROM courses WHERE id = 'course-1'").fetchone()
         assert course["name"] == "Physics"  # courses untouched
@@ -416,11 +416,11 @@ def test_v3_migration_is_idempotent_when_run_twice(tmp_path):
     conn1 = open_database(db_path)
     conn1.close()
 
-    # Reopening an already-migrated (v5) database must not re-run any
+    # Reopening an already-migrated (current) database must not re-run any
     # migration (which would fail trying to add a duplicate column).
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 5
+        assert get_schema_version(conn2) == 6
         row = conn2.execute("SELECT title, teaching_mode, reasoning_mode FROM chats WHERE id = 'c1'").fetchone()
         assert row[0] == "T"
         assert row[1] == "exam"
@@ -484,7 +484,7 @@ def _create_v4_database(db_path):
     return conn
 
 
-def test_migration_upgrades_v4_database_to_v5(tmp_path):
+def test_migration_upgrades_v4_database_to_current(tmp_path):
     db_path = tmp_path / "studybot.db"
     seed = _create_v4_database(db_path)
     seed.execute(
@@ -504,7 +504,7 @@ def test_migration_upgrades_v4_database_to_v5(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 5
+        assert get_schema_version(connection) == 6
 
         course = connection.execute("SELECT * FROM courses WHERE id = 'course-1'").fetchone()
         assert course["name"] == "Physics"  # courses untouched
@@ -540,11 +540,11 @@ def test_v4_migration_is_idempotent_when_run_twice(tmp_path):
     conn1 = open_database(db_path)
     conn1.close()
 
-    # Reopening an already-migrated (v5) database must not re-run any
+    # Reopening an already-migrated (current) database must not re-run any
     # migration (which would fail trying to create a duplicate table).
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 5
+        assert get_schema_version(conn2) == 6
         row = conn2.execute("SELECT title, teaching_mode, reasoning_mode FROM chats WHERE id = 'c1'").fetchone()
         assert row[0] == "T"
         assert row[1] == "exam"

@@ -1,7 +1,7 @@
 """SQLite-backed ``ChatRepository``.
 
-One of three modules that contain SQL (with ``sqlite_course_repository.py`` and
-``sqlite_learning_memory_repository.py``). Schema creation and migration live in
+One of the modules that contain SQL (with ``sqlite_course_repository.py``,
+``sqlite_learning_memory_repository.py`` and ``sqlite_library_repository.py``). Schema creation and migration live in
 ``storage.database``, which owns the shared connection this repository receives.
 """
 

@@ -1,4 +1,4 @@
-"""Persistence interfaces and domain types for chats, courses and learning memories.
+"""Persistence interfaces and domain types for chats, courses, learning memories and the study library.
 
 Code outside ``studybot.storage`` talks only to these protocols and never sees
 SQL or database rows, so a backend can be replaced without touching the
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from studybot.core.learning_memory import DEFAULT_MEMORY_STATUS, MemoryKind, MemoryStatus
+from studybot.core.library import LibraryFileState, LibrarySourceKind
 from studybot.core.messages import Message, Role
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
@@ -285,3 +286,103 @@ class CourseRepository(Protocol):
         already global or belong to another course are untouched.
         """
         ...
+
+
+@dataclass(slots=True)
+class LibrarySource:
+    """A logical source of study material.
+
+    ``locator`` is metadata only; recording it grants no access to the location.
+    ``course_id`` is None for general material. Deleting the course clears it.
+    """
+
+    id: str
+    course_id: str | None
+    kind: LibrarySourceKind
+    display_name: str
+    locator: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(slots=True)
+class LibraryFile:
+    """One file inside a source, identified by ``(source_id, relative_path)``.
+
+    Holds metadata and processing state only, never file contents. ``indexed_at``
+    is when the file last became ``ready``.
+    """
+
+    id: str
+    source_id: str
+    relative_path: str
+    display_name: str
+    extension: str | None
+    size_bytes: int | None
+    modified_at: str | None
+    content_hash: str | None
+    processing_state: LibraryFileState
+    failure_code: str | None
+    indexed_at: str | None
+    created_at: str
+    updated_at: str
+
+
+class LibraryRepository(Protocol):
+    """Durable storage for library sources and files.
+
+    ``library_sources.course_id`` is ``ON DELETE SET NULL`` and
+    ``library_files.source_id`` is ``ON DELETE CASCADE``. Deleting records
+    never touches the filesystem.
+    """
+
+    def create_source(
+        self, source_id: str, course_id: str | None, kind: LibrarySourceKind, display_name: str, locator: str
+    ) -> LibrarySource: ...
+
+    def get_source(self, source_id: str) -> LibrarySource | None: ...
+
+    def find_source(self, kind: LibrarySourceKind, locator: str) -> LibrarySource | None: ...
+
+    def list_sources(self, *, course_id: str | None = UNSET) -> list[LibrarySource]:  # type: ignore[assignment]
+        """Sources, most recently updated first. ``course_id=UNSET`` means any course,
+        ``None`` means general (no course)."""
+        ...
+
+    def update_source(
+        self, source_id: str, *, course_id: str | None = UNSET, display_name: str | None = None  # type: ignore[assignment]
+    ) -> LibrarySource: ...
+
+    def delete_source(self, source_id: str) -> None:
+        """Delete the source and, by cascade, its file records."""
+        ...
+
+    def create_file(
+        self,
+        file_id: str,
+        source_id: str,
+        relative_path: str,
+        display_name: str,
+        extension: str | None,
+        size_bytes: int | None,
+        modified_at: str | None,
+        content_hash: str | None,
+    ) -> LibraryFile:
+        """Insert a ``pending`` file."""
+        ...
+
+    def get_file(self, file_id: str) -> LibraryFile | None: ...
+
+    def find_file(self, source_id: str, relative_path: str) -> LibraryFile | None: ...
+
+    def list_files(
+        self, *, source_id: str | None = None, state: LibraryFileState | None = None
+    ) -> list[LibraryFile]:
+        """Files ordered by source and path; filters of None mean any."""
+        ...
+
+    def save_file(self, file: LibraryFile) -> LibraryFile:
+        """Write the mutable fields of ``file`` and bump ``updated_at``."""
+        ...
+
+    def delete_file(self, file_id: str) -> None: ...

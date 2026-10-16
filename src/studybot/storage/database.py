@@ -19,7 +19,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Individual statements instead of executescript(), which commits implicitly
 # and would defeat the explicit transaction.
@@ -75,6 +75,44 @@ _FRESH_SCHEMA_STATEMENTS = [
     "CREATE INDEX idx_learning_memories_topic ON learning_memories(topic)",
 ]
 
+# Study library tables (added in v6); shared by the fresh schema and the v5 -> v6 migration.
+_LIBRARY_SCHEMA_STATEMENTS = [
+    """
+    CREATE TABLE library_sources (
+        id TEXT PRIMARY KEY,
+        course_id TEXT REFERENCES courses(id) ON DELETE SET NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('local_folder', 'local_file')),
+        display_name TEXT NOT NULL,
+        locator TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (kind, locator)
+    )
+    """,
+    "CREATE INDEX idx_library_sources_course_id ON library_sources(course_id)",
+    """
+    CREATE TABLE library_files (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES library_sources(id) ON DELETE CASCADE,
+        relative_path TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        extension TEXT,
+        size_bytes INTEGER CHECK (size_bytes IS NULL OR size_bytes >= 0),
+        modified_at TEXT,
+        content_hash TEXT,
+        processing_state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (processing_state IN ('pending', 'indexing', 'ready', 'failed', 'stale')),
+        failure_code TEXT,
+        indexed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (source_id, relative_path),
+        CHECK (processing_state != 'ready' OR content_hash IS NOT NULL)
+    )
+    """,
+    "CREATE INDEX idx_library_files_processing_state ON library_files(processing_state)",
+]
+
 
 def open_database(db_path: Path) -> sqlite3.Connection:
     """Open (creating if needed) the database at ``db_path`` and apply pending
@@ -120,12 +158,16 @@ def _migrate(connection: sqlite3.Connection) -> None:
         _migrate_v4_to_v5(connection)
         version = 5
 
+    if version == 5:
+        _migrate_v5_to_v6(connection)
+        version = 6
+
 
 def _create_fresh_schema(connection: sqlite3.Connection) -> None:
     """Create the current schema directly for a new database."""
     try:
         connection.execute("BEGIN")
-        for statement in _FRESH_SCHEMA_STATEMENTS:
+        for statement in (*_FRESH_SCHEMA_STATEMENTS, *_LIBRARY_SCHEMA_STATEMENTS):
             connection.execute(statement)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.commit()
@@ -229,6 +271,23 @@ def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
         connection.execute("CREATE INDEX idx_learning_memories_status ON learning_memories(status)")
         connection.execute("CREATE INDEX idx_learning_memories_topic ON learning_memories(topic)")
         connection.execute("PRAGMA user_version = 5")
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+
+
+def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
+    """Add the ``library_sources`` and ``library_files`` tables.
+
+    Existing data is untouched. One transaction.
+    """
+    logger.debug("Migrating chat database schema from v5 to v6")
+    try:
+        connection.execute("BEGIN")
+        for statement in _LIBRARY_SCHEMA_STATEMENTS:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version = 6")
         connection.commit()
     except BaseException:
         connection.rollback()

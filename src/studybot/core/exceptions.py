@@ -93,3 +93,19 @@ class MemoryConflictError(StudyBotError):
 
     The opposing-kind case is resolved by archiving, not by this error.
     """
+
+
+class LibrarySourceNotFoundError(SessionError):
+    """An operation targeted a library source id that does not exist."""
+
+
+class LibraryFileNotFoundError(SessionError):
+    """An operation targeted a library file id that does not exist."""
+
+
+class LibraryStateError(SessionError):
+    """A library file state change is not allowed from its current state."""
+
+
+class LibraryConflictError(StudyBotError):
+    """Creating a library source would duplicate an existing one (same kind and location)."""
