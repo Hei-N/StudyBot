@@ -57,8 +57,7 @@ class FakeStudyBotApi extends StudyBotApi {
   void persist(String chatId) => phantomChatIds.remove(chatId);
 
   ApiException get _chatNotFound => const ApiException(code: ApiErrorCode.chatNotFound, message: 'No such chat.');
-  ApiException get _memoryNotFound =>
-      const ApiException(code: ApiErrorCode.memoryNotFound, message: 'No such memory.');
+  ApiException get _memoryNotFound => const ApiException(code: ApiErrorCode.memoryNotFound, message: 'No such memory.');
 
   int _idSeed = 100;
 
@@ -438,7 +437,12 @@ class FakeStudyBotApi extends StudyBotApi {
     if (payload == null) {
       throw const ApiException(code: 'LIBRARY_AUTHORIZATION_NOT_FOUND', message: 'No authorization.', statusCode: 404);
     }
-    return LibraryAuthorization(sourceId: sourceId, platform: 'macos', kind: 'security_scoped_bookmark', payload: payload);
+    return LibraryAuthorization(
+      sourceId: sourceId,
+      platform: 'macos',
+      kind: 'security_scoped_bookmark',
+      payload: payload,
+    );
   }
 
   @override
@@ -456,5 +460,48 @@ class FakeStudyBotApi extends StudyBotApi {
     _maybeThrow();
     librarySources.removeWhere((s) => s.id == sourceId);
     libraryAuthorizations.remove(sourceId);
+  }
+
+  /// Files per source id, and how the next import behaves.
+  final Map<String, List<LibraryFile>> libraryFiles = {};
+  final List<String> importedStagingIds = [];
+  String nextImportOutcome = 'imported';
+  LibraryFile Function(String sourceId, String relativePath, String displayName)? importFileBuilder;
+
+  @override
+  Future<List<LibraryFile>> listLibraryFiles(String sourceId) async {
+    calls.add('listLibraryFiles:$sourceId');
+    _maybeThrow();
+    return List.of(libraryFiles[sourceId] ?? const []);
+  }
+
+  @override
+  Future<String> getIngestStagingDirectory() async => '/staging';
+
+  @override
+  Future<PdfImportResult> importPdf(
+    String sourceId, {
+    required String stagingId,
+    required String relativePath,
+    required String displayName,
+  }) async {
+    calls.add('importPdf:$sourceId');
+    _maybeThrow();
+    importedStagingIds.add(stagingId);
+    final build = importFileBuilder;
+    final file = build != null
+        ? build(sourceId, relativePath, displayName)
+        : LibraryFile(
+            id: 'file-1',
+            sourceId: sourceId,
+            relativePath: relativePath,
+            displayName: displayName,
+            processingState: 'ready',
+            failureCode: null,
+            pageCount: 2,
+            textPageCount: 2,
+          );
+    libraryFiles[sourceId] = [file];
+    return PdfImportResult(outcome: nextImportOutcome, file: file);
   }
 }

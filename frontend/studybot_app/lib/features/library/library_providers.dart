@@ -137,12 +137,50 @@ class LibraryController extends AsyncNotifier<List<LibrarySourceEntry>> {
     }
   }
 
+  /// Lets the user pick a PDF inside the source, stages it privately and imports it.
+  /// Needs a live lease for the source; the engine only ever receives a staging id.
+  Future<ImportPdfResult> importPdf(LibrarySource source) async {
+    final lease = _leases[source.id];
+    if (lease == null) return ImportPdfResult.needsAccess;
+    final importing = ref.read(importingSourcesProvider.notifier);
+    try {
+      final api = ref.read(studyBotApiProvider);
+      final staged = await _folders.pickAndStagePdf(lease.id, await api.getIngestStagingDirectory());
+      if (staged == null) return ImportPdfResult.cancelled;
+      importing.set(source.id, importing: true);
+      final result = await api.importPdf(
+        source.id,
+        stagingId: staged.stagingId,
+        relativePath: staged.relativePath,
+        displayName: staged.displayName,
+      );
+      ref.invalidate(libraryFilesProvider(source.id));
+      return switch (result.outcome) {
+        'unchanged' => ImportPdfResult.unchanged,
+        'failed' => ImportPdfResult.failed,
+        _ => ImportPdfResult.imported,
+      };
+    } on FolderAccessException catch (e) {
+      return switch (e.code) {
+        'outside_source' => ImportPdfResult.outsideSource,
+        'not_pdf' => ImportPdfResult.notPdf,
+        'needs_access' || 'unknown_lease' => ImportPdfResult.needsAccess,
+        _ => ImportPdfResult.error,
+      };
+    } on ApiException {
+      return ImportPdfResult.error;
+    } finally {
+      importing.set(source.id, importing: false);
+    }
+  }
+
   /// Releases access and removes the source and its stored authorization from
   /// StudyBot. The folder and its files are untouched.
   Future<bool> remove(String sourceId) async {
     try {
       await _release(sourceId);
       await ref.read(studyBotApiProvider).deleteLibrarySource(sourceId);
+      ref.invalidate(libraryFilesProvider(sourceId));
       state = AsyncData(await _load(reactivate: const {}));
       return true;
     } on ApiException {
@@ -159,3 +197,22 @@ class LibraryController extends AsyncNotifier<List<LibrarySourceEntry>> {
 final libraryControllerProvider = AsyncNotifierProvider<LibraryController, List<LibrarySourceEntry>>(
   LibraryController.new,
 );
+
+/// The files recorded under one source (metadata and state only).
+final libraryFilesProvider = FutureProvider.autoDispose.family<List<LibraryFile>, String>((ref, sourceId) {
+  return ref.watch(studyBotApiProvider).listLibraryFiles(sourceId);
+});
+
+/// Source ids with a PDF import in progress.
+class ImportingSources extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => const {};
+
+  void set(String sourceId, {required bool importing}) {
+    state = importing ? {...state, sourceId} : ({...state}..remove(sourceId));
+  }
+}
+
+final importingSourcesProvider = NotifierProvider<ImportingSources, Set<String>>(ImportingSources.new);
+
+enum ImportPdfResult { imported, unchanged, failed, cancelled, outsideSource, notPdf, needsAccess, error }

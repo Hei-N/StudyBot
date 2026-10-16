@@ -12,6 +12,23 @@ class SelectedFolder {
   final String bookmark;
 }
 
+/// A PDF the user chose inside an authorized folder, copied to StudyBot's private staging area.
+class StagedPdf {
+  const StagedPdf({
+    required this.stagingId,
+    required this.relativePath,
+    required this.displayName,
+    required this.sizeBytes,
+  });
+
+  final String stagingId;
+
+  /// Path inside the source folder, e.g. `Week 2/Lecture.pdf`.
+  final String relativePath;
+  final String displayName;
+  final int sizeBytes;
+}
+
 /// Live access to an authorized folder. Must be released with [FolderAuthorization.stopAccess].
 class AccessLease {
   const AccessLease({required this.id, required this.path, this.refreshedBookmark});
@@ -48,6 +65,11 @@ abstract class FolderAuthorization {
 
   /// Whether a tiny read of [relativePath] inside the leased folder succeeds.
   Future<bool> probeRead(String leaseId, String relativePath);
+
+  /// Lets the user pick one PDF inside the leased folder and stages a private copy in
+  /// [stagingDirectory]. Returns null if the user cancels. Throws [FolderAccessException]
+  /// (`outside_source`, `not_pdf`, `too_large`, `staging_failed`, ...).
+  Future<StagedPdf?> pickAndStagePdf(String leaseId, String stagingDirectory);
 }
 
 /// macOS implementation over the `studybot/library_authorization` channel.
@@ -87,6 +109,21 @@ class MacOSFolderAuthorization implements FolderAuthorization {
   @override
   Future<bool> probeRead(String leaseId, String relativePath) async {
     return await _invoke<bool>('probeRead', {'leaseId': leaseId, 'relativePath': relativePath}) ?? false;
+  }
+
+  @override
+  Future<StagedPdf?> pickAndStagePdf(String leaseId, String stagingDirectory) async {
+    final result = await _invoke<Map<Object?, Object?>>('pickAndStagePdf', {
+      'leaseId': leaseId,
+      'stagingDirectory': stagingDirectory,
+    });
+    if (result == null) return null;
+    return StagedPdf(
+      stagingId: result['stagingId'] as String,
+      relativePath: result['relativePath'] as String,
+      displayName: result['displayName'] as String,
+      sizeBytes: result['sizeBytes'] as int,
+    );
   }
 
   Future<T?> _invoke<T>(String method, [Map<String, Object?>? arguments]) async {

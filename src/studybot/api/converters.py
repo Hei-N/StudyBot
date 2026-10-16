@@ -12,6 +12,7 @@ from studybot.api.schemas import (
     ChatOut,
     CourseOut,
     LearningMemoryOut,
+    LibraryFileOut,
     LibrarySourceOut,
     MemoryKindInfoOut,
     MessageOut,
@@ -24,6 +25,7 @@ from studybot.storage.base import (
     ChatSession,
     Course,
     LearningMemory,
+    LibraryFile,
     LibrarySource,
     LibrarySourceAuthorization,
     MessageRecord,
@@ -108,4 +110,22 @@ def authorization_to_out(authorization: LibrarySourceAuthorization) -> Authoriza
         platform=authorization.platform,
         kind=authorization.kind,
         payload=base64.b64encode(authorization.payload).decode("ascii"),
+    )
+
+
+def library_file_to_out(file: LibraryFile) -> LibraryFileOut:
+    return LibraryFileOut(
+        id=file.id,
+        source_id=file.source_id,
+        relative_path=file.relative_path,
+        display_name=file.display_name,
+        extension=file.extension,
+        size_bytes=file.size_bytes,
+        processing_state=file.processing_state.value,
+        failure_code=file.failure_code,
+        page_count=file.page_count,
+        text_page_count=file.text_page_count,
+        processing_version=file.processing_version,
+        indexed_at=file.indexed_at,
+        updated_at=file.updated_at,
     )

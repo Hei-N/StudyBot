@@ -1,9 +1,10 @@
 # Study Library foundation
 
 Foundation for managing study material (slides, notes, PDFs) as records StudyBot can
-track. It stores **metadata and access grants only**. On macOS a user can authorize a
-folder (see [Folder authorization](#folder-authorization)); there is no scanner,
-document parsing, embedding or retrieval yet.
+track. It stores **metadata, access grants and page-level text of imported PDFs**. On macOS a user can
+authorize a folder (see [Folder authorization](#folder-authorization)) and import PDFs
+from it one at a time (see [PDF import](#pdf-import)). There is no scanner, OCR,
+chunking, embedding or retrieval yet.
 
 ```
 Course
@@ -12,7 +13,9 @@ LibrarySource      where material comes from (local_folder, local_file)
   ↓ 1..n
 LibraryFile        one file: relative path, content hash, processing state
   ↓
-future: pages / slides → chunks → embeddings → retrieval
+LibraryPage        text of one PDF page (file id + 1-based page number)
+  ↓
+future: chunks → embeddings → retrieval
 ```
 
 Code lives in `core/library.py` (types and rules), `core/library_service.py`
@@ -120,3 +123,50 @@ user → NSOpenPanel (folders only, one) → security-scoped bookmark (read-only
   opaque payload); another OS can supply its own authorization without changing sources.
 
 Nothing scans, hashes or indexes the selected folder yet.
+
+## PDF import
+
+Import is explicit and one file at a time: the user picks a PDF inside an authorized
+source. There is no folder scan or watcher.
+
+```
+Import PDF → native picker (PDF only) → must be inside the authorized folder
+  → private copy in <data dir>/ingest_staging/<uuid>.pdf → staging id
+  → engine: SHA-256 → LibraryFile → PdfExtractor (PyMuPDF) → library_pages
+```
+
+- **File-access broker.** The native layer, which holds the security-scoped access, checks
+  the selection after the user picks it (it does not trust the panel's start folder): it
+  must resolve to a regular PDF inside the authorized folder, so files outside, symlinks
+  that escape, directories and non-PDFs are rejected. It then copies the file, read-only,
+  into StudyBot's private staging folder. The engine receives only the staging id, never a
+  path in the user's folder, and never treats a locator as permission.
+- **Staging.** Ids are UUIDs; the engine resolves them only inside the staging root and
+  rejects anything else (separators, `..`, symlinks, directories, missing files). The staged
+  copy is deleted after every import outcome. Only old files with the exact staging name
+  are cleaned up at engine start (24 hours), and nothing in a source is ever touched.
+- **Extraction.** `PdfExtractor` returns the text of each page as PyMuPDF produced it
+  (line endings normalized, nothing rewritten, headers and footers kept). Pages are
+  1-based and every page has a row, including empty ones. A valid image-only PDF becomes
+  `ready` with `text_page_count = 0`; there is no OCR. A password-protected PDF fails with
+  `password_required`, a bad file with `invalid_pdf`. Limits (512 MiB file, 5000 pages,
+  64 MiB of text) fail with a code.
+- **Incremental.** Content identity is the hash plus `processing_version` (`pdf_text_v1`).
+  Importing the same bytes again with the current version is skipped: no extraction, same
+  file id, pages and `indexed_at`. A modification time alone changes nothing. Changed bytes
+  or an older processing version re-extract into the same `LibraryFile`.
+- **Atomic.** Pages, page counts, version and the `ready` state are written in one
+  transaction, so a failure never leaves a partly replaced or half-ready file. Old pages
+  stay until the new ones replace them.
+- **Responsiveness.** Hashing and extraction run on a separate single-worker thread, never
+  on the engine's SQLite thread. A file left `indexing` by a previous process is marked
+  `failed` (`interrupted`) at startup and can be imported again.
+- **Provenance.** A page is identified by `file_id + page_number`; the file gives the
+  source, relative path and (through the source) the course.
+
+**Rule for future retrieval:** page text is current evidence only when its file is `ready`
+for the current content hash and processing version. Pages of `pending`, `indexing`,
+`stale` or `failed` files must not be used.
+
+Chunking, embeddings and retrieval will build on `library_pages` later. Not implemented:
+OCR, PowerPoint, Word, folder scanning, citations.

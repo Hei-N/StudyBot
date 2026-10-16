@@ -21,17 +21,22 @@ from fastapi.responses import JSONResponse
 from studybot.api import websocket
 from studybot.api.auth import resolve_startup_token
 from studybot.api.engine import Engine
+from studybot.api.ingest import PdfImporter
 from studybot.api.errors import INTERNAL_ERROR, VALIDATION_ERROR, ApiError
 from studybot.api.routes import chats, courses, health, library, memories, modes, reasoning
 from studybot.api.version import API_PREFIX
 from studybot.app import StudyBotApp
 from studybot.config.settings import Settings
+from studybot.core.ingest_staging import StagingArea
+from studybot.core.pdf_extractor import PdfExtractor
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(settings: Settings | None = None, token: str | None = None) -> FastAPI:
-    """Build the FastAPI app. ``settings`` and ``token`` are test seams."""
+def create_app(
+    settings: Settings | None = None, token: str | None = None, pdf_extractor: PdfExtractor | None = None
+) -> FastAPI:
+    """Build the FastAPI app. ``settings``, ``token`` and ``pdf_extractor`` are test seams."""
     resolved_settings = settings or Settings.from_env()
     resolved_token = resolve_startup_token(token)
 
@@ -44,12 +49,20 @@ def create_app(settings: Settings | None = None, token: str | None = None) -> Fa
         studybot_app = await loop.run_in_executor(executor, StudyBotApp, resolved_settings)
 
         app.state.engine = Engine(studybot_app, executor)
+        staging = StagingArea(resolved_settings.data_dir / "ingest_staging")
+        staging.ensure()
+        staging.cleanup_orphans()
+        # One worker: PDF hashing and extraction are bounded and never run on the SQLite thread.
+        pdf_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studybot-pdf")
+        app.state.staging = staging
+        app.state.pdf_importer = PdfImporter(app.state.engine, staging, pdf_extractor or PdfExtractor(), pdf_executor)
         app.state.api_token = resolved_token
         logger.debug("API server ready (provider=%r)", resolved_settings.model_provider)
         try:
             yield
         finally:
             await loop.run_in_executor(executor, studybot_app.close)
+            pdf_executor.shutdown(wait=True)
             executor.shutdown(wait=True)
 
     app = FastAPI(title="Study Bot API", version="1", lifespan=lifespan)

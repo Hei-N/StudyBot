@@ -19,6 +19,8 @@ MAX_DISPLAY_NAME_LENGTH = 255
 MAX_LOCATOR_LENGTH = 4096
 MAX_RELATIVE_PATH_LENGTH = 1024
 MAX_FAILURE_CODE_LENGTH = 64
+FAILURE_INTERRUPTED = "interrupted"
+FAILURE_CONTENT_CHANGED = "content_changed_during_processing"
 
 #: Opaque, platform-specific access grants stored per source. Python never
 #: interprets the payload; only the platform's native layer does.

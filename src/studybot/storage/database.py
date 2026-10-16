@@ -19,7 +19,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Individual statements instead of executescript(), which commits implicitly
 # and would defeat the explicit transaction.
@@ -127,6 +127,24 @@ _LIBRARY_AUTHORIZATION_STATEMENTS = [
     """,
 ]
 
+# Page-level extraction storage (added in v8); shared by the fresh schema and the v7 -> v8 migration.
+_LIBRARY_PAGE_STATEMENTS = [
+    "ALTER TABLE library_files ADD COLUMN page_count INTEGER CHECK (page_count IS NULL OR page_count >= 0)",
+    "ALTER TABLE library_files ADD COLUMN text_page_count INTEGER CHECK (text_page_count IS NULL OR text_page_count >= 0)",
+    "ALTER TABLE library_files ADD COLUMN processing_version TEXT",
+    """
+    CREATE TABLE library_pages (
+        file_id TEXT NOT NULL REFERENCES library_files(id) ON DELETE CASCADE,
+        page_number INTEGER NOT NULL CHECK (page_number >= 1),
+        text_content TEXT NOT NULL,
+        char_count INTEGER NOT NULL CHECK (char_count >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (file_id, page_number)
+    )
+    """,
+]
+
 
 def open_database(db_path: Path) -> sqlite3.Connection:
     """Open (creating if needed) the database at ``db_path`` and apply pending
@@ -180,12 +198,21 @@ def _migrate(connection: sqlite3.Connection) -> None:
         _migrate_v6_to_v7(connection)
         version = 7
 
+    if version == 7:
+        _migrate_v7_to_v8(connection)
+        version = 8
+
 
 def _create_fresh_schema(connection: sqlite3.Connection) -> None:
     """Create the current schema directly for a new database."""
     try:
         connection.execute("BEGIN")
-        for statement in (*_FRESH_SCHEMA_STATEMENTS, *_LIBRARY_SCHEMA_STATEMENTS, *_LIBRARY_AUTHORIZATION_STATEMENTS):
+        for statement in (
+            *_FRESH_SCHEMA_STATEMENTS,
+            *_LIBRARY_SCHEMA_STATEMENTS,
+            *_LIBRARY_AUTHORIZATION_STATEMENTS,
+            *_LIBRARY_PAGE_STATEMENTS,
+        ):
             connection.execute(statement)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.commit()
@@ -323,6 +350,23 @@ def _migrate_v6_to_v7(connection: sqlite3.Connection) -> None:
         for statement in _LIBRARY_AUTHORIZATION_STATEMENTS:
             connection.execute(statement)
         connection.execute("PRAGMA user_version = 7")
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+
+
+def _migrate_v7_to_v8(connection: sqlite3.Connection) -> None:
+    """Add extraction metadata columns to ``library_files`` and the ``library_pages`` table.
+
+    Existing files keep NULL metadata and have no pages. One transaction.
+    """
+    logger.debug("Migrating chat database schema from v7 to v8")
+    try:
+        connection.execute("BEGIN")
+        for statement in _LIBRARY_PAGE_STATEMENTS:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version = 8")
         connection.commit()
     except BaseException:
         connection.rollback()

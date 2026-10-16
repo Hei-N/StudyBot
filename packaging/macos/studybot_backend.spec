@@ -2,7 +2,7 @@
 # Build with scripts/build_macos_app.sh; see packaging/macos/README.md.
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 here = Path(SPECPATH)
 
@@ -13,9 +13,14 @@ hidden_imports = (
     + collect_submodules("websockets")
 )
 
+# PyMuPDF ships its native MuPDF libraries as data files next to the Python package.
+mupdf_datas, mupdf_binaries, mupdf_imports = collect_all("pymupdf")
+
 analysis = Analysis(
     [str(here / "backend_entry.py")],
-    hiddenimports=hidden_imports,
+    binaries=mupdf_binaries,
+    datas=mupdf_datas,
+    hiddenimports=hidden_imports + mupdf_imports,
     excludes=["tkinter", "pytest", "pip", "setuptools", "pyinstaller", "PyInstaller"],
 )
 archive = PYZ(analysis.pure)

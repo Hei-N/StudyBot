@@ -1,4 +1,5 @@
 import Cocoa
+import UniformTypeIdentifiers
 #if canImport(FlutterMacOS)
 import FlutterMacOS
 #endif
@@ -9,6 +10,10 @@ enum AuthorizationFailure: Error {
   case unresolvable
   case accessDenied
   case unknownLease
+  case outsideSource
+  case notPdf
+  case tooLarge
+  case stagingFailed
 }
 
 /// Security-scoped, read-only access to folders the user chose in the open panel.
@@ -28,6 +33,14 @@ final class FolderAuthorization {
     let refreshedBookmark: Data?
   }
 
+  struct StagedPdf {
+    let stagingId: String
+    let relativePath: String
+    let displayName: String
+    let sizeBytes: Int
+  }
+
+  private static let maxPdfBytes = 512 * 1024 * 1024
   private static let bookmarkOptions: URL.BookmarkCreationOptions = [.withSecurityScope, .securityScopeAllowOnlyReadAccess]
   private static let probeByteLimit = 16
 
@@ -81,6 +94,60 @@ final class FolderAuthorization {
   func stopAccess(leaseId: String) {
     guard let url = leases.removeValue(forKey: leaseId) else { return }
     url.stopAccessingSecurityScopedResource()
+  }
+
+  /// Lets the user pick one PDF inside the leased folder and stages a private copy of it.
+  /// Returns nil if the user cancels. Never writes to the source.
+  @MainActor
+  func pickAndStagePdf(leaseId: String, stagingDirectory: String) throws -> StagedPdf? {
+    guard let root = leases[leaseId] else { throw AuthorizationFailure.unknownLease }
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = false
+    panel.allowedContentTypes = [.pdf]
+    panel.directoryURL = root
+    panel.message = "Choose a PDF inside this Study Library folder."
+    panel.prompt = "Import"
+    guard panel.runModal() == .OK, let url = panel.url else { return nil }
+    return try stagePdf(selected: url, leaseId: leaseId, stagingDirectory: stagingDirectory)
+  }
+
+  /// Checks that `selected` is a PDF inside the leased folder (after resolving symlinks) and
+  /// copies it to `<stagingDirectory>/<uuid>.pdf`. The picker's start folder is not trusted.
+  func stagePdf(selected: URL, leaseId: String, stagingDirectory: String) throws -> StagedPdf {
+    guard let root = leases[leaseId] else { throw AuthorizationFailure.unknownLease }
+    let rootPath = root.resolvingSymlinksInPath().path
+    let source = selected.resolvingSymlinksInPath()
+    guard source.path.hasPrefix(rootPath + "/") else { throw AuthorizationFailure.outsideSource }
+
+    let values = try? source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+    guard values?.isRegularFile == true, source.pathExtension.lowercased() == "pdf",
+      UTType(filenameExtension: "pdf")?.conforms(to: .pdf) == true, Self.hasPdfHeader(source)
+    else { throw AuthorizationFailure.notPdf }
+    let size = values?.fileSize ?? 0
+    guard size <= Self.maxPdfBytes else { throw AuthorizationFailure.tooLarge }
+
+    let directory = URL(fileURLWithPath: stagingDirectory, isDirectory: true)
+    let id = UUID().uuidString.lowercased()
+    let destination = directory.appendingPathComponent("\(id).pdf")
+    do {
+      try FileManager.default.createDirectory(
+        at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+      try FileManager.default.copyItem(at: source, to: destination)
+      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+    } catch {
+      try? FileManager.default.removeItem(at: destination)
+      throw AuthorizationFailure.stagingFailed
+    }
+    let relative = String(source.path.dropFirst(rootPath.count + 1))
+    return StagedPdf(stagingId: id, relativePath: relative, displayName: source.lastPathComponent, sizeBytes: size)
+  }
+
+  private static func hasPdfHeader(_ url: URL) -> Bool {
+    guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+    defer { try? handle.close() }
+    return (try? handle.read(upToCount: 5)) == Data("%PDF-".utf8)
   }
 
   /// Whether a tiny read of `relativePath` inside the leased folder succeeds.
@@ -145,6 +212,22 @@ final class LibraryAuthorizationChannel {
         guard let leaseId = arguments?["leaseId"] as? String else { throw AuthorizationFailure.invalidArguments }
         authorization.stopAccess(leaseId: leaseId)
         result(nil)
+      case "pickAndStagePdf":
+        guard let leaseId = arguments?["leaseId"] as? String,
+          let directory = arguments?["stagingDirectory"] as? String
+        else { throw AuthorizationFailure.invalidArguments }
+        DispatchQueue.main.async {
+          do {
+            guard let staged = try self.authorization.pickAndStagePdf(leaseId: leaseId, stagingDirectory: directory)
+            else { return result(nil) }
+            result([
+              "stagingId": staged.stagingId,
+              "relativePath": staged.relativePath,
+              "displayName": staged.displayName,
+              "sizeBytes": staged.sizeBytes,
+            ])
+          } catch { result(Self.error(error)) }
+        }
       case "probeRead":
         guard let leaseId = arguments?["leaseId"] as? String, let path = arguments?["relativePath"] as? String else {
           throw AuthorizationFailure.invalidArguments
@@ -163,6 +246,10 @@ final class LibraryAuthorizationChannel {
     case .unresolvable: code = "needs_access"
     case .accessDenied: code = "needs_access"
     case .unknownLease: code = "unknown_lease"
+    case .outsideSource: code = "outside_source"
+    case .notPdf: code = "not_pdf"
+    case .tooLarge: code = "too_large"
+    case .stagingFailed: code = "staging_failed"
     case .none: code = "failed"
     }
     return FlutterError(code: code, message: nil, details: nil)

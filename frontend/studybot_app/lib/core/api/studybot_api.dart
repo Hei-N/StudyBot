@@ -163,6 +163,34 @@ class StudyBotApi {
     await _send(() => _client.delete(_uri('/library/sources/$sourceId'), headers: _headers));
   }
 
+  Future<List<LibraryFile>> listLibraryFiles(String sourceId) async {
+    final json = await _send(() => _client.get(_uri('/library/sources/$sourceId/files'), headers: _headers));
+    return (json as List).cast<Map<String, dynamic>>().map(LibraryFile.fromJson).toList();
+  }
+
+  /// StudyBot's private staging folder; the native layer copies a chosen PDF here.
+  Future<String> getIngestStagingDirectory() async {
+    final json = await _send(() => _client.get(_uri('/library/ingest-staging'), headers: _headers));
+    return (json as Map<String, dynamic>)['path'] as String;
+  }
+
+  /// Imports a PDF already staged by the native layer. Takes a staging id, never a path.
+  Future<PdfImportResult> importPdf(
+    String sourceId, {
+    required String stagingId,
+    required String relativePath,
+    required String displayName,
+  }) async {
+    final json = await _send(
+      () => _client.post(
+        _uri('/library/sources/$sourceId/imports/pdf'),
+        headers: _headers,
+        body: jsonEncode({'stagingId': stagingId, 'relativePath': relativePath, 'displayName': displayName}),
+      ),
+    );
+    return PdfImportResult.fromJson(json as Map<String, dynamic>);
+  }
+
   // --- teaching modes ------------------------------------------------------------
 
   Future<List<TeachingModeInfo>> listModes() async {

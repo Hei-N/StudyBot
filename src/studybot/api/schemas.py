@@ -194,3 +194,36 @@ class LocalFolderSourceIn(ApiModel):
     display_name: str
     locator: str
     authorization: AuthorizationIn
+
+
+class LibraryFileOut(ApiModel):
+    """A library file's metadata and processing state. Never contains page text or paths."""
+
+    id: str
+    source_id: str
+    relative_path: str
+    display_name: str
+    extension: str | None
+    size_bytes: int | None
+    processing_state: str
+    failure_code: str | None
+    page_count: int | None
+    text_page_count: int | None
+    processing_version: str | None
+    indexed_at: str | None
+    updated_at: str
+
+
+class ImportPdfIn(ApiModel):
+    staging_id: str
+    relative_path: str
+    display_name: str | None = None
+
+
+class ImportPdfOut(ApiModel):
+    outcome: str  # "imported", "unchanged" or "failed"
+    file: LibraryFileOut
+
+
+class StagingDirectoryOut(ApiModel):
+    path: str

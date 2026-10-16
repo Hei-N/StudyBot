@@ -24,6 +24,7 @@ from studybot.storage.sqlite_learning_memory_repository import SQLiteLearningMem
 from studybot.storage.sqlite_library_repository import SQLiteLibraryRepository
 from studybot.storage.sqlite_repository import SQLiteChatRepository
 
+READY = {"page_count": 1, "text_page_count": 1, "processing_version": "pdf_text_v1"}
 ABC = hashlib.sha256(b"ABC").hexdigest()
 DEF = hashlib.sha256(b"DEF").hexdigest()
 
@@ -53,7 +54,7 @@ def source(library, tmp_path):
 def ready_file(library, source, path="Week 2/Lecture.pdf", digest=ABC):
     file = library.register_or_update_file(source.id, path, content_hash=digest)
     library.begin_indexing(file.id)
-    return library.mark_ready(file.id, digest)
+    return library.mark_ready(file.id, digest, **READY)
 
 
 # --- sources -------------------------------------------------------------------------
@@ -318,7 +319,7 @@ def test_normal_lifecycle(library, source):
     file = library.register_or_update_file(source.id, "a.pdf", content_hash=ABC)
 
     indexing = library.begin_indexing(file.id)
-    ready = library.mark_ready(file.id, ABC)
+    ready = library.mark_ready(file.id, ABC, **READY)
 
     assert indexing.processing_state is S.INDEXING
     assert ready.processing_state is S.READY and ready.indexed_at is not None and ready.failure_code is None
@@ -343,7 +344,7 @@ def test_stale_cycle(library, source):
 
     stale = library.mark_stale(file.id)
     indexing = library.begin_indexing(file.id)
-    ready = library.mark_ready(file.id, ABC)
+    ready = library.mark_ready(file.id, ABC, **READY)
 
     assert stale.processing_state is S.STALE
     assert indexing.processing_state is S.INDEXING
@@ -353,7 +354,7 @@ def test_stale_cycle(library, source):
 @pytest.mark.parametrize(
     "attempt",
     [
-        lambda lib, f: lib.mark_ready(f, ABC),  # pending -> ready
+        lambda lib, f: lib.mark_ready(f, ABC, **READY),  # pending -> ready
         lambda lib, f: lib.mark_failed(f, "read_failed"),  # pending -> failed
         lambda lib, f: lib.mark_stale(f),  # pending -> stale
         lambda lib, f: lib.retry_file(f),  # pending -> pending
@@ -382,7 +383,7 @@ def test_failed_cannot_become_ready_or_start_without_retry(library, source):
     library.mark_failed(file.id, "read_failed")
 
     with pytest.raises(LibraryStateError):
-        library.mark_ready(file.id, ABC)
+        library.mark_ready(file.id, ABC, **READY)
     with pytest.raises(LibraryStateError):
         library.begin_indexing(file.id)
 
@@ -391,15 +392,15 @@ def test_ready_requires_a_known_matching_hash(library, source):
     unknown = library.register_or_update_file(source.id, "u.pdf")
     library.begin_indexing(unknown.id)
     with pytest.raises(LibraryStateError):
-        library.mark_ready(unknown.id, ABC)
+        library.mark_ready(unknown.id, ABC, **READY)
 
     file = library.register_or_update_file(source.id, "a.pdf", content_hash=ABC)
     library.begin_indexing(file.id)
     library.register_or_update_file(source.id, "a.pdf", content_hash=DEF)  # content changed while indexing
     with pytest.raises(LibraryStateError):
-        library.mark_ready(file.id, ABC)
+        library.mark_ready(file.id, ABC, **READY)
     assert library.get_file(file.id).processing_state is S.INDEXING
-    assert library.mark_ready(file.id, DEF).processing_state is S.READY
+    assert library.mark_ready(file.id, DEF, **READY).processing_state is S.READY
 
 
 def test_failure_code_must_be_machine_readable(library, source):
@@ -414,7 +415,7 @@ def test_failure_code_must_be_machine_readable(library, source):
 def test_state_operations_on_missing_files(library):
     for attempt in (
         lambda: library.begin_indexing("nope"),
-        lambda: library.mark_ready("nope", ABC),
+        lambda: library.mark_ready("nope", ABC, **READY),
         lambda: library.mark_failed("nope", "x"),
         lambda: library.mark_stale("nope"),
         lambda: library.retry_file("nope"),

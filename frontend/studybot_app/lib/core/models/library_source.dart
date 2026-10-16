@@ -55,3 +55,55 @@ class LibraryAuthorization {
   final String kind;
   final String payload;
 }
+
+/// A file recorded under a source: metadata and processing state only (never text or paths).
+class LibraryFile {
+  const LibraryFile({
+    required this.id,
+    required this.sourceId,
+    required this.relativePath,
+    required this.displayName,
+    required this.processingState,
+    required this.failureCode,
+    required this.pageCount,
+    required this.textPageCount,
+  });
+
+  factory LibraryFile.fromJson(Map<String, dynamic> json) {
+    return LibraryFile(
+      id: json['id'] as String,
+      sourceId: json['sourceId'] as String,
+      relativePath: json['relativePath'] as String,
+      displayName: json['displayName'] as String,
+      processingState: json['processingState'] as String,
+      failureCode: json['failureCode'] as String?,
+      pageCount: json['pageCount'] as int?,
+      textPageCount: json['textPageCount'] as int?,
+    );
+  }
+
+  final String id;
+  final String sourceId;
+  final String relativePath;
+  final String displayName;
+  final String processingState;
+  final String? failureCode;
+  final int? pageCount;
+  final int? textPageCount;
+}
+
+/// The outcome of one PDF import request.
+class PdfImportResult {
+  const PdfImportResult({required this.outcome, required this.file});
+
+  factory PdfImportResult.fromJson(Map<String, dynamic> json) {
+    return PdfImportResult(
+      outcome: json['outcome'] as String,
+      file: LibraryFile.fromJson(json['file'] as Map<String, dynamic>),
+    );
+  }
+
+  /// `imported`, `unchanged` or `failed`.
+  final String outcome;
+  final LibraryFile file;
+}

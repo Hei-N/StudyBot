@@ -44,6 +44,7 @@ class StudyBotApp:
         self.library = LibraryService(
             repository=SQLiteLibraryRepository(self._connection), course_repository=course_repository
         )
+        self.library.recover_interrupted_imports()
         self.sessions = SessionService(
             model=model,
             repository=chat_repository,

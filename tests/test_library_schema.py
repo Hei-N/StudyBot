@@ -27,7 +27,7 @@ def _names(connection, kind):
 
 
 def test_fresh_database_has_the_library_tables_and_keeps_the_old_ones(connection):
-    assert get_schema_version(connection) == SCHEMA_VERSION == 7
+    assert get_schema_version(connection) == SCHEMA_VERSION == 8
     assert {"courses", "chats", "messages", "learning_memories", "library_sources", "library_files"} <= _names(
         connection, "table"
     )

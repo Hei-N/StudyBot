@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Sequence
 
 from studybot.core.exceptions import (
     CourseNotFoundError,
@@ -30,6 +32,7 @@ from studybot.core.exceptions import (
     SessionError,
 )
 from studybot.core.library import (
+    FAILURE_INTERRUPTED,
     LibraryFileState,
     LibrarySourceKind,
     can_transition,
@@ -55,6 +58,14 @@ logger = logging.getLogger(__name__)
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(frozen=True, slots=True)
+class PdfImportPlan:
+    """What an import must do next: ``file`` is ``indexing`` when ``needs_extraction``."""
+
+    file: LibraryFile
+    needs_extraction: bool
 
 
 class LibraryService:
@@ -232,21 +243,40 @@ class LibraryService:
         file.processing_state = LibraryFileState.INDEXING
         return self._library.save_file(file)
 
-    def mark_ready(self, file_id: str, content_hash: str) -> LibraryFile:
+    def mark_ready(
+        self,
+        file_id: str,
+        content_hash: str,
+        *,
+        page_count: int,
+        text_page_count: int,
+        processing_version: str,
+        pages: Sequence[tuple[int, str]] | None = None,
+    ) -> LibraryFile:
         """``indexing`` to ``ready`` for the content with ``content_hash``.
 
         The hash must equal the file's current hash, so a result computed for older
-        content can never be recorded as current.
+        content can never be recorded as current. When ``pages`` is given they
+        replace the file's stored pages in the same transaction.
         """
         file = self._require_file(file_id)
         digest = normalize_content_hash(content_hash)
+        if page_count < 0 or not 0 <= text_page_count <= page_count or not processing_version:
+            raise SessionError("The processing result is not valid.")
+        if pages is not None and [number for number, _ in pages] != list(range(1, page_count + 1)):
+            raise SessionError("The extracted pages are not numbered 1 to the page count.")
         self._check_transition(file, LibraryFileState.READY)
         if file.content_hash is None or file.content_hash != digest:
             raise LibraryStateError("The processed content no longer matches the file.")
         file.processing_state = LibraryFileState.READY
         file.failure_code = None
         file.indexed_at = _now()
-        return self._library.save_file(file)
+        file.page_count = page_count
+        file.text_page_count = text_page_count
+        file.processing_version = processing_version
+        if pages is None:
+            return self._library.save_file(file)
+        return self._library.save_file_with_pages(file, pages)
 
     def mark_failed(self, file_id: str, failure_code: str) -> LibraryFile:
         """``indexing`` to ``failed`` with a short machine-readable code."""
@@ -271,6 +301,77 @@ class LibraryService:
         file.processing_state = LibraryFileState.PENDING
         file.failure_code = None
         return self._library.save_file(file)
+
+    # --- PDF import ----------------------------------------------------------------
+    #
+    # An import is three steps so the slow extraction runs outside the database
+    # thread: ``prepare_pdf_import`` (short), extraction (caller), then
+    # ``complete_pdf_import`` or ``fail_pdf_import`` (short, atomic).
+
+    def prepare_pdf_import(
+        self,
+        source_id: str,
+        relative_path: str,
+        *,
+        display_name: str | None,
+        size_bytes: int,
+        content_hash: str,
+        processing_version: str,
+    ) -> PdfImportPlan:
+        """Register the file and decide whether it needs extracting.
+
+        A ``ready`` file with the same hash and processing version is left alone
+        (no extraction). Otherwise the file is moved to ``indexing``.
+        """
+        self._require_source(source_id)
+        if self._library.get_authorization(source_id) is None:
+            raise LibraryAuthorizationNotFoundError("This source has no stored authorization.")
+        if file_extension(normalize_relative_path(relative_path)) != "pdf":
+            raise SessionError("Only PDF files can be imported.")
+        file = self.register_or_update_file(
+            source_id, relative_path, display_name=display_name, size_bytes=size_bytes, content_hash=content_hash
+        )
+        if (
+            file.processing_state is LibraryFileState.READY
+            and file.content_hash == normalize_content_hash(content_hash)
+            and file.processing_version == processing_version
+        ):
+            return PdfImportPlan(file, needs_extraction=False)
+        if file.processing_state is LibraryFileState.INDEXING:
+            raise LibraryStateError("This file is already being imported.")
+        if file.processing_state is LibraryFileState.READY:
+            file = self.mark_stale(file.id)  # same content, older processing version
+        elif file.processing_state is LibraryFileState.FAILED:
+            file = self.retry_file(file.id)
+        return PdfImportPlan(self.begin_indexing(file.id), needs_extraction=True)
+
+    def complete_pdf_import(
+        self, file_id: str, content_hash: str, *, pages: Sequence[tuple[int, str]], processing_version: str
+    ) -> LibraryFile:
+        """Atomically store the pages and mark the file ``ready``."""
+        text_pages = sum(1 for _, text in pages if text.strip())
+        return self.mark_ready(
+            file_id,
+            content_hash,
+            page_count=len(pages),
+            text_page_count=text_pages,
+            processing_version=processing_version,
+            pages=pages,
+        )
+
+    def fail_pdf_import(self, file_id: str, failure_code: str) -> LibraryFile | None:
+        """Record a failed import; does nothing if the file is gone or no longer ``indexing``."""
+        file = self._library.get_file(file_id)
+        if file is None or file.processing_state is not LibraryFileState.INDEXING:
+            return file
+        return self.mark_failed(file_id, failure_code)
+
+    def recover_interrupted_imports(self) -> int:
+        """Fail files left ``indexing`` by a previous process; no import survives a restart."""
+        count = self._library.fail_indexing_files(FAILURE_INTERRUPTED)
+        if count:
+            logger.debug("Marked %d interrupted library files as failed", count)
+        return count
 
     # --- helpers -------------------------------------------------------------------
 

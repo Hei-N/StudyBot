@@ -92,6 +92,9 @@ Errors are JSON with a stable, machine-readable `code` and a human-readable
 | `COURSE_NOT_FOUND` | 404 | No course with that id exists. |
 | `LIBRARY_SOURCE_NOT_FOUND` | 404 | No study library source with that id exists. |
 | `LIBRARY_AUTHORIZATION_NOT_FOUND` | 404 | The source has no stored authorization. |
+| `LIBRARY_FILE_NOT_FOUND` | 404 | The library file no longer exists. |
+| `LIBRARY_FILE_CONFLICT` | 409 | The file is already being imported. |
+| `LIBRARY_STAGING_NOT_FOUND` | 404 | No staged file exists for the staging id. |
 | `MEMORY_NOT_FOUND` | 404 | No learning memory with that id exists. |
 | `MEMORY_CONFLICT` | 409 | Creating or reactivating the memory would produce two active memories with the same normalized topic and kind in the same scope. |
 | `INVALID_MODE` | 422 | `mode` is not a recognized teaching mode. |
@@ -376,6 +379,9 @@ See [STUDY_LIBRARY.md](STUDY_LIBRARY.md).
 GET    /api/v1/library/sources                          -> [LibrarySourceOut]
 POST   /api/v1/library/sources/local-folder             <- LocalFolderSourceIn -> LibrarySourceOut
 DELETE /api/v1/library/sources/{id}                     -> 204
+GET    /api/v1/library/sources/{id}/files               -> [LibraryFileOut]
+GET    /api/v1/library/ingest-staging                   -> {path}
+POST   /api/v1/library/sources/{id}/imports/pdf         <- ImportPdfIn -> ImportPdfOut
 GET    /api/v1/library/sources/{id}/authorization       -> AuthorizationOut
 PUT    /api/v1/library/sources/{id}/authorization       <- AuthorizationIn -> LibrarySourceOut
 ```
@@ -393,6 +399,18 @@ PUT    /api/v1/library/sources/{id}/authorization       <- AuthorizationIn -> Li
   Only the native macOS layer interprets it; the engine stores it as opaque bytes.
 - `DELETE` removes the source, its authorization and its file records. Real files are
   never touched.
+- `GET .../files`: `id`, `sourceId`, `relativePath`, `displayName`, `extension`, `sizeBytes`,
+  `processingState`, `failureCode`, `pageCount`, `textPageCount`, `processingVersion`,
+  `indexedAt`, `updatedAt`. No page text and no paths.
+- `GET /library/ingest-staging` returns StudyBot's private staging folder, where the native
+  layer places a user-selected PDF it has copied.
+- `POST .../imports/pdf` takes `{stagingId, relativePath, displayName?}`: a staging id, never a
+  filesystem path. It returns `{outcome, file}` with outcome `imported`, `unchanged` (same
+  content and processing version; nothing was extracted) or `failed` (the file is recorded
+  with a `failureCode` such as `invalid_pdf` or `password_required`). The staged copy is
+  deleted afterwards. Malformed ids and unsafe or non-PDF relative paths return
+  `422 VALIDATION_ERROR`; a source without authorization returns `404
+  LIBRARY_AUTHORIZATION_NOT_FOUND`.
 - Invalid payloads (empty, not Base64, too large, unsupported platform or kind) return
   `422 VALIDATION_ERROR`. For library routes, request-validation errors use a generic
   message and never echo the request body. Payloads are never logged.

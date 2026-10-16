@@ -19,6 +19,7 @@ dependencies = [
     # at import time, which fails under `pytest -W error`. Revisit once starlette
     # catches up.
     "anyio==4.5.2",
+    "pymupdf>=1.24",
 ]
 
 [project.optional-dependencies]

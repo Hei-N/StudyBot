@@ -9,23 +9,39 @@ from __future__ import annotations
 import base64
 import binascii
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 
-from studybot.api.converters import authorization_to_out, library_source_to_out
+from studybot.api.converters import authorization_to_out, library_file_to_out, library_source_to_out
+from studybot.api.ingest import PdfImporter
 from studybot.api.dependencies import require_token
 from studybot.api.engine import Engine, get_engine
 from studybot.api.errors import (
     LIBRARY_AUTHORIZATION_NOT_FOUND,
+    LIBRARY_FILE_CONFLICT,
+    LIBRARY_FILE_NOT_FOUND,
+    LIBRARY_STAGING_NOT_FOUND,
     LIBRARY_SOURCE_NOT_FOUND,
     VALIDATION_ERROR,
     ApiError,
 )
-from studybot.api.schemas import AuthorizationIn, AuthorizationOut, LibrarySourceOut, LocalFolderSourceIn
+from studybot.api.schemas import (
+    AuthorizationIn,
+    AuthorizationOut,
+    ImportPdfIn,
+    ImportPdfOut,
+    LibraryFileOut,
+    LibrarySourceOut,
+    LocalFolderSourceIn,
+    StagingDirectoryOut,
+)
 from studybot.core.exceptions import (
     LibraryAuthorizationNotFoundError,
+    LibraryFileNotFoundError,
     LibrarySourceNotFoundError,
+    LibraryStateError,
     SessionError,
 )
+from studybot.core.ingest_staging import StagingNotFoundError
 from studybot.core.library import MAX_AUTHORIZATION_BYTES
 
 router = APIRouter(prefix="/library", dependencies=[Depends(require_token)])
@@ -43,6 +59,12 @@ def _decode_payload(encoded: str) -> bytes:
 
 
 def _translate(exc: SessionError) -> ApiError:
+    if isinstance(exc, StagingNotFoundError):
+        return ApiError(404, LIBRARY_STAGING_NOT_FOUND, str(exc))
+    if isinstance(exc, LibraryFileNotFoundError):
+        return ApiError(404, LIBRARY_FILE_NOT_FOUND, str(exc))
+    if isinstance(exc, LibraryStateError):
+        return ApiError(409, LIBRARY_FILE_CONFLICT, str(exc))
     if isinstance(exc, LibrarySourceNotFoundError):
         return ApiError(404, LIBRARY_SOURCE_NOT_FOUND, str(exc))
     if isinstance(exc, LibraryAuthorizationNotFoundError):
@@ -110,3 +132,29 @@ async def replace_authorization(
     except SessionError as exc:
         raise _translate(exc) from exc
     return library_source_to_out(source, True)
+
+
+@router.get("/sources/{source_id}/files", response_model=list[LibraryFileOut])
+async def list_files(source_id: str, engine: Engine = Depends(get_engine)) -> list[LibraryFileOut]:
+    library = engine.app.library
+    if await engine.call(library.get_source, source_id) is None:
+        raise ApiError(404, LIBRARY_SOURCE_NOT_FOUND, "No library source found.")
+    files = await engine.call(library.list_files, source_id=source_id)
+    return [library_file_to_out(f) for f in files]
+
+
+@router.get("/ingest-staging", response_model=StagingDirectoryOut)
+async def get_staging_directory(request: Request) -> StagingDirectoryOut:
+    """StudyBot's private staging folder, where the native layer places a file to import."""
+    return StagingDirectoryOut(path=str(request.app.state.staging.ensure()))
+
+
+@router.post("/sources/{source_id}/imports/pdf", response_model=ImportPdfOut)
+async def import_pdf(source_id: str, body: ImportPdfIn, request: Request) -> ImportPdfOut:
+    """Import a PDF the native layer staged. Takes a staging id, never a filesystem path."""
+    importer: PdfImporter = request.app.state.pdf_importer
+    try:
+        outcome, file = await importer.import_pdf(source_id, body.staging_id, body.relative_path, body.display_name)
+    except SessionError as exc:
+        raise _translate(exc) from exc
+    return ImportPdfOut(outcome=outcome, file=library_file_to_out(file))

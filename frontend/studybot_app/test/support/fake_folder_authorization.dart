@@ -46,6 +46,20 @@ class FakeFolderAuthorization implements FolderAuthorization {
     if (_active.remove(leaseId) != null) stopCount++;
   }
 
+  /// PDFs the next [pickAndStagePdf] calls return, in order. Empty means the user cancels.
+  final List<StagedPdf> pdfPicks = [];
+  Object? pdfPickError;
+  final List<String> stagingDirectories = [];
+
+  @override
+  Future<StagedPdf?> pickAndStagePdf(String leaseId, String stagingDirectory) async {
+    stagingDirectories.add(stagingDirectory);
+    if (!_active.containsKey(leaseId)) throw const FolderAccessException('unknown_lease');
+    final error = pdfPickError;
+    if (error != null) throw error;
+    return pdfPicks.isEmpty ? null : pdfPicks.removeAt(0);
+  }
+
   @override
   Future<bool> probeRead(String leaseId, String relativePath) async => _active.containsKey(leaseId);
 }

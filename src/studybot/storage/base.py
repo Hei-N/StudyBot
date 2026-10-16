@@ -8,7 +8,7 @@ services.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, Sequence
 
 from studybot.core.learning_memory import DEFAULT_MEMORY_STATUS, MemoryKind, MemoryStatus
 from studybot.core.library import LibraryFileState, LibrarySourceKind
@@ -309,8 +309,8 @@ class LibrarySource:
 class LibraryFile:
     """One file inside a source, identified by ``(source_id, relative_path)``.
 
-    Holds metadata and processing state only, never file contents. ``indexed_at``
-    is when the file last became ``ready``.
+    Holds metadata and processing state only; page text lives in ``library_pages``.
+    ``indexed_at`` is when the file last became ``ready`` for ``processing_version``.
     """
 
     id: str
@@ -324,8 +324,21 @@ class LibraryFile:
     processing_state: LibraryFileState
     failure_code: str | None
     indexed_at: str | None
+    page_count: int | None
+    text_page_count: int | None
+    processing_version: str | None
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class LibraryPage:
+    """Extracted text of one page (1-based). Current evidence only while the file is ``ready``."""
+
+    file_id: str
+    page_number: int
+    text_content: str
+    char_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,6 +411,18 @@ class LibraryRepository(Protocol):
 
     def save_file(self, file: LibraryFile) -> LibraryFile:
         """Write the mutable fields of ``file`` and bump ``updated_at``."""
+        ...
+
+    def save_file_with_pages(self, file: LibraryFile, pages: Sequence[tuple[int, str]]) -> LibraryFile:
+        """``save_file`` plus replacing all of the file's pages, in one transaction."""
+        ...
+
+    def list_pages(self, file_id: str) -> list[LibraryPage]:
+        """The file's pages in page order."""
+        ...
+
+    def fail_indexing_files(self, failure_code: str) -> int:
+        """Mark every ``indexing`` file ``failed`` with ``failure_code``; returns how many."""
         ...
 
     def delete_file(self, file_id: str) -> None: ...

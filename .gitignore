@@ -45,3 +45,6 @@ benchmark_results/
 # Standalone app build output
 .build-venv/
 build/
+
+# Private import staging (lives in the data directory; never commit)
+ingest_staging/

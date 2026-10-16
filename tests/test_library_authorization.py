@@ -163,8 +163,8 @@ def _names(connection):
     return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
-def test_fresh_database_is_v7_with_the_authorization_table(connection):
-    assert get_schema_version(connection) == SCHEMA_VERSION == 7
+def test_fresh_database_has_the_authorization_table(connection):
+    assert get_schema_version(connection) == SCHEMA_VERSION == 8
     assert {"courses", "chats", "messages", "learning_memories", "library_sources", "library_files",
             "library_source_authorizations"} <= _names(connection)
     [fk] = list(connection.execute("PRAGMA foreign_key_list(library_source_authorizations)"))
@@ -190,8 +190,13 @@ def test_one_authorization_per_source_and_constraints(connection):
 
 
 def _create_v6_database(db_path):
-    conn = open_database(db_path)
-    conn.execute("DROP TABLE library_source_authorizations")
+    from studybot.storage import database
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    for statement in (*database._FRESH_SCHEMA_STATEMENTS, *database._LIBRARY_SCHEMA_STATEMENTS):
+        conn.execute(statement)
     conn.execute("PRAGMA user_version = 6")
     conn.commit()
     return conn
@@ -210,7 +215,7 @@ def _seed(conn):
     conn.commit()
 
 
-def test_v6_database_migrates_to_v7_without_inventing_authorizations(tmp_path):
+def test_v6_database_migrates_without_inventing_authorizations(tmp_path):
     db_path = tmp_path / "studybot.db"
     seed = _create_v6_database(db_path)
     _seed(seed)
@@ -218,7 +223,7 @@ def test_v6_database_migrates_to_v7_without_inventing_authorizations(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 7
+        assert get_schema_version(connection) == 8
         assert connection.execute("SELECT name FROM courses").fetchone()[0] == "Physics"
         assert connection.execute("SELECT content FROM messages").fetchone()[0] == "hi"
         assert connection.execute("SELECT summary FROM learning_memories").fetchone()[0] == "s"
@@ -229,7 +234,7 @@ def test_v6_database_migrates_to_v7_without_inventing_authorizations(tmp_path):
     finally:
         connection.close()
     again = open_database(db_path)  # runs exactly once
-    assert get_schema_version(again) == 7
+    assert get_schema_version(again) == 8
     again.close()
 
 
@@ -250,7 +255,7 @@ def test_failed_v7_migration_leaves_the_v6_database_untouched(tmp_path):
     verify.close()
 
 
-def test_v5_database_migrates_through_v6_to_v7(tmp_path):
+def test_v5_database_migrates_through_the_whole_chain(tmp_path):
     from tests.test_library_schema import _create_v5_database, _seed_v5
 
     db_path = tmp_path / "studybot.db"
@@ -260,7 +265,7 @@ def test_v5_database_migrates_through_v6_to_v7(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 7
+        assert get_schema_version(connection) == 8
         assert {"library_sources", "library_files", "library_source_authorizations"} <= _names(connection)
         assert connection.execute("SELECT summary FROM learning_memories").fetchone()[0] == "sum"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

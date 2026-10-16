@@ -11,7 +11,9 @@ from datetime import datetime, timezone
 
 from studybot.core.exceptions import LibraryConflictError
 from studybot.core.library import LibraryFileState, LibrarySourceKind
-from studybot.storage.base import UNSET, LibraryFile, LibrarySource, LibrarySourceAuthorization
+from typing import Sequence
+
+from studybot.storage.base import UNSET, LibraryFile, LibraryPage, LibrarySource, LibrarySourceAuthorization
 
 
 def _now() -> str:
@@ -43,6 +45,9 @@ def _row_to_file(row: sqlite3.Row) -> LibraryFile:
         processing_state=LibraryFileState(row["processing_state"]),
         failure_code=row["failure_code"],
         indexed_at=row["indexed_at"],
+        page_count=row["page_count"],
+        text_page_count=row["text_page_count"],
+        processing_version=row["processing_version"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -167,16 +172,47 @@ class SQLiteLibraryRepository:
 
     def save_file(self, file: LibraryFile) -> LibraryFile:
         with self._conn:
-            self._conn.execute(
-                "UPDATE library_files SET display_name = ?, extension = ?, size_bytes = ?, modified_at = ?, "
-                "content_hash = ?, processing_state = ?, failure_code = ?, indexed_at = ?, updated_at = ? "
-                "WHERE id = ?",
-                (
-                    file.display_name, file.extension, file.size_bytes, file.modified_at, file.content_hash,
-                    file.processing_state.value, file.failure_code, file.indexed_at, _now(), file.id,
-                ),
-            )
+            self._update_file(file)
         return self.get_file(file.id)
+
+    def save_file_with_pages(self, file: LibraryFile, pages: Sequence[tuple[int, str]]) -> LibraryFile:
+        now = _now()
+        with self._conn:
+            self._conn.execute("DELETE FROM library_pages WHERE file_id = ?", (file.id,))
+            self._conn.executemany(
+                "INSERT INTO library_pages (file_id, page_number, text_content, char_count, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(file.id, number, text, len(text), now, now) for number, text in pages],
+            )
+            self._update_file(file)
+        return self.get_file(file.id)
+
+    def _update_file(self, file: LibraryFile) -> None:
+        self._conn.execute(
+            "UPDATE library_files SET display_name = ?, extension = ?, size_bytes = ?, modified_at = ?, "
+            "content_hash = ?, processing_state = ?, failure_code = ?, indexed_at = ?, page_count = ?, "
+            "text_page_count = ?, processing_version = ?, updated_at = ? WHERE id = ?",
+            (
+                file.display_name, file.extension, file.size_bytes, file.modified_at, file.content_hash,
+                file.processing_state.value, file.failure_code, file.indexed_at, file.page_count,
+                file.text_page_count, file.processing_version, _now(), file.id,
+            ),
+        )
+
+    def list_pages(self, file_id: str) -> list[LibraryPage]:
+        rows = self._conn.execute(
+            "SELECT * FROM library_pages WHERE file_id = ? ORDER BY page_number", (file_id,)
+        ).fetchall()
+        return [LibraryPage(r["file_id"], r["page_number"], r["text_content"], r["char_count"]) for r in rows]
+
+    def fail_indexing_files(self, failure_code: str) -> int:
+        with self._conn:
+            cursor = self._conn.execute(
+                "UPDATE library_files SET processing_state = ?, failure_code = ?, updated_at = ? "
+                "WHERE processing_state = ?",
+                (LibraryFileState.FAILED.value, failure_code, _now(), LibraryFileState.INDEXING.value),
+            )
+        return cursor.rowcount
 
     def delete_file(self, file_id: str) -> None:
         with self._conn:
