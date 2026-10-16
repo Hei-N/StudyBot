@@ -8,6 +8,7 @@ import '../models/chat.dart';
 import '../models/course.dart';
 import '../models/health.dart';
 import '../models/learning_memory.dart';
+import '../models/library_source.dart';
 import '../models/message.dart';
 import '../models/reasoning_mode.dart';
 import '../models/teaching_mode.dart';
@@ -112,6 +113,54 @@ class StudyBotApi {
 
   Future<void> deleteCourse(String courseId) async {
     await _send(() => _client.delete(_uri('/courses/$courseId'), headers: _headers));
+  }
+
+  // --- study library --------------------------------------------------------------
+
+  Future<List<LibrarySource>> listLibrarySources() async {
+    final json = await _send(() => _client.get(_uri('/library/sources'), headers: _headers));
+    return (json as List).cast<Map<String, dynamic>>().map(LibrarySource.fromJson).toList();
+  }
+
+  /// Creates the folder source, or returns the existing one with its authorization refreshed.
+  Future<LibrarySource> authorizeLocalFolder({
+    required String displayName,
+    required String locator,
+    required String bookmark,
+  }) async {
+    final json = await _send(
+      () => _client.post(
+        _uri('/library/sources/local-folder'),
+        headers: _headers,
+        body: jsonEncode({
+          'displayName': displayName,
+          'locator': locator,
+          'authorization': {'platform': 'macos', 'kind': 'security_scoped_bookmark', 'payload': bookmark},
+        }),
+      ),
+    );
+    return LibrarySource.fromJson(json as Map<String, dynamic>);
+  }
+
+  Future<LibraryAuthorization> getLibraryAuthorization(String sourceId) async {
+    final json = await _send(() => _client.get(_uri('/library/sources/$sourceId/authorization'), headers: _headers));
+    return LibraryAuthorization.fromJson(json as Map<String, dynamic>);
+  }
+
+  Future<LibrarySource> replaceLibraryAuthorization(String sourceId, {required String bookmark}) async {
+    final json = await _send(
+      () => _client.put(
+        _uri('/library/sources/$sourceId/authorization'),
+        headers: _headers,
+        body: jsonEncode({'platform': 'macos', 'kind': 'security_scoped_bookmark', 'payload': bookmark}),
+      ),
+    );
+    return LibrarySource.fromJson(json as Map<String, dynamic>);
+  }
+
+  /// Removes the source and its stored authorization; real files are never touched.
+  Future<void> deleteLibrarySource(String sourceId) async {
+    await _send(() => _client.delete(_uri('/library/sources/$sourceId'), headers: _headers));
   }
 
   // --- teaching modes ------------------------------------------------------------

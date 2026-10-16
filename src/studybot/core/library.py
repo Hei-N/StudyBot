@@ -20,6 +20,12 @@ MAX_LOCATOR_LENGTH = 4096
 MAX_RELATIVE_PATH_LENGTH = 1024
 MAX_FAILURE_CODE_LENGTH = 64
 
+#: Opaque, platform-specific access grants stored per source. Python never
+#: interprets the payload; only the platform's native layer does.
+AUTHORIZATION_PLATFORMS = frozenset({"macos"})
+AUTHORIZATION_KINDS = frozenset({"security_scoped_bookmark"})
+MAX_AUTHORIZATION_BYTES = 1024 * 1024
+
 
 class LibrarySourceKind(str, Enum):
     """Where a source's material lives. A closed set; add kinds with real integrations."""
@@ -125,3 +131,15 @@ def validate_failure_code(code: str) -> str:
     if not code or len(code) > MAX_FAILURE_CODE_LENGTH or not _FAILURE_CODE_PATTERN.match(code):
         raise SessionError("A failure code must be a short lowercase identifier.")
     return code
+
+
+def validate_authorization(platform: str, kind: str, payload: bytes) -> None:
+    """Check an authorization grant's shape without interpreting its payload."""
+    if platform not in AUTHORIZATION_PLATFORMS:
+        raise SessionError("Unsupported authorization platform.")
+    if kind not in AUTHORIZATION_KINDS:
+        raise SessionError("Unsupported authorization kind.")
+    if not payload:
+        raise SessionError("The authorization data is empty.")
+    if len(payload) > MAX_AUTHORIZATION_BYTES:
+        raise SessionError("The authorization data is too large.")

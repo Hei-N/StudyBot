@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from studybot.core.exceptions import LibraryConflictError
 from studybot.core.library import LibraryFileState, LibrarySourceKind
-from studybot.storage.base import UNSET, LibraryFile, LibrarySource
+from studybot.storage.base import UNSET, LibraryFile, LibrarySource, LibrarySourceAuthorization
 
 
 def _now() -> str:
@@ -181,3 +181,69 @@ class SQLiteLibraryRepository:
     def delete_file(self, file_id: str) -> None:
         with self._conn:
             self._conn.execute("DELETE FROM library_files WHERE id = ?", (file_id,))
+
+    def create_source_with_authorization(
+        self,
+        source_id: str,
+        course_id: str | None,
+        kind: LibrarySourceKind,
+        display_name: str,
+        locator: str,
+        platform: str,
+        authorization_kind: str,
+        payload: bytes,
+    ) -> LibrarySource:
+        now = _now()
+        try:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT INTO library_sources (id, course_id, kind, display_name, locator, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (source_id, course_id, kind.value, display_name, locator, now, now),
+                )
+                self._conn.execute(
+                    "INSERT INTO library_source_authorizations "
+                    "(source_id, platform, authorization_kind, authorization_data, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (source_id, platform, authorization_kind, payload, now, now),
+                )
+        except sqlite3.IntegrityError as error:
+            if "UNIQUE" in str(error):
+                raise LibraryConflictError("That source is already in the library.") from None
+            raise
+        return LibrarySource(source_id, course_id, kind, display_name, locator, now, now)
+
+    def save_authorization(
+        self, source_id: str, platform: str, authorization_kind: str, payload: bytes
+    ) -> LibrarySourceAuthorization:
+        now = _now()
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO library_source_authorizations "
+                "(source_id, platform, authorization_kind, authorization_data, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(source_id) DO UPDATE SET platform = excluded.platform, "
+                "authorization_kind = excluded.authorization_kind, "
+                "authorization_data = excluded.authorization_data, updated_at = excluded.updated_at",
+                (source_id, platform, authorization_kind, payload, now, now),
+            )
+        return self.get_authorization(source_id)
+
+    def get_authorization(self, source_id: str) -> LibrarySourceAuthorization | None:
+        row = self._conn.execute(
+            "SELECT * FROM library_source_authorizations WHERE source_id = ?", (source_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return LibrarySourceAuthorization(
+            source_id=row["source_id"],
+            platform=row["platform"],
+            kind=row["authorization_kind"],
+            payload=bytes(row["authorization_data"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def authorized_source_ids(self) -> set[str]:
+        rows = self._conn.execute("SELECT source_id FROM library_source_authorizations").fetchall()
+        return {row["source_id"] for row in rows}

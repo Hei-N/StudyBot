@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 
 from studybot.core.exceptions import (
     CourseNotFoundError,
+    LibraryAuthorizationNotFoundError,
     LibraryConflictError,
     LibraryFileNotFoundError,
     LibrarySourceNotFoundError,
@@ -37,9 +38,17 @@ from studybot.core.library import (
     normalize_display_name,
     normalize_locator,
     normalize_relative_path,
+    validate_authorization,
     validate_failure_code,
 )
-from studybot.storage.base import UNSET, CourseRepository, LibraryFile, LibraryRepository, LibrarySource
+from studybot.storage.base import (
+    UNSET,
+    CourseRepository,
+    LibraryFile,
+    LibraryRepository,
+    LibrarySource,
+    LibrarySourceAuthorization,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +108,53 @@ class LibraryService:
         self._library.delete_source(source_id)
         logger.debug("Deleted library source %s", source_id)
         return source
+
+    # --- authorization -------------------------------------------------------------
+    #
+    # The payload is an opaque grant produced and read only by the platform's native
+    # layer; a stored locator is never proof of access.
+
+    def authorize_local_folder(
+        self, display_name: str, locator: str, platform: str, authorization_kind: str, payload: bytes
+    ) -> tuple[LibrarySource, bool]:
+        """Create a folder source with its authorization, or refresh an existing one's.
+
+        Returns ``(source, created)``. An already-known folder keeps its id, name,
+        course and files; only its authorization is replaced, and a failed
+        replacement leaves the previous one in place.
+        """
+        validate_authorization(platform, authorization_kind, payload)
+        display_name = normalize_display_name(display_name)
+        locator = normalize_locator(locator)
+        existing = self._library.find_source(LibrarySourceKind.LOCAL_FOLDER, locator)
+        if existing is not None:
+            self._library.save_authorization(existing.id, platform, authorization_kind, payload)
+            return existing, False
+        source = self._library.create_source_with_authorization(
+            str(uuid.uuid4()), None, LibrarySourceKind.LOCAL_FOLDER, display_name, locator,
+            platform, authorization_kind, payload,
+        )
+        logger.debug("Created authorized library source %s", source.id)
+        return source, True
+
+    def set_authorization(
+        self, source_id: str, platform: str, authorization_kind: str, payload: bytes
+    ) -> LibrarySource:
+        """Replace a source's authorization (reauthorization or bookmark refresh)."""
+        source = self._require_source(source_id)
+        validate_authorization(platform, authorization_kind, payload)
+        self._library.save_authorization(source_id, platform, authorization_kind, payload)
+        return source
+
+    def get_authorization(self, source_id: str) -> LibrarySourceAuthorization:
+        self._require_source(source_id)
+        authorization = self._library.get_authorization(source_id)
+        if authorization is None:
+            raise LibraryAuthorizationNotFoundError("This source has no stored authorization.")
+        return authorization
+
+    def authorized_source_ids(self) -> set[str]:
+        return self._library.authorized_source_ids()
 
     # --- files ---------------------------------------------------------------------
 

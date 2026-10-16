@@ -19,7 +19,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Individual statements instead of executescript(), which commits implicitly
 # and would defeat the explicit transaction.
@@ -113,6 +113,20 @@ _LIBRARY_SCHEMA_STATEMENTS = [
     "CREATE INDEX idx_library_files_processing_state ON library_files(processing_state)",
 ]
 
+# Per-source access grants (added in v7); shared by the fresh schema and the v6 -> v7 migration.
+_LIBRARY_AUTHORIZATION_STATEMENTS = [
+    """
+    CREATE TABLE library_source_authorizations (
+        source_id TEXT PRIMARY KEY REFERENCES library_sources(id) ON DELETE CASCADE,
+        platform TEXT NOT NULL CHECK (platform IN ('macos')),
+        authorization_kind TEXT NOT NULL CHECK (authorization_kind IN ('security_scoped_bookmark')),
+        authorization_data BLOB NOT NULL CHECK (length(authorization_data) > 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+]
+
 
 def open_database(db_path: Path) -> sqlite3.Connection:
     """Open (creating if needed) the database at ``db_path`` and apply pending
@@ -162,12 +176,16 @@ def _migrate(connection: sqlite3.Connection) -> None:
         _migrate_v5_to_v6(connection)
         version = 6
 
+    if version == 6:
+        _migrate_v6_to_v7(connection)
+        version = 7
+
 
 def _create_fresh_schema(connection: sqlite3.Connection) -> None:
     """Create the current schema directly for a new database."""
     try:
         connection.execute("BEGIN")
-        for statement in (*_FRESH_SCHEMA_STATEMENTS, *_LIBRARY_SCHEMA_STATEMENTS):
+        for statement in (*_FRESH_SCHEMA_STATEMENTS, *_LIBRARY_SCHEMA_STATEMENTS, *_LIBRARY_AUTHORIZATION_STATEMENTS):
             connection.execute(statement)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.commit()
@@ -288,6 +306,23 @@ def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
         for statement in _LIBRARY_SCHEMA_STATEMENTS:
             connection.execute(statement)
         connection.execute("PRAGMA user_version = 6")
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+
+
+def _migrate_v6_to_v7(connection: sqlite3.Connection) -> None:
+    """Add the ``library_source_authorizations`` table.
+
+    Existing sources get no authorization record. One transaction.
+    """
+    logger.debug("Migrating chat database schema from v6 to v7")
+    try:
+        connection.execute("BEGIN")
+        for statement in _LIBRARY_AUTHORIZATION_STATEMENTS:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version = 7")
         connection.commit()
     except BaseException:
         connection.rollback()

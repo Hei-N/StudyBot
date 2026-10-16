@@ -5,11 +5,29 @@ The only place that knows both the domain types and ``api.schemas``.
 
 from __future__ import annotations
 
-from studybot.api.schemas import ChatOut, CourseOut, LearningMemoryOut, MemoryKindInfoOut, MessageOut, ModeInfoOut
+import base64
+
+from studybot.api.schemas import (
+    AuthorizationOut,
+    ChatOut,
+    CourseOut,
+    LearningMemoryOut,
+    LibrarySourceOut,
+    MemoryKindInfoOut,
+    MessageOut,
+    ModeInfoOut,
+)
 from studybot.core.learning_memory import MemoryKindInfo
 from studybot.core.reasoning_mode import ReasoningModeInfo
 from studybot.core.teaching_mode import TeachingModeInfo
-from studybot.storage.base import ChatSession, Course, LearningMemory, MessageRecord
+from studybot.storage.base import (
+    ChatSession,
+    Course,
+    LearningMemory,
+    LibrarySource,
+    LibrarySourceAuthorization,
+    MessageRecord,
+)
 
 
 def course_to_out(course: Course) -> CourseOut:
@@ -68,4 +86,26 @@ def learning_memory_to_out(memory: LearningMemory) -> LearningMemoryOut:
         status=memory.status.value,
         created_at=memory.created_at,
         updated_at=memory.updated_at,
+    )
+
+
+def library_source_to_out(source: LibrarySource, has_authorization: bool) -> LibrarySourceOut:
+    return LibrarySourceOut(
+        id=source.id,
+        course_id=source.course_id,
+        kind=source.kind.value,
+        display_name=source.display_name,
+        locator=source.locator,
+        created_at=source.created_at,
+        updated_at=source.updated_at,
+        has_authorization=has_authorization,
+    )
+
+
+def authorization_to_out(authorization: LibrarySourceAuthorization) -> AuthorizationOut:
+    return AuthorizationOut(
+        source_id=authorization.source_id,
+        platform=authorization.platform,
+        kind=authorization.kind,
+        payload=base64.b64encode(authorization.payload).decode("ascii"),
     )

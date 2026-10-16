@@ -14,13 +14,15 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from studybot.api import websocket
 from studybot.api.auth import resolve_startup_token
 from studybot.api.engine import Engine
-from studybot.api.errors import INTERNAL_ERROR, ApiError
-from studybot.api.routes import chats, courses, health, memories, modes, reasoning
+from studybot.api.errors import INTERNAL_ERROR, VALIDATION_ERROR, ApiError
+from studybot.api.routes import chats, courses, health, library, memories, modes, reasoning
 from studybot.api.version import API_PREFIX
 from studybot.app import StudyBotApp
 from studybot.config.settings import Settings
@@ -58,11 +60,22 @@ def create_app(settings: Settings | None = None, token: str | None = None) -> Fa
     app.include_router(modes.router, prefix=API_PREFIX)
     app.include_router(reasoning.router, prefix=API_PREFIX)
     app.include_router(memories.router, prefix=API_PREFIX)
+    app.include_router(library.router, prefix=API_PREFIX)
     app.include_router(websocket.router, prefix=API_PREFIX)
 
     @app.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content={"code": exc.code, "message": exc.message})
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # The default response echoes the offending input; for library requests that
+        # could be an authorization payload, so those get a generic message.
+        if request.url.path.startswith(f"{API_PREFIX}/library"):
+            return JSONResponse(
+                status_code=422, content={"code": VALIDATION_ERROR, "message": "The request was not valid."}
+            )
+        return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:

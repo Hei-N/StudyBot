@@ -5,6 +5,7 @@ import 'package:studybot_app/core/models/chat.dart';
 import 'package:studybot_app/core/models/course.dart';
 import 'package:studybot_app/core/models/health.dart';
 import 'package:studybot_app/core/models/learning_memory.dart';
+import 'package:studybot_app/core/models/library_source.dart';
 import 'package:studybot_app/core/models/message.dart';
 import 'package:studybot_app/core/models/reasoning_mode.dart';
 import 'package:studybot_app/core/models/teaching_mode.dart';
@@ -377,5 +378,83 @@ class FakeStudyBotApi extends StudyBotApi {
     final existed = memories.any((m) => m.id == memoryId);
     if (!existed) throw _memoryNotFound;
     memories.removeWhere((m) => m.id == memoryId);
+  }
+
+  // --- study library -----------------------------------------------------------
+
+  final List<LibrarySource> librarySources = [];
+
+  /// Source id to stored authorization payload (Base64).
+  final Map<String, String> libraryAuthorizations = {};
+  int _nextSourceId = 1;
+
+  static String _normalizeLocator(String path) => path.replaceAll(RegExp(r'/+$'), '');
+
+  @override
+  Future<List<LibrarySource>> listLibrarySources() async {
+    calls.add('listLibrarySources');
+    _maybeThrow();
+    return [
+      for (final s in librarySources)
+        LibrarySource(
+          id: s.id,
+          courseId: s.courseId,
+          kind: s.kind,
+          displayName: s.displayName,
+          locator: s.locator,
+          hasAuthorization: libraryAuthorizations.containsKey(s.id),
+        ),
+    ];
+  }
+
+  @override
+  Future<LibrarySource> authorizeLocalFolder({
+    required String displayName,
+    required String locator,
+    required String bookmark,
+  }) async {
+    calls.add('authorizeLocalFolder');
+    _maybeThrow();
+    final normalized = _normalizeLocator(locator);
+    var source = librarySources.where((s) => s.locator == normalized).firstOrNull;
+    source ??= LibrarySource(
+      id: 'source-${_nextSourceId++}',
+      courseId: null,
+      kind: 'local_folder',
+      displayName: displayName,
+      locator: normalized,
+      hasAuthorization: true,
+    );
+    if (!librarySources.contains(source)) librarySources.add(source);
+    libraryAuthorizations[source.id] = bookmark;
+    return source;
+  }
+
+  @override
+  Future<LibraryAuthorization> getLibraryAuthorization(String sourceId) async {
+    calls.add('getLibraryAuthorization:$sourceId');
+    _maybeThrow();
+    final payload = libraryAuthorizations[sourceId];
+    if (payload == null) {
+      throw const ApiException(code: 'LIBRARY_AUTHORIZATION_NOT_FOUND', message: 'No authorization.', statusCode: 404);
+    }
+    return LibraryAuthorization(sourceId: sourceId, platform: 'macos', kind: 'security_scoped_bookmark', payload: payload);
+  }
+
+  @override
+  Future<LibrarySource> replaceLibraryAuthorization(String sourceId, {required String bookmark}) async {
+    calls.add('replaceLibraryAuthorization:$sourceId');
+    _maybeThrow();
+    final source = librarySources.firstWhere((s) => s.id == sourceId);
+    libraryAuthorizations[sourceId] = bookmark;
+    return source;
+  }
+
+  @override
+  Future<void> deleteLibrarySource(String sourceId) async {
+    calls.add('deleteLibrarySource:$sourceId');
+    _maybeThrow();
+    librarySources.removeWhere((s) => s.id == sourceId);
+    libraryAuthorizations.remove(sourceId);
   }
 }

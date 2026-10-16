@@ -27,7 +27,7 @@ def _names(connection, kind):
 
 
 def test_fresh_database_has_the_library_tables_and_keeps_the_old_ones(connection):
-    assert get_schema_version(connection) == SCHEMA_VERSION == 6
+    assert get_schema_version(connection) == SCHEMA_VERSION == 7
     assert {"courses", "chats", "messages", "learning_memories", "library_sources", "library_files"} <= _names(
         connection, "table"
     )
@@ -151,7 +151,7 @@ def _seed_v5(conn):
     conn.commit()
 
 
-def test_v5_database_migrates_to_v6_preserving_everything(tmp_path):
+def test_v5_database_migrates_through_v6_preserving_everything(tmp_path):
     db_path = tmp_path / "studybot.db"
     seed = _create_v5_database(db_path)
     _seed_v5(seed)
@@ -159,7 +159,7 @@ def test_v5_database_migrates_to_v6_preserving_everything(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 6
+        assert get_schema_version(connection) == SCHEMA_VERSION
         assert connection.execute("SELECT name FROM courses WHERE id = 'c1'").fetchone()[0] == "Physics"
         chat = connection.execute("SELECT * FROM chats WHERE id = 'chat1'").fetchone()
         assert (chat["teaching_mode"], chat["reasoning_mode"], chat["course_id"]) == ("homework", "deep", "c1")
@@ -177,7 +177,7 @@ def test_v5_database_migrates_to_v6_preserving_everything(tmp_path):
         connection.close()
 
 
-def test_v6_migration_runs_exactly_once(tmp_path):
+def test_library_migration_runs_exactly_once(tmp_path):
     db_path = tmp_path / "studybot.db"
     seed = _create_v5_database(db_path)
     _seed_v5(seed)
@@ -186,7 +186,7 @@ def test_v6_migration_runs_exactly_once(tmp_path):
     open_database(db_path).close()
     connection = open_database(db_path)  # reopening must not re-run it (a duplicate CREATE would fail)
     try:
-        assert get_schema_version(connection) == 6
+        assert get_schema_version(connection) == SCHEMA_VERSION
         assert connection.execute("SELECT COUNT(*) FROM courses").fetchone()[0] == 1
     finally:
         connection.close()

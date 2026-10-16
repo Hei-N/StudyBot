@@ -368,8 +368,9 @@ chats keep their ids, titles, timestamps, courses and messages.
 | v3 to v4 | Adds `chats.reasoning_mode` (default `fast`). |
 | v4 to v5 | Adds `learning_memories` (`course_id` and `source_chat_id` both `ON DELETE SET NULL`). |
 | v5 to v6 | Adds `library_sources` and `library_files` (study library metadata; see [STUDY_LIBRARY.md](STUDY_LIBRARY.md)). |
+| v6 to v7 | Adds `library_source_authorizations` (opaque per-source access grants). |
 
-A fresh database is created directly at the current version (v6).
+A fresh database is created directly at the current version (v7).
 
 ```bash
 # Reset (quit StudyBot first). This deletes all chats, courses and memories:
@@ -502,8 +503,10 @@ appear in history either.
 ### Study library (foundation only)
 
 The database tracks study-material sources and files (metadata, content hashes and
-processing state) for future features. It reads no files, has no UI and is not
-available in the app yet. See [STUDY_LIBRARY.md](STUDY_LIBRARY.md).
+processing state) for future features. On macOS the app has a minimal Study Library
+screen where you can authorize a folder (read-only, through the system folder picker),
+see whether access is still valid, reauthorize or remove it. Nothing reads, scans or
+indexes the folder yet. See [STUDY_LIBRARY.md](STUDY_LIBRARY.md).
 
 ## Roadmap
 

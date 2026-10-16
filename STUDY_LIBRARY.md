@@ -1,8 +1,9 @@
 # Study Library foundation
 
 Foundation for managing study material (slides, notes, PDFs) as records StudyBot can
-track. It stores **metadata only**. There is no folder picker, scanner, document
-parsing, embedding or retrieval yet, and nothing here is available in the app.
+track. It stores **metadata and access grants only**. On macOS a user can authorize a
+folder (see [Folder authorization](#folder-authorization)); there is no scanner,
+document parsing, embedding or retrieval yet.
 
 ```
 Course
@@ -17,7 +18,8 @@ future: pages / slides → chunks → embeddings → retrieval
 Code lives in `core/library.py` (types and rules), `core/library_service.py`
 (`LibraryService`), `core/content_hash.py` (SHA-256 helper) and
 `storage/sqlite_library_repository.py` (the only SQL). The service is reached as
-`StudyBotApp.library`; there are no API routes and no Flutter UI yet. The model
+`StudyBotApp.library`, and a few source endpoints (see [API_CONTRACT.md](API_CONTRACT.md)) back
+a minimal Study Library screen. The model
 provider knows nothing about the library.
 
 ## Records
@@ -75,3 +77,46 @@ hash and reprocesses only changed material.
 - Generated study artifacts (flashcards, practice questions, summaries) should keep
   provenance: course, source, file and page/slide/chunk. Today's records carry the
   source id, file id, relative path and course association that this needs.
+
+## Folder authorization
+
+A source's `locator` is metadata, never permission. Access comes from a macOS
+**security-scoped bookmark** created when the user picks a folder in the native open
+panel, and nothing is inferred from a path string.
+
+```
+user → NSOpenPanel (folders only, one) → security-scoped bookmark (read-only)
+     → Flutter authorization service → API → LibrarySource + opaque authorization
+```
+
+- **Who owns what.** The native Swift layer (`macos/Runner/LibraryAuthorization.swift`,
+  channel `studybot/library_authorization`) creates and resolves bookmarks and starts and
+  stops access. Flutter owns the access lifecycle (one lease per source, released on
+  removal and exit). Python stores the bookmark as opaque bytes in
+  `library_source_authorizations` and never interprets it.
+- **Read-only.** The release app has `files.user-selected.read-only` and
+  `files.bookmarks.app-scope`, stays sandboxed, and has no Full Disk Access or
+  read-write entitlement. StudyBot never modifies a user's folder.
+- **Restoring access.** When the Study Library screen opens, each stored bookmark is
+  resolved (no folder contents are read). A stale bookmark is refreshed and saved. If
+  resolution fails the source shows **Needs access** and the user must reauthorize; the
+  stored path is never used as a fallback. Reauthorizing keeps the source id, and
+  choosing a different folder is refused.
+- **Duplicates.** Selecting a known folder again reuses its source and replaces only the
+  authorization.
+- **Removal** releases access and deletes the source, its authorization and its file
+  records. The real folder is never touched. Deleting a course does not revoke access.
+- **Sandbox boundary.** Holding access in the app process does **not** give the Python
+  engine the same rights; that has not been proven and is not assumed. Python receives
+  no paths to read. Future ingestion must be fed through an authorization-aware broker
+  (bytes or streams from the native layer) or another mechanism proven to work in the
+  sandbox, never a path used as proof of permission.
+- **Probe.** The native `probeRead` call reads at most 16 bytes of one relative path inside
+  an active lease and rejects absolute paths, `..` and symlinks that leave the folder. It
+  is for verification only. Full symlink policy is left to the future scanner.
+- **Future scanner.** It may only enumerate inside a currently authorized source. No
+  authorization or an expired bookmark means no scan, never a fallback to the raw path.
+- **Cross-platform.** Records and the API are platform-neutral (`platform`, `kind`,
+  opaque payload); another OS can supply its own authorization without changing sources.
+
+Nothing scans, hashes or indexes the selected folder yet.

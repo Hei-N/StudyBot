@@ -158,3 +158,39 @@ class LearningMemoryUpdateIn(ApiModel):
     kind: str | None = None
     summary: str | None = None
     course_id: str | None = None
+
+
+# --- study library -----------------------------------------------------------------
+
+
+class LibrarySourceOut(ApiModel):
+    """A library source. ``locator`` is private local data; the authorization payload
+    is never part of this DTO."""
+
+    id: str
+    course_id: str | None
+    kind: str
+    display_name: str
+    locator: str
+    created_at: str
+    updated_at: str
+    has_authorization: bool
+
+
+class AuthorizationIn(ApiModel):
+    platform: str
+    kind: str
+    payload: str  # Base64 of the opaque authorization bytes
+
+
+class AuthorizationOut(ApiModel):
+    source_id: str
+    platform: str
+    kind: str
+    payload: str
+
+
+class LocalFolderSourceIn(ApiModel):
+    display_name: str
+    locator: str
+    authorization: AuthorizationIn

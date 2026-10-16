@@ -328,6 +328,21 @@ class LibraryFile:
     updated_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class LibrarySourceAuthorization:
+    """An opaque access grant for a source (for macOS, a security-scoped bookmark).
+
+    ``payload`` is sensitive: it must never be logged or listed with sources.
+    """
+
+    source_id: str
+    platform: str
+    kind: str
+    payload: bytes
+    created_at: str
+    updated_at: str
+
+
 class LibraryRepository(Protocol):
     """Durable storage for library sources and files.
 
@@ -386,3 +401,29 @@ class LibraryRepository(Protocol):
         ...
 
     def delete_file(self, file_id: str) -> None: ...
+
+    def create_source_with_authorization(
+        self,
+        source_id: str,
+        course_id: str | None,
+        kind: LibrarySourceKind,
+        display_name: str,
+        locator: str,
+        platform: str,
+        authorization_kind: str,
+        payload: bytes,
+    ) -> LibrarySource:
+        """Create a source and its authorization in one transaction."""
+        ...
+
+    def save_authorization(
+        self, source_id: str, platform: str, authorization_kind: str, payload: bytes
+    ) -> LibrarySourceAuthorization:
+        """Insert or replace the source's authorization; a failure keeps the previous one."""
+        ...
+
+    def get_authorization(self, source_id: str) -> LibrarySourceAuthorization | None: ...
+
+    def authorized_source_ids(self) -> set[str]:
+        """Ids of sources that have an authorization, without reading the payloads."""
+        ...

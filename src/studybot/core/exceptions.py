@@ -103,6 +103,10 @@ class LibraryFileNotFoundError(SessionError):
     """An operation targeted a library file id that does not exist."""
 
 
+class LibraryAuthorizationNotFoundError(SessionError):
+    """A library source has no stored authorization."""
+
+
 class LibraryStateError(SessionError):
     """A library file state change is not allowed from its current state."""
 

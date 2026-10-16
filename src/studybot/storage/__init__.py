@@ -6,6 +6,7 @@ from studybot.storage.base import (
     LibraryFile,
     LibraryRepository,
     LibrarySource,
+    LibrarySourceAuthorization,
 )
 from studybot.storage.database import SCHEMA_VERSION, get_schema_version, open_database
 from studybot.storage.sqlite_course_repository import SQLiteCourseRepository
@@ -20,6 +21,7 @@ __all__ = [
     "LibraryFile",
     "LibraryRepository",
     "LibrarySource",
+    "LibrarySourceAuthorization",
     "SQLiteLibraryRepository",
     "SQLiteChatRepository",
     "SQLiteCourseRepository",

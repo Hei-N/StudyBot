@@ -90,6 +90,8 @@ Errors are JSON with a stable, machine-readable `code` and a human-readable
 | `CHAT_NOT_FOUND` | 404 | No chat with that id exists. |
 | `CHAT_BUSY` | WebSocket `error` event | The chat already has a generation in progress; this request was rejected instead of racing it. Retry after the first finishes. |
 | `COURSE_NOT_FOUND` | 404 | No course with that id exists. |
+| `LIBRARY_SOURCE_NOT_FOUND` | 404 | No study library source with that id exists. |
+| `LIBRARY_AUTHORIZATION_NOT_FOUND` | 404 | The source has no stored authorization. |
 | `MEMORY_NOT_FOUND` | 404 | No learning memory with that id exists. |
 | `MEMORY_CONFLICT` | 409 | Creating or reactivating the memory would produce two active memories with the same normalized topic and kind in the same scope. |
 | `INVALID_MODE` | 422 | `mode` is not a recognized teaching mode. |
@@ -363,6 +365,37 @@ injected text is never persisted as a chat message or exposed in `MessageOut`.
 **No automatic extraction.** Nothing in the API calls a model to create
 memories. Every memory comes from an explicit `POST /memories` (for example the
 Flutter app's "Save to Learning Memory" action).
+
+### Study library sources
+
+Foundation endpoints for the macOS folder-authorization flow. They store source
+metadata and an opaque authorization grant; they read no folders and list no files.
+See [STUDY_LIBRARY.md](STUDY_LIBRARY.md).
+
+```
+GET    /api/v1/library/sources                          -> [LibrarySourceOut]
+POST   /api/v1/library/sources/local-folder             <- LocalFolderSourceIn -> LibrarySourceOut
+DELETE /api/v1/library/sources/{id}                     -> 204
+GET    /api/v1/library/sources/{id}/authorization       -> AuthorizationOut
+PUT    /api/v1/library/sources/{id}/authorization       <- AuthorizationIn -> LibrarySourceOut
+```
+
+- `LibrarySourceOut`: `id`, `courseId`, `kind`, `displayName`, `locator`, `createdAt`,
+  `updatedAt`, `hasAuthorization`. It never contains the authorization payload.
+  `locator` is private local data; it is not proof of access.
+- `LocalFolderSourceIn`: `displayName`, `locator`, `authorization`
+  (`{platform: "macos", kind: "security_scoped_bookmark", payload}`). `payload` is Base64
+  of the opaque bytes (at most 1 MiB decoded). Returns **201** when the source is new
+  and **200** when the same folder (same normalized locator) was already known: the
+  existing source keeps its id, name, course and files, and only its authorization is
+  replaced.
+- `GET .../authorization` returns the Base64 payload the client needs to regain access.
+  Only the native macOS layer interprets it; the engine stores it as opaque bytes.
+- `DELETE` removes the source, its authorization and its file records. Real files are
+  never touched.
+- Invalid payloads (empty, not Base64, too large, unsupported platform or kind) return
+  `422 VALIDATION_ERROR`. For library routes, request-validation errors use a generic
+  message and never echo the request body. Payloads are never logged.
 
 ### WebSocket streaming chat
 

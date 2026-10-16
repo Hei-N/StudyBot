@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../../core/theme/app_spacing.dart';
+import '../library/library_view.dart';
 import '../memory/memory_management_view.dart';
 import '../settings/settings_view.dart';
 
-/// The slim, always-present leftmost rail: app mark at the top, Learning
-/// memory and Settings at the bottom. Distinct from the Navigation
+/// The slim, always-present leftmost rail: app mark at the top, Study Library,
+/// Learning memory and Settings at the bottom. Distinct from the Navigation
 /// (courses) column beside it — this rail never scrolls or changes with
 /// the active course/chat.
 class NavRail extends StatelessWidget {
@@ -22,6 +23,11 @@ class NavRail extends StatelessWidget {
           const SizedBox(height: AppSpacing.md),
           Icon(Icons.auto_awesome, color: theme.colorScheme.primary, size: 24),
           const Spacer(),
+          IconButton(
+            tooltip: 'Study Library',
+            icon: const Icon(Icons.folder_copy_outlined),
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LibraryView())),
+          ),
           IconButton(
             tooltip: 'Learning memory',
             icon: const Icon(Icons.psychology_alt_outlined),
