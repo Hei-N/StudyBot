@@ -227,3 +227,14 @@ class ImportPdfOut(ApiModel):
 
 class StagingDirectoryOut(ApiModel):
     path: str
+
+
+class UploadPdfIn(ApiModel):
+    staging_id: str
+    display_name: str
+
+
+class UploadPdfOut(ApiModel):
+    outcome: str  # "uploaded", "duplicate" or "failed"
+    file: LibraryFileOut | None
+    failure_code: str | None

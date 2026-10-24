@@ -33,6 +33,8 @@ from studybot.api.schemas import (
     LibrarySourceOut,
     LocalFolderSourceIn,
     StagingDirectoryOut,
+    UploadPdfIn,
+    UploadPdfOut,
 )
 from studybot.core.exceptions import (
     LibraryAuthorizationNotFoundError,
@@ -42,7 +44,7 @@ from studybot.core.exceptions import (
     SessionError,
 )
 from studybot.core.ingest_staging import StagingNotFoundError
-from studybot.core.library import MAX_AUTHORIZATION_BYTES
+from studybot.core.library import MAX_AUTHORIZATION_BYTES, LibrarySourceKind
 
 router = APIRouter(prefix="/library", dependencies=[Depends(require_token)])
 
@@ -137,10 +139,12 @@ async def replace_authorization(
 @router.get("/sources/{source_id}/files", response_model=list[LibraryFileOut])
 async def list_files(source_id: str, engine: Engine = Depends(get_engine)) -> list[LibraryFileOut]:
     library = engine.app.library
-    if await engine.call(library.get_source, source_id) is None:
+    source = await engine.call(library.get_source, source_id)
+    if source is None:
         raise ApiError(404, LIBRARY_SOURCE_NOT_FOUND, "No library source found.")
     files = await engine.call(library.list_files, source_id=source_id)
-    return [library_file_to_out(f) for f in files]
+    hide = source.kind is LibrarySourceKind.UPLOADS
+    return [library_file_to_out(f, hide_path=hide) for f in files]
 
 
 @router.get("/ingest-staging", response_model=StagingDirectoryOut)
@@ -158,3 +162,34 @@ async def import_pdf(source_id: str, body: ImportPdfIn, request: Request) -> Imp
     except SessionError as exc:
         raise _translate(exc) from exc
     return ImportPdfOut(outcome=outcome, file=library_file_to_out(file))
+
+
+@router.get("/uploads", response_model=list[LibraryFileOut])
+async def list_uploads(engine: Engine = Depends(get_engine)) -> list[LibraryFileOut]:
+    files = await engine.call(engine.app.library.list_uploaded_files)
+    return [library_file_to_out(f, hide_path=True) for f in files]
+
+
+@router.post("/uploads/pdf", response_model=UploadPdfOut)
+async def upload_pdf(body: UploadPdfIn, request: Request) -> UploadPdfOut:
+    """Add a PDF the native layer staged to StudyBot's own storage. Takes a staging id, never a path."""
+    importer: PdfImporter = request.app.state.pdf_importer
+    try:
+        outcome, file, failure_code = await importer.upload_pdf(body.staging_id, body.display_name)
+    except SessionError as exc:
+        raise _translate(exc) from exc
+    return UploadPdfOut(
+        outcome=outcome,
+        file=library_file_to_out(file, hide_path=True) if file is not None else None,
+        failure_code=failure_code,
+    )
+
+
+@router.delete("/uploads/{file_id}", status_code=204, response_model=None)
+async def delete_upload(file_id: str, request: Request, engine: Engine = Depends(get_engine)) -> None:
+    """Remove an uploaded file and its private copy from StudyBot. The original file is never touched."""
+    try:
+        file = await engine.call(engine.app.library.delete_uploaded_file, file_id)
+    except SessionError as exc:
+        raise _translate(exc) from exc
+    request.app.state.uploads.discard(file.relative_path)

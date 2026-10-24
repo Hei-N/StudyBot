@@ -31,16 +31,10 @@ class StudyBotApi {
 
   Uri _uri(String path, [Map<String, String>? query]) {
     final base = config.httpBase;
-    return base.replace(
-      path: '${base.path}/api/v1$path'.replaceAll('//', '/'),
-      queryParameters: query,
-    );
+    return base.replace(path: '${base.path}/api/v1$path'.replaceAll('//', '/'), queryParameters: query);
   }
 
-  Map<String, String> get _headers => {
-    'Authorization': 'Bearer ${config.token}',
-    'Content-Type': 'application/json',
-  };
+  Map<String, String> get _headers => {'Authorization': 'Bearer ${config.token}', 'Content-Type': 'application/json'};
 
   Future<dynamic> _send(Future<http.Response> Function() request) async {
     late http.Response response;
@@ -191,6 +185,30 @@ class StudyBotApi {
     return PdfImportResult.fromJson(json as Map<String, dynamic>);
   }
 
+  // --- direct uploads -------------------------------------------------------------
+
+  Future<List<LibraryFile>> listUploads() async {
+    final json = await _send(() => _client.get(_uri('/library/uploads'), headers: _headers));
+    return (json as List).cast<Map<String, dynamic>>().map(LibraryFile.fromJson).toList();
+  }
+
+  /// Adds a PDF the native layer staged to StudyBot's own storage. Takes a staging id, never a path.
+  Future<UploadPdfResult> uploadPdf({required String stagingId, required String displayName}) async {
+    final json = await _send(
+      () => _client.post(
+        _uri('/library/uploads/pdf'),
+        headers: _headers,
+        body: jsonEncode({'stagingId': stagingId, 'displayName': displayName}),
+      ),
+    );
+    return UploadPdfResult.fromJson(json as Map<String, dynamic>);
+  }
+
+  /// Removes an uploaded file and StudyBot's private copy; the original file is never touched.
+  Future<void> deleteUpload(String fileId) async {
+    await _send(() => _client.delete(_uri('/library/uploads/$fileId'), headers: _headers));
+  }
+
   // --- teaching modes ------------------------------------------------------------
 
   Future<List<TeachingModeInfo>> listModes() async {
@@ -248,11 +266,7 @@ class StudyBotApi {
 
   Future<Chat> setChatCourse(String chatId, String? courseId) async {
     final json = await _send(
-      () => _client.put(
-        _uri('/chats/$chatId/course'),
-        headers: _headers,
-        body: jsonEncode({'courseId': courseId}),
-      ),
+      () => _client.put(_uri('/chats/$chatId/course'), headers: _headers, body: jsonEncode({'courseId': courseId})),
     );
     return Chat.fromJson(json as Map<String, dynamic>);
   }
@@ -295,11 +309,7 @@ class StudyBotApi {
   /// `courseId: 'none'` filters to global-only memories, like `listChats`.
   /// Omit a filter for "no constraint".
   Future<List<LearningMemory>> listMemories({String? courseId, String? kind, String? status}) async {
-    final query = <String, String>{
-      'course_id': ?courseId,
-      'kind': ?kind,
-      'status': ?status,
-    };
+    final query = <String, String>{'course_id': ?courseId, 'kind': ?kind, 'status': ?status};
     final json = await _send(() => _client.get(_uri('/memories', query.isEmpty ? null : query), headers: _headers));
     return (json as List).cast<Map<String, dynamic>>().map(LearningMemory.fromJson).toList();
   }

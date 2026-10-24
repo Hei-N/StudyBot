@@ -60,6 +60,18 @@ class FakeFolderAuthorization implements FolderAuthorization {
     return pdfPicks.isEmpty ? null : pdfPicks.removeAt(0);
   }
 
+  /// Files the next [pickPdfForUpload] calls return, in order. Empty means the user cancels.
+  final List<StagedUpload> uploadPicks = [];
+  Object? uploadPickError;
+
+  @override
+  Future<StagedUpload?> pickPdfForUpload(String stagingDirectory) async {
+    stagingDirectories.add(stagingDirectory);
+    final error = uploadPickError;
+    if (error != null) throw error;
+    return uploadPicks.isEmpty ? null : uploadPicks.removeAt(0);
+  }
+
   @override
   Future<bool> probeRead(String leaseId, String relativePath) async => _active.containsKey(leaseId);
 }

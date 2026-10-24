@@ -411,6 +411,14 @@ PUT    /api/v1/library/sources/{id}/authorization       <- AuthorizationIn -> Li
   deleted afterwards. Malformed ids and unsafe or non-PDF relative paths return
   `422 VALIDATION_ERROR`; a source without authorization returns `404
   LIBRARY_AUTHORIZATION_NOT_FOUND`.
+- Direct uploads (no folder needed):
+  `GET /library/uploads` lists uploaded files; `POST /library/uploads/pdf` with
+  `{stagingId, displayName}` returns `{outcome, file, failureCode}` where outcome is
+  `uploaded`, `duplicate` (the same content is already uploaded; `file` is the existing
+  record) or `failed` (nothing is stored; `failureCode` is e.g. `invalid_pdf`,
+  `password_required`, `file_too_large`); `DELETE /library/uploads/{fileId}` removes the
+  record, its pages and StudyBot's private copy (204). Uploaded files report their original
+  filename as `relativePath`; private names and paths are never returned.
 - Invalid payloads (empty, not Base64, too large, unsupported platform or kind) return
   `422 VALIDATION_ERROR`. For library routes, request-validation errors use a generic
   message and never echo the request body. Payloads are never logged.

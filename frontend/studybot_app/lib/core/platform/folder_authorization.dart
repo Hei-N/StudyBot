@@ -29,6 +29,15 @@ class StagedPdf {
   final int sizeBytes;
 }
 
+/// A PDF the user chose anywhere, copied to StudyBot's private staging area for upload.
+class StagedUpload {
+  const StagedUpload({required this.stagingId, required this.displayName, required this.sizeBytes});
+
+  final String stagingId;
+  final String displayName;
+  final int sizeBytes;
+}
+
 /// Live access to an authorized folder. Must be released with [FolderAuthorization.stopAccess].
 class AccessLease {
   const AccessLease({required this.id, required this.path, this.refreshedBookmark});
@@ -70,6 +79,11 @@ abstract class FolderAuthorization {
   /// [stagingDirectory]. Returns null if the user cancels. Throws [FolderAccessException]
   /// (`outside_source`, `not_pdf`, `too_large`, `staging_failed`, ...).
   Future<StagedPdf?> pickAndStagePdf(String leaseId, String stagingDirectory);
+
+  /// Lets the user pick one PDF anywhere and stages a private copy in [stagingDirectory].
+  /// No folder authorization is needed. Returns null if the user cancels. Throws
+  /// [FolderAccessException] (`not_pdf`, `too_large`, `staging_failed`).
+  Future<StagedUpload?> pickPdfForUpload(String stagingDirectory);
 }
 
 /// macOS implementation over the `studybot/library_authorization` channel.
@@ -121,6 +135,17 @@ class MacOSFolderAuthorization implements FolderAuthorization {
     return StagedPdf(
       stagingId: result['stagingId'] as String,
       relativePath: result['relativePath'] as String,
+      displayName: result['displayName'] as String,
+      sizeBytes: result['sizeBytes'] as int,
+    );
+  }
+
+  @override
+  Future<StagedUpload?> pickPdfForUpload(String stagingDirectory) async {
+    final result = await _invoke<Map<Object?, Object?>>('pickPdfForUpload', {'stagingDirectory': stagingDirectory});
+    if (result == null) return null;
+    return StagedUpload(
+      stagingId: result['stagingId'] as String,
       displayName: result['displayName'] as String,
       sizeBytes: result['sizeBytes'] as int,
     );

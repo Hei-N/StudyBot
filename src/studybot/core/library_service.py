@@ -35,6 +35,8 @@ from studybot.core.library import (
     FAILURE_INTERRUPTED,
     LibraryFileState,
     LibrarySourceKind,
+    UPLOADS_DISPLAY_NAME,
+    UPLOADS_LOCATOR,
     can_transition,
     file_extension,
     normalize_content_hash,
@@ -66,6 +68,21 @@ class PdfImportPlan:
 
     file: LibraryFile
     needs_extraction: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UploadPlan:
+    """The next step for an uploaded PDF.
+
+    ``duplicate``: ``file`` is the existing, current copy and nothing more is needed.
+    Otherwise ``file`` is ``indexing`` and the private copy must be stored as ``stored_name``.
+    ``replaced_names`` are private files of superseded records for the caller to delete.
+    """
+
+    file: LibraryFile
+    stored_name: str
+    duplicate: bool
+    replaced_names: tuple[str, ...] = ()
 
 
 class LibraryService:
@@ -101,8 +118,10 @@ class LibraryService:
         return self._library.get_source(source_id)
 
     def list_sources(self, *, course_id: str | None = UNSET) -> list[LibrarySource]:  # type: ignore[assignment]
-        """Sources, optionally only those of one course (``None`` selects general material)."""
-        return self._library.list_sources(course_id=course_id)
+        """User-visible sources (not the internal uploads source), optionally of one course
+        (``None`` selects general material)."""
+        sources = self._library.list_sources(course_id=course_id)
+        return [s for s in sources if s.kind is not LibrarySourceKind.UPLOADS]
 
     def assign_source_to_course(self, source_id: str, course_id: str) -> LibrarySource:
         self._require_source(source_id)
@@ -116,6 +135,8 @@ class LibraryService:
     def delete_source(self, source_id: str) -> LibrarySource:
         """Delete a source and its file records. Never touches the real files."""
         source = self._require_source(source_id)
+        if source.kind is LibrarySourceKind.UPLOADS:
+            raise SessionError("The uploaded files source cannot be removed; remove its files instead.")
         self._library.delete_source(source_id)
         logger.debug("Deleted library source %s", source_id)
         return source
@@ -301,6 +322,81 @@ class LibraryService:
         file.processing_state = LibraryFileState.PENDING
         file.failure_code = None
         return self._library.save_file(file)
+
+    # --- direct uploads ------------------------------------------------------------
+    #
+    # Uploaded PDFs belong to one app-owned source of kind ``uploads``. A file's
+    # ``relative_path`` is its private stored name (a UUID) and ``display_name`` is the
+    # user's original filename; identity is the content hash, never the filename.
+
+    def uploads_source(self) -> LibrarySource:
+        existing = self._library.find_source(LibrarySourceKind.UPLOADS, UPLOADS_LOCATOR)
+        if existing is not None:
+            return existing
+        return self._library.create_source(
+            str(uuid.uuid4()), None, LibrarySourceKind.UPLOADS, UPLOADS_DISPLAY_NAME, UPLOADS_LOCATOR
+        )
+
+    def prepare_upload(
+        self, display_name: str, *, size_bytes: int, content_hash: str, processing_version: str
+    ) -> UploadPlan:
+        """Decide what an upload needs: nothing (duplicate) or a new ``indexing`` record.
+
+        The same bytes as a current upload are a duplicate. An older or unfinished copy
+        of the same bytes is replaced by the new record. Another upload of those bytes
+        that is still being processed is a conflict.
+        """
+        name = normalize_display_name(display_name)
+        digest = normalize_content_hash(content_hash)
+        source = self.uploads_source()
+        existing = self._library.find_file_by_hash(source.id, digest)
+        replaced: list[str] = []
+        if existing is not None:
+            if existing.processing_state is LibraryFileState.INDEXING:
+                raise LibraryStateError("This PDF is already being uploaded.")
+            if existing.processing_state is LibraryFileState.READY and existing.processing_version == processing_version:
+                return UploadPlan(existing, existing.relative_path, duplicate=True)
+            self._library.delete_file(existing.id)
+            replaced.append(existing.relative_path)
+        stored_name = f"{uuid.uuid4()}.pdf"
+        file = self.register_or_update_file(
+            source.id, stored_name, display_name=name, size_bytes=size_bytes, content_hash=digest
+        )
+        file = self.begin_indexing(file.id)
+        return UploadPlan(file, stored_name, duplicate=False, replaced_names=tuple(replaced))
+
+    def abort_upload(self, file_id: str) -> str | None:
+        """Drop an upload's record and pages after a failure; returns its stored name."""
+        file = self._library.get_file(file_id)
+        if file is None:
+            return None
+        self._library.delete_file(file_id)
+        return file.relative_path
+
+    def list_uploaded_files(self) -> list[LibraryFile]:
+        source = self._library.find_source(LibrarySourceKind.UPLOADS, UPLOADS_LOCATOR)
+        return self._library.list_files(source_id=source.id) if source is not None else []
+
+    def delete_uploaded_file(self, file_id: str) -> LibraryFile:
+        """Delete an uploaded file's record and pages; the caller removes the private copy."""
+        file = self._require_file(file_id)
+        source = self._library.find_source(LibrarySourceKind.UPLOADS, UPLOADS_LOCATOR)
+        if source is None or file.source_id != source.id:
+            raise LibraryFileNotFoundError("No uploaded file found.")
+        self._library.delete_file(file_id)
+        return file
+
+    def purge_failed_uploads(self) -> list[str]:
+        """Delete uploads left ``failed`` (for example by a crash); returns their stored names."""
+        names = []
+        for file in self.list_uploaded_files():
+            if file.processing_state is LibraryFileState.FAILED:
+                self._library.delete_file(file.id)
+                names.append(file.relative_path)
+        return names
+
+    def uploaded_file_names(self) -> set[str]:
+        return {file.relative_path for file in self.list_uploaded_files()}
 
     # --- PDF import ----------------------------------------------------------------
     #

@@ -11,8 +11,8 @@ import '../../core/widgets/loading_view.dart';
 import '../courses/courses_providers.dart';
 import 'library_providers.dart';
 
-/// Minimal source management: authorize folders, see their access status,
-/// reauthorize or remove them. It lists no files and reads no folder contents.
+/// Study Library: upload a PDF, or authorize a folder and import PDFs from it. Shows
+/// each source's access status and the files StudyBot holds. It reads no folder contents.
 class LibraryView extends ConsumerWidget {
   const LibraryView({super.key});
 
@@ -28,9 +28,29 @@ class LibraryView extends ConsumerWidget {
     }
   }
 
+  Future<void> _upload(BuildContext context, WidgetRef ref) async {
+    final outcome = await ref.read(libraryControllerProvider.notifier).uploadPdf();
+    if (!context.mounted) return;
+    final message = switch (outcome.kind) {
+      UploadKind.duplicate => 'This PDF is already in your library.',
+      UploadKind.notPdf => 'Please choose a PDF file.',
+      UploadKind.error => "Couldn't upload that file. Please try again.",
+      UploadKind.failed => switch (outcome.failureCode) {
+        'password_required' => 'This PDF is password protected.',
+        'invalid_pdf' => 'This file is not a valid PDF.',
+        'file_too_large' || 'too_many_pages' || 'text_too_large' => 'This PDF is too large to import.',
+        _ => "Couldn't import that PDF. Please try again.",
+      },
+      UploadKind.uploaded || UploadKind.cancelled => null,
+    };
+    if (message != null) _tell(context, message);
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final sources = ref.watch(libraryControllerProvider);
+    final uploads = ref.watch(uploadedFilesProvider).value ?? const <LibraryFile>[];
+    final uploading = ref.watch(importingSourcesProvider).contains(uploadingKey);
     return Scaffold(
       appBar: AppBar(title: const Text('Study Library')),
       body: sources.when(
@@ -44,10 +64,18 @@ class LibraryView extends ConsumerWidget {
           children: [
             Padding(
               padding: const EdgeInsets.all(AppSpacing.lg),
-              child: Row(
+              child: Wrap(
+                spacing: AppSpacing.sm,
+                runSpacing: AppSpacing.sm,
+                alignment: WrapAlignment.end,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  Expanded(child: Text('Authorized sources', style: Theme.of(context).textTheme.titleMedium)),
                   FilledButton.icon(
+                    onPressed: uploading ? null : () => _upload(context, ref),
+                    icon: const Icon(Icons.upload_file_outlined),
+                    label: const Text('Upload File'),
+                  ),
+                  FilledButton.tonalIcon(
                     onPressed: () => _add(context, ref),
                     icon: const Icon(Icons.create_new_folder_outlined),
                     label: const Text('Add Folder'),
@@ -55,22 +83,82 @@ class LibraryView extends ConsumerWidget {
                 ],
               ),
             ),
+            if (uploading)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+                child: LinearProgressIndicator(),
+              ),
             Expanded(
-              child: entries.isEmpty
+              child: entries.isEmpty && uploads.isEmpty
                   ? const EmptyState(
                       icon: Icons.folder_open_outlined,
                       title: 'No folders yet',
-                      message: 'Add a folder to let StudyBot read your study materials. StudyBot only reads it.',
+                      message: 'Upload a PDF, or add a folder to let StudyBot read your study materials. StudyBot only reads them.',
                     )
-                  : ListView.separated(
-                      itemCount: entries.length,
-                      separatorBuilder: (_, _) => const Divider(height: 1),
-                      itemBuilder: (context, index) => _SourceTile(entry: entries[index]),
+                  : ListView(
+                      children: [
+                        if (uploads.isNotEmpty) ...[
+                          const _SectionLabel('Uploaded files'),
+                          for (final file in uploads) _UploadedRow(file: file),
+                          const Divider(height: 1),
+                        ],
+                        if (entries.isNotEmpty) const _SectionLabel('Authorized folders'),
+                        for (final entry in entries) ...[_SourceTile(entry: entry), const Divider(height: 1)],
+                      ],
                     ),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(AppSpacing.lg, AppSpacing.md, AppSpacing.lg, AppSpacing.xs),
+      child: Text(text, style: theme.textTheme.labelLarge?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+    );
+  }
+}
+
+/// One directly uploaded file; Remove deletes StudyBot's own copy only.
+class _UploadedRow extends ConsumerWidget {
+  const _UploadedRow({required this.file});
+
+  final LibraryFile file;
+
+  Future<void> _remove(BuildContext context, WidgetRef ref) async {
+    final confirmed = await showConfirmDialog(
+      context,
+      title: 'Remove from StudyBot?',
+      message:
+          'StudyBot will delete its own copy of "${file.displayName}". The original file on your Mac is not touched.',
+      confirmLabel: 'Remove',
+    );
+    if (!confirmed || !context.mounted) return;
+    final removed = await ref.read(libraryControllerProvider.notifier).removeUpload(file.id);
+    if (!removed && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Couldn't remove that file.")));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return _FileRow(
+      file: file,
+      indent: AppSpacing.lg,
+      detail: 'Uploaded · ${_FileRow.describe(file)}',
+      canImport: false,
+      onImport: () {},
+      onRemove: () => _remove(context, ref),
     );
   }
 }
@@ -169,11 +257,25 @@ class _SourceTile extends ConsumerWidget {
 
 /// One imported file: name, where it is in the source, and its processing state.
 class _FileRow extends StatelessWidget {
-  const _FileRow({required this.file, required this.canImport, required this.onImport});
+  const _FileRow({
+    required this.file,
+    required this.canImport,
+    required this.onImport,
+    this.onRemove,
+    this.indent,
+    this.detail,
+  });
 
   final LibraryFile file;
   final bool canImport;
   final VoidCallback onImport;
+
+  /// Set for uploaded files, which offer Remove instead of Import again.
+  final VoidCallback? onRemove;
+  final double? indent;
+
+  /// Replaces the default "path · status" line.
+  final String? detail;
 
   static String describe(LibraryFile file) {
     final pages = file.pageCount ?? 0;
@@ -209,7 +311,12 @@ class _FileRow extends StatelessWidget {
     final needsRetry = state == 'failed' || state == 'pending' || state == 'stale';
     final location = file.relativePath == file.displayName ? '' : '${file.relativePath} · ';
     return Padding(
-      padding: const EdgeInsets.only(left: AppSpacing.xl + AppSpacing.lg, right: AppSpacing.lg, bottom: AppSpacing.sm),
+      padding: EdgeInsets.only(
+        left: indent ?? AppSpacing.xl + AppSpacing.lg,
+        right: AppSpacing.lg,
+        top: indent == null ? 0 : AppSpacing.xs,
+        bottom: AppSpacing.sm,
+      ),
       child: Row(
         children: [
           const Icon(Icons.picture_as_pdf_outlined, size: 20),
@@ -220,7 +327,7 @@ class _FileRow extends StatelessWidget {
               children: [
                 Text(file.displayName, style: theme.textTheme.bodyMedium),
                 Text(
-                  '$location${describe(file)}',
+                  detail ?? '$location${describe(file)}',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: state == 'failed' ? theme.colorScheme.error : theme.colorScheme.onSurfaceVariant,
                   ),
@@ -228,7 +335,10 @@ class _FileRow extends StatelessWidget {
               ],
             ),
           ),
-          if (needsRetry) TextButton(onPressed: canImport ? onImport : null, child: const Text('Import again')),
+          if (onRemove != null)
+            TextButton(onPressed: onRemove, child: const Text('Remove'))
+          else if (needsRetry)
+            TextButton(onPressed: canImport ? onImport : null, child: const Text('Import again')),
         ],
       ),
     );

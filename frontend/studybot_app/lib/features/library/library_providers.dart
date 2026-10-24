@@ -174,6 +174,41 @@ class LibraryController extends AsyncNotifier<List<LibrarySourceEntry>> {
     }
   }
 
+  /// Lets the user pick a PDF anywhere and adds it to StudyBot's own storage. No folder is needed.
+  Future<UploadOutcome> uploadPdf() async {
+    final busy = ref.read(importingSourcesProvider.notifier);
+    try {
+      final api = ref.read(studyBotApiProvider);
+      final staged = await _folders.pickPdfForUpload(await api.getIngestStagingDirectory());
+      if (staged == null) return const UploadOutcome(UploadKind.cancelled);
+      busy.set(uploadingKey, importing: true);
+      final result = await api.uploadPdf(stagingId: staged.stagingId, displayName: staged.displayName);
+      ref.invalidate(uploadedFilesProvider);
+      return switch (result.outcome) {
+        'duplicate' => const UploadOutcome(UploadKind.duplicate),
+        'failed' => UploadOutcome(UploadKind.failed, result.failureCode),
+        _ => const UploadOutcome(UploadKind.uploaded),
+      };
+    } on FolderAccessException catch (e) {
+      return UploadOutcome(e.code == 'not_pdf' ? UploadKind.notPdf : UploadKind.error, e.code);
+    } on ApiException {
+      return const UploadOutcome(UploadKind.error);
+    } finally {
+      busy.set(uploadingKey, importing: false);
+    }
+  }
+
+  /// Removes an uploaded file and StudyBot's copy of it; the original file is untouched.
+  Future<bool> removeUpload(String fileId) async {
+    try {
+      await ref.read(studyBotApiProvider).deleteUpload(fileId);
+      ref.invalidate(uploadedFilesProvider);
+      return true;
+    } on ApiException {
+      return false;
+    }
+  }
+
   /// Releases access and removes the source and its stored authorization from
   /// StudyBot. The folder and its files are untouched.
   Future<bool> remove(String sourceId) async {
@@ -216,3 +251,20 @@ class ImportingSources extends Notifier<Set<String>> {
 final importingSourcesProvider = NotifierProvider<ImportingSources, Set<String>>(ImportingSources.new);
 
 enum ImportPdfResult { imported, unchanged, failed, cancelled, outsideSource, notPdf, needsAccess, error }
+
+/// Directly uploaded files (StudyBot keeps its own copy of each).
+final uploadedFilesProvider = FutureProvider.autoDispose<List<LibraryFile>>((ref) {
+  return ref.watch(studyBotApiProvider).listUploads();
+});
+
+/// Key in [importingSourcesProvider] while an upload is being processed.
+const uploadingKey = '__upload__';
+
+enum UploadKind { uploaded, duplicate, failed, cancelled, notPdf, error }
+
+class UploadOutcome {
+  const UploadOutcome(this.kind, [this.failureCode]);
+
+  final UploadKind kind;
+  final String? failureCode;
+}

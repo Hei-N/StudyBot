@@ -199,6 +199,13 @@ class SQLiteLibraryRepository:
             ),
         )
 
+    def find_file_by_hash(self, source_id: str, content_hash: str) -> LibraryFile | None:
+        row = self._conn.execute(
+            "SELECT * FROM library_files WHERE source_id = ? AND content_hash = ? ORDER BY created_at LIMIT 1",
+            (source_id, content_hash),
+        ).fetchone()
+        return _row_to_file(row) if row is not None else None
+
     def list_pages(self, file_id: str) -> list[LibraryPage]:
         rows = self._conn.execute(
             "SELECT * FROM library_pages WHERE file_id = ? ORDER BY page_number", (file_id,)

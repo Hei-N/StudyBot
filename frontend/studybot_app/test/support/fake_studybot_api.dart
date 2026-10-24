@@ -504,4 +504,50 @@ class FakeStudyBotApi extends StudyBotApi {
     libraryFiles[sourceId] = [file];
     return PdfImportResult(outcome: nextImportOutcome, file: file);
   }
+
+  /// Uploaded files, and how the next upload behaves.
+  final List<LibraryFile> uploads = [];
+  final List<String> uploadedStagingIds = [];
+  String nextUploadOutcome = 'uploaded';
+  String? nextUploadFailure;
+
+  @override
+  Future<List<LibraryFile>> listUploads() async {
+    calls.add('listUploads');
+    _maybeThrow();
+    return List.of(uploads);
+  }
+
+  @override
+  Future<UploadPdfResult> uploadPdf({required String stagingId, required String displayName}) async {
+    calls.add('uploadPdf');
+    _maybeThrow();
+    uploadedStagingIds.add(stagingId);
+    if (nextUploadOutcome == 'failed') {
+      return UploadPdfResult(outcome: 'failed', file: null, failureCode: nextUploadFailure ?? 'invalid_pdf');
+    }
+    final existing = uploads.where((f) => f.displayName == displayName).firstOrNull;
+    if (nextUploadOutcome == 'duplicate' && existing != null) {
+      return UploadPdfResult(outcome: 'duplicate', file: existing, failureCode: null);
+    }
+    final file = LibraryFile(
+      id: 'upload-${uploads.length + 1}',
+      sourceId: 'uploads',
+      relativePath: displayName,
+      displayName: displayName,
+      processingState: 'ready',
+      failureCode: null,
+      pageCount: 2,
+      textPageCount: 2,
+    );
+    uploads.add(file);
+    return UploadPdfResult(outcome: 'uploaded', file: file, failureCode: null);
+  }
+
+  @override
+  Future<void> deleteUpload(String fileId) async {
+    calls.add('deleteUpload:$fileId');
+    _maybeThrow();
+    uploads.removeWhere((f) => f.id == fileId);
+  }
 }

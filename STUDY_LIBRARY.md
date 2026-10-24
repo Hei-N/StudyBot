@@ -3,7 +3,8 @@
 Foundation for managing study material (slides, notes, PDFs) as records StudyBot can
 track. It stores **metadata, access grants and page-level text of imported PDFs**. On macOS a user can
 authorize a folder (see [Folder authorization](#folder-authorization)) and import PDFs
-from it one at a time (see [PDF import](#pdf-import)). There is no scanner, OCR,
+from it one at a time (see [PDF import](#pdf-import)), or upload a PDF directly without a folder (see
+[Direct upload](#direct-upload)). There is no scanner, OCR,
 chunking, embedding or retrieval yet.
 
 ```
@@ -170,3 +171,39 @@ for the current content hash and processing version. Pages of `pending`, `indexi
 
 Chunking, embeddings and retrieval will build on `library_pages` later. Not implemented:
 OCR, PowerPoint, Word, folder scanning, citations.
+
+## Direct upload
+
+The simplest way to add a PDF: **Upload File** picks one PDF from anywhere on the Mac.
+No folder authorization is needed, and the Authorized Folder flow is unchanged.
+
+```
+Upload File → native picker (PDF only) → private staged copy → staging id
+  → engine: SHA-256 → extract → <data dir>/library_files/<uuid>.pdf + library_pages
+```
+
+- **StudyBot owns its copy.** The PDF is copied once into `<data dir>/library_files/` under a
+  random UUID name (mode 0600), never under the user's filename. The user can delete or move
+  the original and the library entry keeps working. The original is only read, never
+  modified, renamed, moved or deleted. The API never returns private names or paths: an
+  uploaded file's `relativePath` is its original filename.
+- **Ownership model.** Uploads belong to one app-owned source of kind `uploads` (schema v9),
+  created on first use. It has no locator on disk and no authorization, and it is hidden
+  from the folder list and cannot be removed. Each upload is a normal `LibraryFile` with
+  `relative_path = <uuid>.pdf` (its private name) and `display_name` = the original filename,
+  so pages, states, cascades and extraction are exactly the same as for folder files.
+  The alternative, a nullable `source_id`, would have meant rebuilding the file table.
+- **Identity is the content hash.** The same bytes as a current upload is a duplicate:
+  "This PDF is already in your library.", the existing record is reused and nothing is
+  re-extracted. The same filename with different bytes is a separate file. An older or
+  unfinished copy of the same bytes (for example after a parser upgrade) is replaced by the
+  fresh upload.
+- **Failure policy.** A failed upload (invalid or password-protected PDF, too large, storage
+  or database error) leaves nothing: no record, no pages, no private copy, no staged copy.
+  The user is told why and uploads again. Rows left failed or indexing by a crash, and private
+  files with no row, are removed at engine start.
+- **Delete.** Removing an upload deletes its record, its pages and StudyBot's private copy.
+  The original is never touched. Removing a folder source does not affect uploads.
+- **Same pipeline.** Hashing, `PdfExtractor`, limits, `processing_version`, the atomic page
+  transaction and the `ready` rules are shared with the folder import; only how the file is
+  acquired differs. Extraction runs off the SQLite thread.

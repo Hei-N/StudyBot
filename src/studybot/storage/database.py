@@ -19,7 +19,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Individual statements instead of executescript(), which commits implicitly
 # and would defeat the explicit transaction.
@@ -145,6 +145,27 @@ _LIBRARY_PAGE_STATEMENTS = [
     """,
 ]
 
+# v9 adds the 'uploads' source kind. SQLite cannot alter a CHECK constraint, so the (small)
+# sources table is rebuilt; its children keep referencing it by name.
+_UPLOADS_KIND_STATEMENTS = [
+    """
+    CREATE TABLE library_sources_new (
+        id TEXT PRIMARY KEY,
+        course_id TEXT REFERENCES courses(id) ON DELETE SET NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('local_folder', 'local_file', 'uploads')),
+        display_name TEXT NOT NULL,
+        locator TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (kind, locator)
+    )
+    """,
+    "INSERT INTO library_sources_new SELECT id, course_id, kind, display_name, locator, created_at, updated_at FROM library_sources",
+    "DROP TABLE library_sources",
+    "ALTER TABLE library_sources_new RENAME TO library_sources",
+    "CREATE INDEX idx_library_sources_course_id ON library_sources(course_id)",
+]
+
 
 def open_database(db_path: Path) -> sqlite3.Connection:
     """Open (creating if needed) the database at ``db_path`` and apply pending
@@ -202,6 +223,10 @@ def _migrate(connection: sqlite3.Connection) -> None:
         _migrate_v7_to_v8(connection)
         version = 8
 
+    if version == 8:
+        _migrate_v8_to_v9(connection)
+        version = 9
+
 
 def _create_fresh_schema(connection: sqlite3.Connection) -> None:
     """Create the current schema directly for a new database."""
@@ -214,11 +239,12 @@ def _create_fresh_schema(connection: sqlite3.Connection) -> None:
             *_LIBRARY_PAGE_STATEMENTS,
         ):
             connection.execute(statement)
-        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        connection.execute("PRAGMA user_version = 8")
         connection.commit()
     except BaseException:
         connection.rollback()
         raise
+    _migrate_v8_to_v9(connection)  # the same step an upgraded database takes
 
 
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
@@ -371,3 +397,26 @@ def _migrate_v7_to_v8(connection: sqlite3.Connection) -> None:
     except BaseException:
         connection.rollback()
         raise
+
+
+def _migrate_v8_to_v9(connection: sqlite3.Connection) -> None:
+    """Allow the ``uploads`` source kind (rebuilds ``library_sources``). One transaction.
+
+    Foreign keys are switched off for the rebuild, as SQLite requires, and the result is
+    verified before commit.
+    """
+    logger.debug("Migrating chat database schema from v8 to v9")
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.execute("BEGIN")
+        for statement in _UPLOADS_KIND_STATEMENTS:
+            connection.execute(statement)
+        if connection.execute("PRAGMA foreign_key_check").fetchall():
+            raise sqlite3.IntegrityError("foreign key check failed after rebuilding library_sources")
+        connection.execute("PRAGMA user_version = 9")
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")

@@ -417,6 +417,10 @@ class LibraryRepository(Protocol):
         """``save_file`` plus replacing all of the file's pages, in one transaction."""
         ...
 
+    def find_file_by_hash(self, source_id: str, content_hash: str) -> LibraryFile | None:
+        """The file in the source with this content hash, if any."""
+        ...
+
     def list_pages(self, file_id: str) -> list[LibraryPage]:
         """The file's pages in page order."""
         ...

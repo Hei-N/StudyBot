@@ -48,6 +48,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Engine unavailable'), findsOneWidget);
+    expect(find.text('Open Study Library'), findsNothing); // the engine itself is down
     expect(find.byType(AppShell), findsNothing);
   });
 
@@ -84,6 +85,46 @@ void main() {
 
     expect(find.text('Ollama is not running'), findsOneWidget);
     expect(find.text('Retry'), findsOneWidget);
+    expect(find.text('Open Study Library'), findsOneWidget);
+    expect(find.byType(AppShell), findsNothing);
+  });
+
+  testWidgets('the Study Library opens even while Ollama is not running', (tester) async {
+    final api = FakeStudyBotApi();
+    final container = ProviderContainer(
+      overrides: [
+        connectionConfigProvider.overrideWith(
+          () => _PreconfiguredConnectionNotifier(const ConnectionConfig(baseUrl: 'http://127.0.0.1:9', token: 't')),
+        ),
+        studyBotApiProvider.overrideWithValue(api),
+        chatWebSocketClientProvider.overrideWithValue(FakeChatWebSocketClient()),
+        engineHealthProvider.overrideWith(
+          () => StaticEngineHealthNotifier(
+            health: const EngineHealth(
+              apiVersion: '1',
+              status: 'ok',
+              provider: 'ollama',
+              model: 'qwen3:4b',
+              providerReachable: false,
+              modelAvailable: null,
+            ),
+          ),
+        ),
+      ],
+      retry: kNoRetry,
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: const MaterialApp(home: AppGate())),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Open Study Library'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Study Library'), findsOneWidget);
+    expect(find.text('Upload File'), findsOneWidget);
     expect(find.byType(AppShell), findsNothing);
   });
 

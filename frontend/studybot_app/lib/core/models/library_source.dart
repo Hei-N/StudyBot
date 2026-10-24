@@ -107,3 +107,21 @@ class PdfImportResult {
   final String outcome;
   final LibraryFile file;
 }
+
+/// The outcome of one direct upload: `uploaded`, `duplicate` or `failed`.
+class UploadPdfResult {
+  const UploadPdfResult({required this.outcome, required this.file, required this.failureCode});
+
+  factory UploadPdfResult.fromJson(Map<String, dynamic> json) {
+    final file = json['file'] as Map<String, dynamic>?;
+    return UploadPdfResult(
+      outcome: json['outcome'] as String,
+      file: file == null ? null : LibraryFile.fromJson(file),
+      failureCode: json['failureCode'] as String?,
+    );
+  }
+
+  final String outcome;
+  final LibraryFile? file;
+  final String? failureCode;
+}

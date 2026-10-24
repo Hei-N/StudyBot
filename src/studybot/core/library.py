@@ -24,6 +24,9 @@ FAILURE_CONTENT_CHANGED = "content_changed_during_processing"
 
 #: Opaque, platform-specific access grants stored per source. Python never
 #: interprets the payload; only the platform's native layer does.
+UPLOADS_LOCATOR = "studybot:uploads"  # a label, not a filesystem path
+UPLOADS_DISPLAY_NAME = "Uploaded files"
+
 AUTHORIZATION_PLATFORMS = frozenset({"macos"})
 AUTHORIZATION_KINDS = frozenset({"security_scoped_bookmark"})
 MAX_AUTHORIZATION_BYTES = 1024 * 1024
@@ -34,6 +37,8 @@ class LibrarySourceKind(str, Enum):
 
     LOCAL_FOLDER = "local_folder"
     LOCAL_FILE = "local_file"
+    #: The app-owned source for directly uploaded files; there is one per database.
+    UPLOADS = "uploads"
 
 
 class LibraryFileState(str, Enum):

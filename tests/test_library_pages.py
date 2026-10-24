@@ -56,8 +56,8 @@ def import_pages(library, source, pages, digest=H1, version=V1, path="a.pdf"):
 # --- schema --------------------------------------------------------------------------
 
 
-def test_fresh_v8_database_has_pages_and_extraction_columns(connection):
-    assert get_schema_version(connection) == SCHEMA_VERSION == 8
+def test_fresh_database_has_pages_and_extraction_columns(connection):
+    assert get_schema_version(connection) == SCHEMA_VERSION == 9
     columns = {r["name"] for r in connection.execute("PRAGMA table_info(library_files)")}
     assert {"page_count", "text_page_count", "processing_version"} <= columns
     page_columns = {r["name"]: r for r in connection.execute("PRAGMA table_info(library_pages)")}
@@ -117,13 +117,13 @@ def _build_old_database(path, version):
 
 
 @pytest.mark.parametrize("old_version", [7, 6])
-def test_old_databases_migrate_to_v8_preserving_everything(tmp_path, old_version):
+def test_old_databases_migrate_to_current_preserving_everything(tmp_path, old_version):
     db_path = tmp_path / "studybot.db"
     _build_old_database(db_path, old_version).close()
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 8
+        assert get_schema_version(connection) == 9
         assert connection.execute("SELECT summary FROM learning_memories").fetchone()[0] == "s"
         assert connection.execute("SELECT content FROM messages").fetchone()[0] == "hi"
         file = connection.execute("SELECT * FROM library_files").fetchone()
@@ -136,11 +136,11 @@ def test_old_databases_migrate_to_v8_preserving_everything(tmp_path, old_version
     finally:
         connection.close()
     again = open_database(db_path)  # exactly once
-    assert get_schema_version(again) == 8
+    assert get_schema_version(again) == 9
     again.close()
 
 
-def test_v5_database_migrates_to_v8(tmp_path):
+def test_v5_database_migrates_to_current(tmp_path):
     from tests.test_library_schema import _create_v5_database, _seed_v5
 
     db_path = tmp_path / "studybot.db"
@@ -150,7 +150,7 @@ def test_v5_database_migrates_to_v8(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 8
+        assert get_schema_version(connection) == 9
         tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {"library_sources", "library_files", "library_source_authorizations", "library_pages"} <= tables
         assert connection.execute("SELECT summary FROM learning_memories").fetchone()[0] == "sum"

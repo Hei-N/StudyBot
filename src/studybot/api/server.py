@@ -29,6 +29,7 @@ from studybot.app import StudyBotApp
 from studybot.config.settings import Settings
 from studybot.core.ingest_staging import StagingArea
 from studybot.core.pdf_extractor import PdfExtractor
+from studybot.core.upload_store import UploadStore
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +55,16 @@ def create_app(
         staging.cleanup_orphans()
         # One worker: PDF hashing and extraction are bounded and never run on the SQLite thread.
         pdf_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studybot-pdf")
+        uploads = UploadStore(resolved_settings.data_dir / "library_files")
+        library = studybot_app.library
+        for stored_name in await app.state.engine.call(library.purge_failed_uploads):  # left over from a crash
+            uploads.discard(stored_name)
+        uploads.cleanup_orphans(await app.state.engine.call(library.uploaded_file_names))
         app.state.staging = staging
-        app.state.pdf_importer = PdfImporter(app.state.engine, staging, pdf_extractor or PdfExtractor(), pdf_executor)
+        app.state.uploads = uploads
+        app.state.pdf_importer = PdfImporter(
+            app.state.engine, staging, pdf_extractor or PdfExtractor(), pdf_executor, uploads
+        )
         app.state.api_token = resolved_token
         logger.debug("API server ready (provider=%r)", resolved_settings.model_provider)
         try:

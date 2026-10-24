@@ -113,11 +113,12 @@ def authorization_to_out(authorization: LibrarySourceAuthorization) -> Authoriza
     )
 
 
-def library_file_to_out(file: LibraryFile) -> LibraryFileOut:
+def library_file_to_out(file: LibraryFile, *, hide_path: bool = False) -> LibraryFileOut:
+    """``hide_path`` shows the original filename instead of the private stored name (uploads)."""
     return LibraryFileOut(
         id=file.id,
         source_id=file.source_id,
-        relative_path=file.relative_path,
+        relative_path=file.display_name if hide_path else file.relative_path,
         display_name=file.display_name,
         extension=file.extension,
         size_bytes=file.size_bytes,

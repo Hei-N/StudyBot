@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_spacing.dart';
 import '../status/status_providers.dart';
+import '../library/library_view.dart';
 import 'connection_setup_view.dart';
 
 /// Shown when a connection is configured but the engine can't be reached
@@ -26,7 +27,10 @@ class EngineUnavailableView extends ConsumerWidget {
             children: [
               Icon(Icons.cloud_off_outlined, size: 36, color: theme.colorScheme.onSurfaceVariant),
               const SizedBox(height: AppSpacing.md),
-              Text(modelServerDown ? 'Ollama is not running' : 'Engine unavailable', style: theme.textTheme.titleMedium),
+              Text(
+                modelServerDown ? 'Ollama is not running' : 'Engine unavailable',
+                style: theme.textTheme.titleMedium,
+              ),
               const SizedBox(height: AppSpacing.xs),
               Text(
                 modelServerDown
@@ -40,11 +44,18 @@ class EngineUnavailableView extends ConsumerWidget {
                 onPressed: () => ref.read(engineHealthProvider.notifier).refresh(),
                 child: const Text('Retry'),
               ),
+              if (modelServerDown) ...[
+                // The engine is up; only answering questions needs Ollama, so the library stays usable.
+                const SizedBox(height: AppSpacing.sm),
+                OutlinedButton(
+                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LibraryView())),
+                  child: const Text('Open Study Library'),
+                ),
+              ],
               const SizedBox(height: AppSpacing.sm),
               TextButton(
-                onPressed: () => Navigator.of(
-                  context,
-                ).push(MaterialPageRoute(builder: (_) => const ConnectionSetupView())),
+                onPressed: () =>
+                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ConnectionSetupView())),
                 child: const Text('Edit connection…'),
               ),
             ],

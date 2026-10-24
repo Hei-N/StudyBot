@@ -40,6 +40,12 @@ final class FolderAuthorization {
     let sizeBytes: Int
   }
 
+  struct StagedUpload {
+    let stagingId: String
+    let displayName: String
+    let sizeBytes: Int
+  }
+
   private static let maxPdfBytes = 512 * 1024 * 1024
   private static let bookmarkOptions: URL.BookmarkCreationOptions = [.withSecurityScope, .securityScopeAllowOnlyReadAccess]
   private static let probeByteLimit = 16
@@ -121,12 +127,46 @@ final class FolderAuthorization {
     let source = selected.resolvingSymlinksInPath()
     guard source.path.hasPrefix(rootPath + "/") else { throw AuthorizationFailure.outsideSource }
 
+    let copied = try Self.copyPdfToStaging(source, stagingDirectory: stagingDirectory)
+    let relative = String(source.path.dropFirst(rootPath.count + 1))
+    return StagedPdf(
+      stagingId: copied.id, relativePath: relative, displayName: source.lastPathComponent, sizeBytes: copied.size)
+  }
+
+  /// Lets the user pick one PDF anywhere and stages a private copy of it. No folder
+  /// authorization is involved: the panel grants access to exactly the chosen file.
+  /// Returns nil if the user cancels. Never writes to the original.
+  @MainActor
+  func pickPdfForUpload(stagingDirectory: String) throws -> StagedUpload? {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = false
+    panel.allowedContentTypes = [.pdf]
+    panel.message = "Choose a PDF to add to StudyBot."
+    panel.prompt = "Upload"
+    guard panel.runModal() == .OK, let url = panel.url else { return nil }
+    return try stageUpload(selected: url, stagingDirectory: stagingDirectory)
+  }
+
+  /// Copies the user's chosen PDF into staging, holding temporary access only while reading it.
+  func stageUpload(selected: URL, stagingDirectory: String) throws -> StagedUpload {
+    let accessing = selected.startAccessingSecurityScopedResource()
+    defer { if accessing { selected.stopAccessingSecurityScopedResource() } }
+    let source = selected.resolvingSymlinksInPath()
+    let copied = try Self.copyPdfToStaging(source, stagingDirectory: stagingDirectory)
+    return StagedUpload(stagingId: copied.id, displayName: source.lastPathComponent, sizeBytes: copied.size)
+  }
+
+  /// Validates `source` as a regular PDF within the size limit and copies it (read-only to
+  /// others) to `<stagingDirectory>/<uuid>.pdf`. A failed copy leaves nothing behind.
+  private static func copyPdfToStaging(_ source: URL, stagingDirectory: String) throws -> (id: String, size: Int) {
     let values = try? source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
     guard values?.isRegularFile == true, source.pathExtension.lowercased() == "pdf",
-      UTType(filenameExtension: "pdf")?.conforms(to: .pdf) == true, Self.hasPdfHeader(source)
+      UTType(filenameExtension: "pdf")?.conforms(to: .pdf) == true, hasPdfHeader(source)
     else { throw AuthorizationFailure.notPdf }
     let size = values?.fileSize ?? 0
-    guard size <= Self.maxPdfBytes else { throw AuthorizationFailure.tooLarge }
+    guard size <= maxPdfBytes else { throw AuthorizationFailure.tooLarge }
 
     let directory = URL(fileURLWithPath: stagingDirectory, isDirectory: true)
     let id = UUID().uuidString.lowercased()
@@ -140,8 +180,7 @@ final class FolderAuthorization {
       try? FileManager.default.removeItem(at: destination)
       throw AuthorizationFailure.stagingFailed
     }
-    let relative = String(source.path.dropFirst(rootPath.count + 1))
-    return StagedPdf(stagingId: id, relativePath: relative, displayName: source.lastPathComponent, sizeBytes: size)
+    return (id, size)
   }
 
   private static func hasPdfHeader(_ url: URL) -> Bool {
@@ -223,6 +262,21 @@ final class LibraryAuthorizationChannel {
             result([
               "stagingId": staged.stagingId,
               "relativePath": staged.relativePath,
+              "displayName": staged.displayName,
+              "sizeBytes": staged.sizeBytes,
+            ])
+          } catch { result(Self.error(error)) }
+        }
+      case "pickPdfForUpload":
+        guard let directory = arguments?["stagingDirectory"] as? String else {
+          throw AuthorizationFailure.invalidArguments
+        }
+        DispatchQueue.main.async {
+          do {
+            guard let staged = try self.authorization.pickPdfForUpload(stagingDirectory: directory)
+            else { return result(nil) }
+            result([
+              "stagingId": staged.stagingId,
               "displayName": staged.displayName,
               "sizeBytes": staged.sizeBytes,
             ])
