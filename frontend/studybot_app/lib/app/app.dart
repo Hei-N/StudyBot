@@ -6,6 +6,7 @@ import '../features/connection/connection_providers.dart';
 import '../features/connection/connection_setup_view.dart';
 import '../features/connection/engine_starting_view.dart';
 import '../features/connection/managed_backend.dart';
+import '../features/connection/ollama_startup.dart';
 import '../features/connection/engine_unavailable_view.dart';
 import '../features/settings/theme_providers.dart';
 import '../features/shell/app_shell.dart';
@@ -37,6 +38,8 @@ class AppGate extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Started together with the engine so Ollama warms up while the engine starts.
+    final ollama = ref.watch(ollamaStartupProvider);
     if (ref.watch(managedBackendEnabledProvider)) {
       final backend = ref.watch(managedBackendProvider);
       if (backend.isLoading) return const EngineStartingView();
@@ -46,6 +49,11 @@ class AppGate extends ConsumerWidget {
     final config = ref.watch(connectionConfigProvider);
     if (!config.isConfigured) {
       return const ConnectionSetupView();
+    }
+
+    // Make sure Ollama is answering before the engine is judged unavailable.
+    if (ollama.isLoading) {
+      return const EngineStartingView(message: 'Starting Ollama…', offerLibrary: true);
     }
 
     final health = ref.watch(engineHealthProvider);

@@ -41,7 +41,8 @@ accounts. The API is a local bridge for one desktop app, not a network service.
 - macOS
 - Python 3.12 or newer
 - [Ollama](https://ollama.com), only for real model responses (the `mock`
-  provider needs nothing)
+  provider needs nothing). For the macOS app, install the Ollama desktop app
+  (`brew install --cask --no-binaries ollama-app`); StudyBot opens it for you
 - Flutter, only for the desktop app
 
 ## Setup
@@ -501,6 +502,21 @@ failed or abandoned one stores only the user row. Nothing is written per token.
 A failed model call leaves your message in the database so you can retry; no
 synthetic error message is ever inserted into a chat, and mode changes never
 appear in history either.
+
+### Ollama in the macOS app
+
+On launch the app checks `http://127.0.0.1:11434`. If Ollama isn't answering, it asks macOS to
+open the **Ollama desktop app** hidden (menu bar only, no window), waits up to 60 seconds for
+the API, and continues on its own. A running Ollama is left alone, and StudyBot never stops
+Ollama when it quits, since other apps may use it. The installed app stays sandboxed: it only
+asks macOS to open another app and never runs an Ollama program itself. If the Ollama app is
+missing or doesn't start, the app says so with a Retry button, and the Study Library still
+opens. A non-default `STUDYBOT_OLLAMA_HOST` is never launched locally.
+
+Ollama.app registers its own background item that can start it at login. StudyBot doesn't need
+it. To turn it off: System Settings → General → Login Items & Extensions → "Allow in the
+Background" → switch off Ollama. Never use `brew uninstall --zap ollama-app`: it deletes
+`~/.ollama` (your models).
 
 ### Study library (foundation only)
 

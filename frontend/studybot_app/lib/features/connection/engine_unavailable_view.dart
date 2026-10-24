@@ -3,8 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_spacing.dart';
 import '../status/status_providers.dart';
+import '../../core/ollama/ollama_lifecycle.dart';
 import '../library/library_view.dart';
 import 'connection_setup_view.dart';
+import 'ollama_startup.dart';
 
 /// Shown when a connection is configured but the engine can't be reached
 /// (stopped, restarting, wrong token). Offers Retry first and "Edit
@@ -18,6 +20,7 @@ class EngineUnavailableView extends ConsumerWidget {
     final theme = Theme.of(context);
     final health = ref.watch(engineHealthProvider).value;
     final modelServerDown = health != null && health.providerReachable == false;
+    final startup = ref.watch(ollamaStartupProvider).value;
     return Scaffold(
       body: Center(
         child: Padding(
@@ -33,15 +36,15 @@ class EngineUnavailableView extends ConsumerWidget {
               ),
               const SizedBox(height: AppSpacing.xs),
               Text(
-                modelServerDown
-                    ? 'Start Ollama, then tap Retry. Study Bot needs it to answer.'
-                    : 'Study Bot can\'t reach the engine right now.',
+                modelServerDown ? _ollamaMessage(startup) : 'Study Bot can\'t reach the engine right now.',
                 style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: AppSpacing.lg),
               FilledButton(
-                onPressed: () => ref.read(engineHealthProvider.notifier).refresh(),
+                onPressed: () => modelServerDown
+                    ? ref.read(ollamaStartupProvider.notifier).retry()
+                    : ref.read(engineHealthProvider.notifier).refresh(),
                 child: const Text('Retry'),
               ),
               if (modelServerDown) ...[
@@ -65,3 +68,10 @@ class EngineUnavailableView extends ConsumerWidget {
     );
   }
 }
+
+String _ollamaMessage(OllamaStartup? startup) => switch (startup) {
+  OllamaStartup.notInstalled => "Study Bot couldn't find the Ollama app. Install it from ollama.com, then tap Retry.",
+  OllamaStartup.launchFailed ||
+  OllamaStartup.timedOut => "Study Bot couldn't start Ollama. Open Ollama yourself, then tap Retry.",
+  _ => 'Start Ollama, then tap Retry. Study Bot needs it to answer.',
+};

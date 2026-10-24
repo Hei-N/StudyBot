@@ -3,6 +3,7 @@ import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
   private let libraryAuthorization = LibraryAuthorizationChannel()
+  private let ollamaLauncher = OllamaLauncherChannel()
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -12,6 +13,7 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     libraryAuthorization.register(with: flutterViewController.engine.binaryMessenger)
+    ollamaLauncher.register(with: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
   }

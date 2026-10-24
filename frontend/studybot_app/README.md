@@ -56,6 +56,14 @@ The packaged app bundles its own engine and does not use this exception; see
 prefers the bundled engine and only falls back to the repository `.venv` in
 non-release builds.
 
+## Ollama startup
+
+`lib/core/ollama/ollama_lifecycle.dart` checks Ollama and, if it is down, opens the Ollama
+desktop app once through LaunchServices (`macos/Runner/OllamaLauncher.swift`, channel
+`studybot/ollama_launcher`, no entitlements needed) with the app's own `hidden` argument.
+Polling is bounded, concurrent checks share one launch, and Ollama is never stopped.
+`--dart-define=STUDYBOT_AUTOSTART=false` turns this off together with the engine autostart.
+
 ## Message rendering
 
 Assistant messages render as GitHub-flavored Markdown with LaTeX math
