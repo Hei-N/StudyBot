@@ -19,7 +19,7 @@ dependencies = [
     # at import time, which fails under `pytest -W error`. Revisit once starlette
     # catches up.
     "anyio==4.5.2",
-    "pymupdf>=1.24",
+    "pypdfium2>=5",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +27,8 @@ dev = [
     "pytest>=8.0",
     # Needed only for Starlette's `TestClient` in tests.
     "httpx2",
+    # Only to write encrypted PDFs for the password-protected-PDF tests.
+    "pypdf>=5",
 ]
 # Needed only to build the standalone macOS app (scripts/build_macos_app.sh).
 build = ["pyinstaller>=6.17"]

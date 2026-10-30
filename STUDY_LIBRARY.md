@@ -133,7 +133,7 @@ source. There is no folder scan or watcher.
 ```
 Import PDF → native picker (PDF only) → must be inside the authorized folder
   → private copy in <data dir>/ingest_staging/<uuid>.pdf → staging id
-  → engine: SHA-256 → LibraryFile → PdfExtractor (PyMuPDF) → library_pages
+  → engine: SHA-256 → LibraryFile → PdfExtractor (PDFium) → library_pages
 ```
 
 - **File-access broker.** The native layer, which holds the security-scoped access, checks
@@ -146,13 +146,14 @@ Import PDF → native picker (PDF only) → must be inside the authorized folder
   rejects anything else (separators, `..`, symlinks, directories, missing files). The staged
   copy is deleted after every import outcome. Only old files with the exact staging name
   are cleaned up at engine start (24 hours), and nothing in a source is ever touched.
-- **Extraction.** `PdfExtractor` returns the text of each page as PyMuPDF produced it
-  (line endings normalized, nothing rewritten, headers and footers kept). Pages are
+- **Extraction.** `PdfExtractor` returns the text of each page as PDFium (`pypdfium2`, BSD-3-Clause
+  or Apache-2.0) produced it (line endings normalized, nothing rewritten, headers and footers
+  kept). PDFium is not thread-safe, so extraction runs on one worker thread. Pages are
   1-based and every page has a row, including empty ones. A valid image-only PDF becomes
   `ready` with `text_page_count = 0`; there is no OCR. A password-protected PDF fails with
   `password_required`, a bad file with `invalid_pdf`. Limits (512 MiB file, 5000 pages,
   64 MiB of text) fail with a code.
-- **Incremental.** Content identity is the hash plus `processing_version` (`pdf_text_v1`).
+- **Incremental.** Content identity is the hash plus `processing_version` (`pdf_text_v2`).
   Importing the same bytes again with the current version is skipped: no extraction, same
   file id, pages and `indexed_at`. A modification time alone changes nothing. Changed bytes
   or an older processing version re-extract into the same `LibraryFile`.
@@ -207,3 +208,12 @@ Upload File → native picker (PDF only) → private staged copy → staging id
 - **Same pipeline.** Hashing, `PdfExtractor`, limits, `processing_version`, the atomic page
   transaction and the `ready` rules are shared with the folder import; only how the file is
   acquired differs. Extraction runs off the SQLite thread.
+
+## Extraction engine and licensing
+
+Extraction uses `pypdfium2` (PDFium), which is BSD-3-Clause / Apache-2.0 licensed, so it places no
+copyleft obligation on StudyBot. An earlier version used PyMuPDF, which is AGPL-3.0 (or a paid
+commercial license), and was replaced for that reason. Switching engines bumped
+`processing_version` from `pdf_text_v1` to `pdf_text_v2`. Files already stored as `v1` keep
+their pages (still valid evidence) and are re-extracted if the same file is uploaded or
+imported again. Test PDFs are built in `tests/pdf_helpers.py` without any PDF library.

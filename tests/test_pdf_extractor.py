@@ -1,7 +1,7 @@
 import pytest
 
 from studybot.core import pdf_extractor
-from studybot.core.pdf_extractor import PDF_PROCESSING_VERSION, PdfExtractionError, PdfExtractor, load_pymupdf
+from studybot.core.pdf_extractor import PDF_PROCESSING_VERSION, PdfExtractionError, PdfExtractor
 from tests.pdf_helpers import make_pdf
 
 
@@ -73,10 +73,8 @@ def test_invalid_pdf_fails_with_a_code(tmp_path, content):
 
 
 def test_a_png_renamed_to_pdf_is_rejected(tmp_path):
-    pymupdf = load_pymupdf()
-    pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 8, 8), False)
     path = tmp_path / "image.pdf"
-    path.write_bytes(pixmap.tobytes("png"))
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(64))
 
     with pytest.raises(PdfExtractionError) as error:
         extract(path)
@@ -99,7 +97,7 @@ def test_limits_fail_with_codes(tmp_path, monkeypatch):
     with pytest.raises(PdfExtractionError) as pages:
         extract(path)
     monkeypatch.setattr(pdf_extractor, "MAX_PDF_PAGES", 5000)
-    monkeypatch.setattr(pdf_extractor, "MAX_EXTRACTED_TEXT_BYTES", 3)
+    monkeypatch.setattr(pdf_extractor, "MAX_EXTRACTED_TEXT_BYTES", 2)
     with pytest.raises(PdfExtractionError) as text:
         extract(path)
     monkeypatch.setattr(pdf_extractor, "MAX_EXTRACTED_TEXT_BYTES", 64 * 1024 * 1024)
@@ -111,7 +109,7 @@ def test_limits_fail_with_codes(tmp_path, monkeypatch):
 
 
 def test_extractor_reads_only_the_given_file_and_has_a_version(tmp_path):
-    assert PdfExtractor.processing_version == PDF_PROCESSING_VERSION == "pdf_text_v1"
+    assert PdfExtractor.processing_version == PDF_PROCESSING_VERSION == "pdf_text_v2"
     import inspect
 
     source = inspect.getsource(pdf_extractor)

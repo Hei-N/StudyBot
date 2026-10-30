@@ -7,14 +7,13 @@ PDF engine produced it. Image-only pages yield empty text; there is no OCR.
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
 from studybot.core.exceptions import StudyBotError
 
 #: Bump when extraction output changes so existing files are reprocessed.
-PDF_PROCESSING_VERSION = "pdf_text_v1"
+PDF_PROCESSING_VERSION = "pdf_text_v2"  # v2: extracted with PDFium (v1 used another engine)
 
 MAX_PDF_BYTES = 512 * 1024 * 1024
 MAX_PDF_PAGES = 5000
@@ -29,16 +28,11 @@ TEXT_TOO_LARGE = "text_too_large"
 EXTRACTION_FAILED = "extraction_failed"
 
 
-def load_pymupdf():
-    """Import PyMuPDF lazily (only PDF imports need the native engine).
+def load_pdfium():
+    """Import pypdfium2 lazily; only PDF imports need the native PDFium library."""
+    import pypdfium2
 
-    Its generated bindings emit a DeprecationWarning on import under Python 3.14,
-    which would abort the import when warnings are errors, so that one warning is ignored.
-    """
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="builtin type .* has no __module__ attribute", category=DeprecationWarning)
-        import pymupdf
-    return pymupdf
+    return pypdfium2
 
 
 class PdfExtractionError(StudyBotError):
@@ -66,34 +60,47 @@ class PdfExtractionResult:
 
 
 class PdfExtractor:
-    """Extracts page text with PyMuPDF."""
+    """Extracts page text with PDFium (``pypdfium2``).
+
+    PDFium is not thread-safe; StudyBot runs extractions on a single worker thread.
+    """
 
     processing_version = PDF_PROCESSING_VERSION
 
     def extract(self, path: Path) -> PdfExtractionResult:
         if path.stat().st_size > MAX_PDF_BYTES:
             raise PdfExtractionError(FILE_TOO_LARGE)
-        pymupdf = load_pymupdf()
+        pdfium = load_pdfium()
         try:
-            document = pymupdf.open(path, filetype="pdf")
+            document = pdfium.PdfDocument(str(path))
+        except pdfium.PdfiumError as error:
+            raise PdfExtractionError(
+                PASSWORD_REQUIRED if error.err_code == pdfium.raw.FPDF_ERR_PASSWORD else INVALID_PDF
+            ) from None
         except Exception:
             raise PdfExtractionError(INVALID_PDF) from None
-        with document:
-            if not document.is_pdf:
-                raise PdfExtractionError(INVALID_PDF)
-            if document.needs_pass:
-                raise PdfExtractionError(PASSWORD_REQUIRED)
-            if document.page_count > MAX_PDF_PAGES:
+        try:
+            if len(document) > MAX_PDF_PAGES:
                 raise PdfExtractionError(TOO_MANY_PAGES)
             return self._extract_pages(document)
+        finally:
+            document.close()
 
     @staticmethod
     def _extract_pages(document) -> PdfExtractionResult:
         pages: list[PdfPage] = []
         total_bytes = 0
-        for index in range(document.page_count):
+        for index in range(len(document)):
             try:
-                text = document.load_page(index).get_text("text")
+                page = document[index]
+                try:
+                    textpage = page.get_textpage()
+                    try:
+                        text = textpage.get_text_range()
+                    finally:
+                        textpage.close()
+                finally:
+                    page.close()
             except Exception:
                 raise PdfExtractionError(EXTRACTION_FAILED) from None
             text = text.replace("\r\n", "\n").replace("\r", "\n")

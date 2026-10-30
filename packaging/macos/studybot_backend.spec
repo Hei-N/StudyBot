@@ -13,14 +13,15 @@ hidden_imports = (
     + collect_submodules("websockets")
 )
 
-# PyMuPDF ships its native MuPDF libraries as data files next to the Python package.
-mupdf_datas, mupdf_binaries, mupdf_imports = collect_all("pymupdf")
+# pypdfium2 ships the native PDFium library in pypdfium2_raw.
+pdfium_datas, pdfium_binaries, pdfium_imports = collect_all("pypdfium2")
+raw_datas, raw_binaries, raw_imports = collect_all("pypdfium2_raw")
 
 analysis = Analysis(
     [str(here / "backend_entry.py")],
-    binaries=mupdf_binaries,
-    datas=mupdf_datas,
-    hiddenimports=hidden_imports + mupdf_imports,
+    binaries=pdfium_binaries + raw_binaries,
+    datas=pdfium_datas + raw_datas,
+    hiddenimports=hidden_imports + pdfium_imports + raw_imports,
     excludes=["tkinter", "pytest", "pip", "setuptools", "pyinstaller", "PyInstaller"],
 )
 archive = PYZ(analysis.pure)

@@ -116,7 +116,7 @@ def test_import_extracts_pages_and_marks_the_file_ready(client, source, tmp_path
     assert body["outcome"] == "imported"
     file = body["file"]
     assert file["processingState"] == "ready" and file["pageCount"] == 2 and file["textPageCount"] == 2
-    assert file["processingVersion"] == "pdf_text_v1" and file["indexedAt"] and file["failureCode"] is None
+    assert file["processingVersion"] == "pdf_text_v2" and file["indexedAt"] and file["failureCode"] is None
     assert file["relativePath"] == "Week 2/Lecture.pdf" and file["displayName"] == "Lecture.pdf"
     rows = pages_in_db(client, file["id"])
     assert [n for n, _ in rows] == [1, 2] and "rho = m / V" in rows[0][1] and "F = ma" in rows[1][1]
@@ -203,7 +203,7 @@ def test_a_new_processing_version_forces_reprocessing(tmp_path):
         pdf_bytes = (tmp_path / "ingest_staging" / f"{staged}.pdf").read_bytes()
         first = do_import(client, sid, staged, path="a.pdf").json()
 
-    upgraded = SpyExtractor(version="pdf_text_v2")
+    upgraded = SpyExtractor(version="pdf_text_v3")
     with make_client(tmp_path, upgraded) as client:
         client.data_dir = tmp_path
         same_bytes = str(uuid.uuid4())
@@ -213,7 +213,7 @@ def test_a_new_processing_version_forces_reprocessing(tmp_path):
 
     assert second["outcome"] == "imported" and upgraded.calls == 1  # same hash, new version: reprocessed
     assert second["file"]["id"] == first["file"]["id"]
-    assert second["file"]["processingVersion"] == "pdf_text_v2"
+    assert second["file"]["processingVersion"] == "pdf_text_v3"
     assert second["file"]["indexedAt"] != first["file"]["indexedAt"]
     assert len(rows) == 2
 

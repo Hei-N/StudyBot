@@ -233,11 +233,11 @@ def test_an_old_processing_version_copy_is_replaced_by_a_fresh_upload(tmp_path):
         client.data_dir = tmp_path
         first = upload(client, original).json()["file"]
         [old_copy] = private_files(client)
-    with make_client(tmp_path, SpyExtractor(version="pdf_text_v2")) as client:
+    with make_client(tmp_path, SpyExtractor(version="pdf_text_v3")) as client:
         client.data_dir = tmp_path
         second = upload(client, original).json()
 
-        assert second["outcome"] == "uploaded" and second["file"]["processingVersion"] == "pdf_text_v2"
+        assert second["outcome"] == "uploaded" and second["file"]["processingVersion"] == "pdf_text_v3"
         assert second["file"]["id"] != first["id"]
         assert not old_copy.exists() and len(private_files(client)) == 1
         assert len(client.get("/api/v1/library/uploads", headers=HEADERS).json()) == 1
