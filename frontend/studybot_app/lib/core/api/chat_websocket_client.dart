@@ -94,9 +94,20 @@ class ChatWebSocketClient {
   }
 
   /// Sends one `send_message` frame, connecting first if necessary.
-  Future<void> sendMessage({required String chatId, required String content}) async {
+  Future<void> sendMessage({
+    required String chatId,
+    required String content,
+    List<String> attachmentIds = const [],
+  }) async {
     await _ensureConnected();
-    _channel!.sink.add(jsonEncode({'type': 'send_message', 'chat_id': chatId, 'content': content}));
+    _channel!.sink.add(
+      jsonEncode({
+        'type': 'send_message',
+        'chat_id': chatId,
+        'content': content,
+        if (attachmentIds.isNotEmpty) 'attachment_ids': attachmentIds,
+      }),
+    );
   }
 
   Future<void> close() async {

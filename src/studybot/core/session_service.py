@@ -385,7 +385,11 @@ class SessionService:
         )
 
     def _persist_new_messages_for(
-        self, chat_id: str, session: ChatSession, messages: Sequence[Message]
+        self,
+        chat_id: str,
+        session: ChatSession,
+        messages: Sequence[Message],
+        attachment_file_ids: Sequence[str] = (),
     ) -> ChatSession:
         """Append messages to a persisted chat, titling it from the first user
         message if it has no title yet.
@@ -393,8 +397,14 @@ class SessionService:
         if not messages:
             return session
 
+        pending_attachments = tuple(attachment_file_ids)
         for message in messages:
-            self._repository.append_message(chat_id, message.role, message.content)
+            # Attachments belong to the user message, saved in the same transaction as it.
+            if message.role is Role.USER and pending_attachments:
+                self._repository.append_message(chat_id, message.role, message.content, pending_attachments)
+                pending_attachments = ()
+            else:
+                self._repository.append_message(chat_id, message.role, message.content)
             if message.role is Role.USER and session.title is None:
                 session = self._repository.rename_chat(chat_id, generate_title(message.content))
 
@@ -492,8 +502,17 @@ class SessionService:
         finally:
             lock.release()
 
-    def send_streaming_to_chat(self, chat_id: str, user_input: str) -> Iterator[str]:
+    def attachment_file_ids(self, chat_id: str) -> list[str]:
+        """Ids of the files attached to the chat's messages."""
+        return self._repository.attachment_file_ids_for_chat(chat_id)
+
+    def send_streaming_to_chat(
+        self, chat_id: str, user_input: str, attachment_file_ids: Sequence[str] = ()
+    ) -> Iterator[str]:
         """Streaming variant of ``send_to_chat``.
+
+        ``attachment_file_ids`` (already validated) are stored with the user's message. The
+        model only ever receives the message text.
 
         The chat is resolved and its lock acquired on the first ``next()``. The lock
         is released when the stream completes, fails or is closed.
@@ -514,6 +533,8 @@ class SessionService:
             try:
                 yield from chat.send_streaming(user_input)
             finally:
-                self._persist_new_messages_for(chat_id, session, chat.history[before:])
+                self._persist_new_messages_for(
+                    chat_id, session, chat.history[before:], attachment_file_ids
+                )
         finally:
             lock.release()

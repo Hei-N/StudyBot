@@ -193,15 +193,25 @@ class StudyBotApi {
   }
 
   /// Adds a PDF the native layer staged to StudyBot's own storage. Takes a staging id, never a path.
-  Future<UploadPdfResult> uploadPdf({required String stagingId, required String displayName}) async {
+  Future<UploadPdfResult> uploadPdf({
+    required String stagingId,
+    required String displayName,
+    bool saveToLibrary = true,
+  }) async {
     final json = await _send(
       () => _client.post(
         _uri('/library/uploads/pdf'),
         headers: _headers,
-        body: jsonEncode({'stagingId': stagingId, 'displayName': displayName}),
+        body: jsonEncode({'stagingId': stagingId, 'displayName': displayName, 'saveToLibrary': saveToLibrary}),
       ),
     );
     return UploadPdfResult.fromJson(json as Map<String, dynamic>);
+  }
+
+  /// Drops a chat upload that was removed before sending. The server ignores files that are kept
+  /// in the Study Library or already attached to a message.
+  Future<void> discardAttachment(String fileId) async {
+    await _send(() => _client.delete(_uri('/library/attachments/$fileId'), headers: _headers));
   }
 
   /// Removes an uploaded file and StudyBot's private copy; the original file is never touched.

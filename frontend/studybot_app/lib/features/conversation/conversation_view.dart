@@ -10,6 +10,7 @@ import '../../core/widgets/error_view.dart';
 import '../../core/widgets/loading_view.dart';
 import '../chats/chats_providers.dart';
 import '../memory/memory_edit_dialog.dart';
+import 'attachment_widgets.dart';
 import 'composer.dart';
 import 'conversation_providers.dart';
 import 'message_bubble.dart';
@@ -49,7 +50,8 @@ class _ConversationViewState extends ConsumerState<ConversationView> {
 
     ref.listen(conversationErrorProvider, (previous, next) {
       if (next == null) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(next))));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(_friendlyError(next))));
       ref.read(conversationErrorProvider.notifier).set(null);
     });
 
@@ -63,50 +65,72 @@ class _ConversationViewState extends ConsumerState<ConversationView> {
 
     final conversationAsync = ref.watch(conversationProvider);
 
-    return Column(
-      children: [
-        Expanded(
-          child: conversationAsync.when(
-            loading: () => const LoadingView(),
-            error: (error, _) => ErrorView(
-              error: error is ApiException ? error : ApiException.disconnected(),
-              onRetry: () => ref.read(conversationProvider.notifier).refresh(),
-            ),
-            data: (state) {
-              if (state.messages.isEmpty && !state.isStreaming) {
-                return const EmptyState(
-                  icon: Icons.chat_outlined,
-                  title: 'Empty chat',
-                  message: 'Send a message to get started.',
+    return AttachmentDropZone(
+      key: ValueKey(chat.id),
+      chatId: chat.id,
+      child: Column(
+        children: [
+          Expanded(
+            child: conversationAsync.when(
+              loading: () => const LoadingView(),
+              error: (error, _) => ErrorView(
+                error: error is ApiException
+                    ? error
+                    : ApiException.disconnected(),
+                onRetry: () =>
+                    ref.read(conversationProvider.notifier).refresh(),
+              ),
+              data: (state) {
+                if (state.messages.isEmpty && !state.isStreaming) {
+                  return const EmptyState(
+                    icon: Icons.chat_outlined,
+                    title: 'Empty chat',
+                    message: 'Send a message to get started.',
+                  );
+                }
+
+                WidgetsBinding.instance.addPostFrameCallback(
+                  (_) => _scrollToBottom(),
                 );
-              }
 
-              WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+                final streamingMessage = state.isStreaming
+                    ? ChatMessage.pending(
+                        role: MessageRole.assistant,
+                        content: state.streamingText ?? '',
+                      )
+                    : null;
 
-              final streamingMessage = state.isStreaming
-                  ? ChatMessage.pending(role: MessageRole.assistant, content: state.streamingText ?? '')
-                  : null;
-
-              return ListView.builder(
-                controller: _scrollController,
-                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.md),
-                itemCount: state.messages.length + (streamingMessage == null ? 0 : 1),
-                itemBuilder: (context, index) {
-                  if (index < state.messages.length) {
-                    final message = state.messages[index];
+                return ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.lg,
+                    vertical: AppSpacing.md,
+                  ),
+                  itemCount:
+                      state.messages.length +
+                      (streamingMessage == null ? 0 : 1),
+                  itemBuilder: (context, index) {
+                    if (index < state.messages.length) {
+                      final message = state.messages[index];
+                      return MessageBubble(
+                        message: message,
+                        onSaveToMemory: message.isPending
+                            ? null
+                            : () => _saveToMemory(context, chat, message),
+                      );
+                    }
                     return MessageBubble(
-                      message: message,
-                      onSaveToMemory: message.isPending ? null : () => _saveToMemory(context, chat, message),
+                      message: streamingMessage!,
+                      isStreaming: true,
                     );
-                  }
-                  return MessageBubble(message: streamingMessage!, isStreaming: true);
-                },
-              );
-            },
+                  },
+                );
+              },
+            ),
           ),
-        ),
-        const Composer(),
-      ],
+          const Composer(),
+        ],
+      ),
     );
   }
 

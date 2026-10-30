@@ -5,14 +5,14 @@ import pytest
 from studybot.storage.database import SCHEMA_VERSION, get_schema_version, open_database
 
 
-def test_schema_version_constant_is_9():
-    assert SCHEMA_VERSION == 9
+def test_schema_version_constant_is_10():
+    assert SCHEMA_VERSION == 10
 
 
 def test_fresh_database_starts_directly_at_current_version(tmp_path):
     connection = open_database(tmp_path / "studybot.db")
     try:
-        assert get_schema_version(connection) == 9
+        assert get_schema_version(connection) == 10
         tables = {
             row[0]
             for row in connection.execute(
@@ -85,7 +85,7 @@ def test_opening_the_same_database_twice_is_idempotent(tmp_path):
 
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 9
+        assert get_schema_version(conn2) == 10
         row = conn2.execute(
             "SELECT title, teaching_mode FROM chats WHERE id = 'chat-1'"
         ).fetchone()
@@ -134,7 +134,7 @@ def test_migration_upgrades_v1_database_directly_to_current(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 9
+        assert get_schema_version(connection) == 10
 
         chat = connection.execute("SELECT * FROM chats WHERE id = 'chat-1'").fetchone()
         assert chat["title"] == "Old Chat"
@@ -197,7 +197,7 @@ def test_v1_migration_is_idempotent_when_run_twice(tmp_path):
     # migration (which would fail trying to add a duplicate column/table).
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 9
+        assert get_schema_version(conn2) == 10
         assert conn2.execute("SELECT title FROM chats WHERE id = 'c1'").fetchone()[0] == "T"
     finally:
         conn2.close()
@@ -276,7 +276,7 @@ def test_migration_upgrades_v2_database_to_current(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 9
+        assert get_schema_version(connection) == 10
 
         course = connection.execute("SELECT * FROM courses WHERE id = 'course-1'").fetchone()
         assert course["name"] == "Physics"
@@ -308,7 +308,7 @@ def test_v2_migration_is_idempotent_when_run_twice(tmp_path):
 
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 9
+        assert get_schema_version(conn2) == 10
         row = conn2.execute("SELECT title, teaching_mode, reasoning_mode FROM chats WHERE id = 'c1'").fetchone()
         assert row[0] == "T"
         assert row[1] == "teach"
@@ -386,7 +386,7 @@ def test_migration_upgrades_v3_database_to_current(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 9
+        assert get_schema_version(connection) == 10
 
         course = connection.execute("SELECT * FROM courses WHERE id = 'course-1'").fetchone()
         assert course["name"] == "Physics"  # courses untouched
@@ -420,7 +420,7 @@ def test_v3_migration_is_idempotent_when_run_twice(tmp_path):
     # migration (which would fail trying to add a duplicate column).
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 9
+        assert get_schema_version(conn2) == 10
         row = conn2.execute("SELECT title, teaching_mode, reasoning_mode FROM chats WHERE id = 'c1'").fetchone()
         assert row[0] == "T"
         assert row[1] == "exam"
@@ -504,7 +504,7 @@ def test_migration_upgrades_v4_database_to_current(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 9
+        assert get_schema_version(connection) == 10
 
         course = connection.execute("SELECT * FROM courses WHERE id = 'course-1'").fetchone()
         assert course["name"] == "Physics"  # courses untouched
@@ -544,7 +544,7 @@ def test_v4_migration_is_idempotent_when_run_twice(tmp_path):
     # migration (which would fail trying to create a duplicate table).
     conn2 = open_database(db_path)
     try:
-        assert get_schema_version(conn2) == 9
+        assert get_schema_version(conn2) == 10
         row = conn2.execute("SELECT title, teaching_mode, reasoning_mode FROM chats WHERE id = 'c1'").fetchone()
         assert row[0] == "T"
         assert row[1] == "exam"

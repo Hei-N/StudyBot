@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 
 from studybot.api.schemas import (
+    AttachmentOut,
     AuthorizationOut,
     ChatOut,
     CourseOut,
@@ -62,6 +63,17 @@ def message_record_to_out(record: MessageRecord) -> MessageOut:
         role=record.role.value,
         content=record.content,
         created_at=record.created_at,
+        attachments=[
+            AttachmentOut(
+                id=a.id,
+                file_id=a.file_id,
+                display_name=a.display_name,
+                page_count=a.page_count,
+                text_page_count=a.text_page_count,
+                processing_state=a.processing_state,
+            )
+            for a in record.attachments
+        ],
     )
 
 

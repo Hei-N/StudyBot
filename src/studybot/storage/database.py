@@ -19,7 +19,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Individual statements instead of executescript(), which commits implicitly
 # and would defeat the explicit transaction.
@@ -166,6 +166,22 @@ _UPLOADS_KIND_STATEMENTS = [
     "CREATE INDEX idx_library_sources_course_id ON library_sources(course_id)",
 ]
 
+# Chat attachments (added in v10): a flag telling chat-only uploads from library material, and
+# the message-to-file relationship. A file with references cannot be deleted (RESTRICT).
+_CHAT_ATTACHMENT_STATEMENTS = [
+    "ALTER TABLE library_files ADD COLUMN in_library INTEGER NOT NULL DEFAULT 1 CHECK (in_library IN (0, 1))",
+    """
+    CREATE TABLE message_attachments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        file_id TEXT NOT NULL REFERENCES library_files(id) ON DELETE RESTRICT,
+        created_at TEXT NOT NULL,
+        UNIQUE (message_id, file_id)
+    )
+    """,
+    "CREATE INDEX idx_message_attachments_file_id ON message_attachments(file_id)",
+]
+
 
 def open_database(db_path: Path) -> sqlite3.Connection:
     """Open (creating if needed) the database at ``db_path`` and apply pending
@@ -227,6 +243,10 @@ def _migrate(connection: sqlite3.Connection) -> None:
         _migrate_v8_to_v9(connection)
         version = 9
 
+    if version == 9:
+        _migrate_v9_to_v10(connection)
+        version = 10
+
 
 def _create_fresh_schema(connection: sqlite3.Connection) -> None:
     """Create the current schema directly for a new database."""
@@ -244,7 +264,8 @@ def _create_fresh_schema(connection: sqlite3.Connection) -> None:
     except BaseException:
         connection.rollback()
         raise
-    _migrate_v8_to_v9(connection)  # the same step an upgraded database takes
+    _migrate_v8_to_v9(connection)  # the same steps an upgraded database takes
+    _migrate_v9_to_v10(connection)
 
 
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
@@ -420,3 +441,20 @@ def _migrate_v8_to_v9(connection: sqlite3.Connection) -> None:
         raise
     finally:
         connection.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_v9_to_v10(connection: sqlite3.Connection) -> None:
+    """Add ``library_files.in_library`` (existing files stay in the library) and ``message_attachments``.
+
+    No attachment rows are invented for existing messages. One transaction.
+    """
+    logger.debug("Migrating chat database schema from v9 to v10")
+    try:
+        connection.execute("BEGIN")
+        for statement in _CHAT_ATTACHMENT_STATEMENTS:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version = 10")
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise

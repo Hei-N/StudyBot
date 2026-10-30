@@ -10,11 +10,12 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import datetime, timezone
+from typing import Sequence
 
 from studybot.core.messages import Message, Role
 from studybot.core.reasoning_mode import DEFAULT_REASONING_MODE, ReasoningMode
 from studybot.core.teaching_mode import DEFAULT_TEACHING_MODE, TeachingMode
-from studybot.storage.base import ChatSession, MessageRecord
+from studybot.storage.base import ChatSession, MessageAttachment, MessageRecord
 
 logger = logging.getLogger(__name__)
 
@@ -158,12 +159,19 @@ class SQLiteChatRepository:
 
     # --- messages ------------------------------------------------------------
 
-    def append_message(self, chat_id: str, role: Role, content: str) -> None:
+    def append_message(self, chat_id: str, role: Role, content: str, file_ids: Sequence[str] = ()) -> int:
+        now = _now()
         with self._conn:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (chat_id, role.value, content, _now()),
+                (chat_id, role.value, content, now),
             )
+            message_id = cursor.lastrowid
+            self._conn.executemany(
+                "INSERT INTO message_attachments (message_id, file_id, created_at) VALUES (?, ?, ?)",
+                [(message_id, file_id, now) for file_id in file_ids],
+            )
+        return message_id
 
     def load_messages(self, chat_id: str) -> list[Message]:
         rows = self._conn.execute(
@@ -176,10 +184,39 @@ class SQLiteChatRepository:
             "SELECT id, role, content, created_at FROM messages WHERE chat_id = ? ORDER BY id ASC",
             (chat_id,),
         ).fetchall()
+        attachments: dict[int, list[MessageAttachment]] = {}
+        if rows:
+            for a in self._conn.execute(
+                "SELECT a.id, a.message_id, a.file_id, f.display_name, f.page_count, f.text_page_count, "
+                "f.processing_state FROM message_attachments a "
+                "JOIN messages m ON m.id = a.message_id JOIN library_files f ON f.id = a.file_id "
+                "WHERE m.chat_id = ? ORDER BY a.id",
+                (chat_id,),
+            ):
+                attachments.setdefault(a["message_id"], []).append(
+                    MessageAttachment(
+                        a["id"], a["file_id"], a["display_name"], a["page_count"], a["text_page_count"],
+                        a["processing_state"],
+                    )
+                )
         return [
-            MessageRecord(id=row["id"], role=Role(row["role"]), content=row["content"], created_at=row["created_at"])
+            MessageRecord(
+                id=row["id"],
+                role=Role(row["role"]),
+                content=row["content"],
+                created_at=row["created_at"],
+                attachments=tuple(attachments.get(row["id"], ())),
+            )
             for row in rows
         ]
+
+    def attachment_file_ids_for_chat(self, chat_id: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT a.file_id FROM message_attachments a JOIN messages m ON m.id = a.message_id "
+            "WHERE m.chat_id = ?",
+            (chat_id,),
+        ).fetchall()
+        return [row["file_id"] for row in rows]
 
     def clear_messages(self, chat_id: str) -> None:
         with self._conn:

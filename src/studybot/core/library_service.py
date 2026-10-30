@@ -70,6 +70,12 @@ class PdfImportPlan:
     needs_extraction: bool
 
 
+#: Most files that can be attached to one chat message.
+MAX_CHAT_ATTACHMENTS = 5
+#: How long an unsent chat upload may sit unreferenced before startup cleanup removes it.
+ABANDONED_UPLOAD_SECONDS = 24 * 60 * 60
+
+
 @dataclass(frozen=True, slots=True)
 class UploadPlan:
     """The next step for an uploaded PDF.
@@ -83,6 +89,7 @@ class UploadPlan:
     stored_name: str
     duplicate: bool
     replaced_names: tuple[str, ...] = ()
+    promoted: bool = False  # an existing chat-only copy was added to the library
 
 
 class LibraryService:
@@ -338,13 +345,21 @@ class LibraryService:
         )
 
     def prepare_upload(
-        self, display_name: str, *, size_bytes: int, content_hash: str, processing_version: str
+        self,
+        display_name: str,
+        *,
+        size_bytes: int,
+        content_hash: str,
+        processing_version: str,
+        in_library: bool = True,
     ) -> UploadPlan:
         """Decide what an upload needs: nothing (duplicate) or a new ``indexing`` record.
 
         The same bytes as a current upload are a duplicate. An older or unfinished copy
         of the same bytes is replaced by the new record. Another upload of those bytes
-        that is still being processed is a conflict.
+        that is still being processed is a conflict. ``in_library=False`` is a chat attachment
+        that is not kept in the Study Library; a later library upload of the same bytes
+        adds the existing copy to the library without extracting again.
         """
         name = normalize_display_name(display_name)
         digest = normalize_content_hash(content_hash)
@@ -355,6 +370,10 @@ class LibraryService:
             if existing.processing_state is LibraryFileState.INDEXING:
                 raise LibraryStateError("This PDF is already being uploaded.")
             if existing.processing_state is LibraryFileState.READY and existing.processing_version == processing_version:
+                if in_library and not existing.in_library:
+                    existing.in_library = True
+                    existing = self._library.save_file(existing)
+                    return UploadPlan(existing, existing.relative_path, duplicate=True, promoted=True)
                 return UploadPlan(existing, existing.relative_path, duplicate=True)
             self._library.delete_file(existing.id)
             replaced.append(existing.relative_path)
@@ -362,6 +381,9 @@ class LibraryService:
         file = self.register_or_update_file(
             source.id, stored_name, display_name=name, size_bytes=size_bytes, content_hash=digest
         )
+        if not in_library:
+            file.in_library = False
+            file = self._library.save_file(file)
         file = self.begin_indexing(file.id)
         return UploadPlan(file, stored_name, duplicate=False, replaced_names=tuple(replaced))
 
@@ -373,30 +395,92 @@ class LibraryService:
         self._library.delete_file(file_id)
         return file.relative_path
 
-    def list_uploaded_files(self) -> list[LibraryFile]:
+    def list_uploaded_files(self, *, include_chat_only: bool = False) -> list[LibraryFile]:
+        """Uploaded files kept in the Study Library (and, if asked, chat-only uploads too)."""
         source = self._library.find_source(LibrarySourceKind.UPLOADS, UPLOADS_LOCATOR)
-        return self._library.list_files(source_id=source.id) if source is not None else []
+        if source is None:
+            return []
+        files = self._library.list_files(source_id=source.id)
+        return files if include_chat_only else [f for f in files if f.in_library]
 
-    def delete_uploaded_file(self, file_id: str) -> LibraryFile:
-        """Delete an uploaded file's record and pages; the caller removes the private copy."""
-        file = self._require_file(file_id)
-        source = self._library.find_source(LibrarySourceKind.UPLOADS, UPLOADS_LOCATOR)
-        if source is None or file.source_id != source.id:
-            raise LibraryFileNotFoundError("No uploaded file found.")
+    def delete_uploaded_file(self, file_id: str) -> tuple[LibraryFile, bool]:
+        """Remove an uploaded file from the Study Library.
+
+        A file still attached to a chat message is only taken out of the library (it stays
+        as a chat attachment). Otherwise its record and pages are deleted. Returns
+        ``(file, deleted)``; when ``deleted`` the caller removes the private copy.
+        """
+        file = self._require_upload(file_id)
+        if self._library.count_attachment_references(file_id) > 0:
+            file.in_library = False
+            return self._library.save_file(file), False
         self._library.delete_file(file_id)
+        return file, True
+
+    def discard_chat_attachment(self, file_id: str) -> str | None:
+        """Delete a chat-only upload that nothing references (a pending attachment removed
+        before sending). Library files and referenced files are left alone. Returns the
+        stored name when a record was deleted."""
+        file = self._library.get_file(file_id)
+        if file is None or file.in_library or not self._is_upload(file):
+            return None
+        if self._library.count_attachment_references(file_id) > 0:
+            return None
+        self._library.delete_file(file_id)
+        return file.relative_path
+
+    def release_chat_files(self, file_ids: Sequence[str]) -> list[str]:
+        """After chat messages were deleted: drop chat-only uploads that lost their last
+        reference. Returns the stored names to remove."""
+        return [name for file_id in dict.fromkeys(file_ids) if (name := self.discard_chat_attachment(file_id))]
+
+    def collect_abandoned_chat_uploads(self, older_than_seconds: float = ABANDONED_UPLOAD_SECONDS) -> list[str]:
+        """Startup cleanup of chat-only uploads never sent (and so never referenced)."""
+        cutoff = datetime.now(timezone.utc).timestamp() - older_than_seconds
+        stale = [
+            f.id
+            for f in self.list_uploaded_files(include_chat_only=True)
+            if not f.in_library and datetime.fromisoformat(f.updated_at).timestamp() < cutoff
+        ]
+        return self.release_chat_files(stale)
+
+    def resolve_chat_attachments(self, file_ids: Sequence[str]) -> list[LibraryFile]:
+        """Validate files for attaching to a message: distinct, at most five, existing uploads
+        that finished processing. Raises ``SessionError`` otherwise."""
+        unique = list(dict.fromkeys(file_ids))
+        if len(unique) > MAX_CHAT_ATTACHMENTS:
+            raise SessionError(f"A message can have at most {MAX_CHAT_ATTACHMENTS} attachments.")
+        files = []
+        for file_id in unique:
+            file = self._library.get_file(file_id) if isinstance(file_id, str) else None
+            if file is None or not self._is_upload(file):
+                raise LibraryFileNotFoundError("An attached file was not found.")
+            if file.processing_state is not LibraryFileState.READY:
+                raise LibraryStateError("An attached file is not ready yet.")
+            files.append(file)
+        return files
+
+    def _is_upload(self, file: LibraryFile) -> bool:
+        source = self._library.find_source(LibrarySourceKind.UPLOADS, UPLOADS_LOCATOR)
+        return source is not None and file.source_id == source.id
+
+    def _require_upload(self, file_id: str) -> LibraryFile:
+        file = self._require_file(file_id)
+        if not self._is_upload(file):
+            raise LibraryFileNotFoundError("No uploaded file found.")
         return file
 
     def purge_failed_uploads(self) -> list[str]:
         """Delete uploads left ``failed`` (for example by a crash); returns their stored names."""
         names = []
-        for file in self.list_uploaded_files():
+        for file in self.list_uploaded_files(include_chat_only=True):
             if file.processing_state is LibraryFileState.FAILED:
                 self._library.delete_file(file.id)
                 names.append(file.relative_path)
         return names
 
     def uploaded_file_names(self) -> set[str]:
-        return {file.relative_path for file in self.list_uploaded_files()}
+        return {file.relative_path for file in self.list_uploaded_files(include_chat_only=True)}
 
     # --- PDF import ----------------------------------------------------------------
     #

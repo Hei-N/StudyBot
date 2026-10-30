@@ -9,8 +9,8 @@ NATIVE="$ROOT/frontend/studybot_app/macos"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-for check in lease staging upload; do
-    swiftc -o "$WORK/$check" "$NATIVE/Runner/LibraryAuthorization.swift" "$NATIVE/NativeChecks/$check/main.swift"
+for check in lease staging upload drop; do
+    swiftc -o "$WORK/$check" "$NATIVE/Runner/LibraryAuthorization.swift" "$NATIVE/Runner/FileDrop.swift" "$NATIVE/NativeChecks/$check/main.swift"
     echo "== $check"
     "$WORK/$check"
 done

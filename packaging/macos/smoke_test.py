@@ -75,6 +75,26 @@ def upload_a_pdf(port: int, data_dir: str) -> tuple[str, int]:
     return result["outcome"], len(stored)
 
 
+def chat_upload_a_pdf(port: int, data_dir: str) -> tuple[str, int, int]:
+    """Attach-style upload: stored, hidden from the library list, then discarded.
+
+    Returns (outcome, files listed in the library, private copies left after the discard).
+    """
+    staging = os.path.join(data_dir, "ingest_staging")
+    staging_id = str(uuid.uuid4())
+    with open(os.path.join(staging, f"{staging_id}.pdf"), "wb") as handle:
+        handle.write(_PDF.replace(b"Smoke test page", b"Chat attach page"))
+    result = request(port, "POST", "/api/v1/library/uploads/pdf",
+                     {"stagingId": staging_id, "displayName": "chat-attach.pdf", "saveToLibrary": False})
+    listed = len(request(port, "GET", "/api/v1/library/uploads"))
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/v1/library/attachments/{result['file']['id']}", method="DELETE"
+    )
+    req.add_header("Authorization", f"Bearer {TOKEN}")
+    urllib.request.urlopen(req, timeout=60).close()
+    return result["outcome"], listed, len(os.listdir(os.path.join(data_dir, "library_files")))
+
+
 def main(executable: str) -> int:
     with tempfile.TemporaryDirectory() as data_dir:
         env = {
@@ -95,6 +115,7 @@ def main(executable: str) -> int:
             anonymous = get(event["port"], None)
             pdf_state, pdf_pages = import_a_pdf(event["port"], data_dir)
             upload_outcome, stored_copies = upload_a_pdf(event["port"], data_dir)
+            chat_outcome, listed, copies_after = chat_upload_a_pdf(event["port"], data_dir)
             process.stdin.close()
             exit_code = process.wait(timeout=20)
         finally:
@@ -102,11 +123,13 @@ def main(executable: str) -> int:
                 process.kill()
     print(
         f"health={authorized} no_token={anonymous} pdf={pdf_state}/{pdf_pages}p "
-        f"upload={upload_outcome}/{stored_copies} exit={exit_code}"
+        f"upload={upload_outcome}/{stored_copies} chat={chat_outcome}/listed={listed}/kept={copies_after} "
+        f"exit={exit_code}"
     )
-    ok = (authorized, anonymous, pdf_state, pdf_pages, upload_outcome, stored_copies, exit_code) == (
-        200, 401, "ready", 1, "uploaded", 1, 0,
-    )
+    ok = (
+        authorized, anonymous, pdf_state, pdf_pages, upload_outcome, stored_copies,
+        chat_outcome, listed, copies_after, exit_code,
+    ) == (200, 401, "ready", 1, "uploaded", 1, "uploaded", 1, 1, 0)
     return 0 if ok else 1
 
 

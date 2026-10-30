@@ -372,8 +372,9 @@ chats keep their ids, titles, timestamps, courses and messages.
 | v6 to v7 | Adds `library_source_authorizations` (opaque per-source access grants). |
 | v7 to v8 | Adds `library_pages` and page-count and processing-version columns on `library_files`. |
 | v8 to v9 | Allows the internal `uploads` source kind (rebuilds `library_sources`) for direct uploads. |
+| v9 to v10 | Adds `library_files.in_library` (chat-only uploads) and `message_attachments` (files attached to chat messages). |
 
-A fresh database is created directly at the current version (v9).
+A fresh database is created directly at the current version (v10).
 
 ```bash
 # Reset (quit StudyBot first). This deletes all chats, courses and memories:

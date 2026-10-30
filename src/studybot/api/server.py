@@ -59,6 +59,8 @@ def create_app(
         library = studybot_app.library
         for stored_name in await app.state.engine.call(library.purge_failed_uploads):  # left over from a crash
             uploads.discard(stored_name)
+        for stored_name in await app.state.engine.call(library.collect_abandoned_chat_uploads):
+            uploads.discard(stored_name)  # chat uploads never sent
         uploads.cleanup_orphans(await app.state.engine.call(library.uploaded_file_names))
         app.state.staging = staging
         app.state.uploads = uploads

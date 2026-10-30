@@ -41,6 +41,18 @@ class ChatSession:
 
 
 @dataclass(frozen=True, slots=True)
+class MessageAttachment:
+    """A file attached to a message: metadata only (no text, no paths)."""
+
+    id: int
+    file_id: str
+    display_name: str
+    page_count: int | None
+    text_page_count: int | None
+    processing_state: str
+
+
+@dataclass(frozen=True, slots=True)
 class MessageRecord:
     """A persisted message with its id and timestamp.
 
@@ -52,6 +64,7 @@ class MessageRecord:
     role: Role
     content: str
     created_at: str
+    attachments: tuple[MessageAttachment, ...] = ()
 
 
 @dataclass(slots=True)
@@ -133,7 +146,10 @@ class ChatRepository(Protocol):
         """
         ...
 
-    def append_message(self, chat_id: str, role: Role, content: str) -> None:
+    def append_message(
+        self, chat_id: str, role: Role, content: str, file_ids: Sequence[str] = ()
+    ) -> int:
+        """Append a message and attach ``file_ids`` to it in one transaction; returns the message id."""
         """Persist one message in insertion order."""
         ...
 
@@ -150,6 +166,10 @@ class ChatRepository(Protocol):
 
     def clear_messages(self, chat_id: str) -> None:
         """Delete a chat's messages; the chat itself is kept."""
+        ...
+
+    def attachment_file_ids_for_chat(self, chat_id: str) -> list[str]:
+        """Ids of the files attached to any message of the chat."""
         ...
 
     def count_chats_for_course(self, course_id: str) -> int:
@@ -311,6 +331,8 @@ class LibraryFile:
 
     Holds metadata and processing state only; page text lives in ``library_pages``.
     ``indexed_at`` is when the file last became ``ready`` for ``processing_version``.
+    ``in_library`` is False for a chat-only upload (an attachment the user has not kept in
+    the Study Library); such a file is removed once nothing references it.
     """
 
     id: str
@@ -327,6 +349,7 @@ class LibraryFile:
     page_count: int | None
     text_page_count: int | None
     processing_version: str | None
+    in_library: bool
     created_at: str
     updated_at: str
 
@@ -395,6 +418,7 @@ class LibraryRepository(Protocol):
         size_bytes: int | None,
         modified_at: str | None,
         content_hash: str | None,
+        in_library: bool = True,
     ) -> LibraryFile:
         """Insert a ``pending`` file."""
         ...
@@ -415,6 +439,10 @@ class LibraryRepository(Protocol):
 
     def save_file_with_pages(self, file: LibraryFile, pages: Sequence[tuple[int, str]]) -> LibraryFile:
         """``save_file`` plus replacing all of the file's pages, in one transaction."""
+        ...
+
+    def count_attachment_references(self, file_id: str) -> int:
+        """How many message attachments refer to the file."""
         ...
 
     def find_file_by_hash(self, source_id: str, content_hash: str) -> LibraryFile | None:

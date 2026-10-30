@@ -23,7 +23,11 @@ void _debugLog(String message) {
 /// the persisted message (appended to [messages]) when `message_completed`
 /// arrives; it is never treated as persisted itself.
 class ConversationState {
-  const ConversationState({required this.messages, this.streamingText, this.isSending = false});
+  const ConversationState({
+    required this.messages,
+    this.streamingText,
+    this.isSending = false,
+  });
 
   final List<ChatMessage> messages;
   final String? streamingText;
@@ -42,7 +46,9 @@ class ConversationState {
   }) {
     return ConversationState(
       messages: messages ?? this.messages,
-      streamingText: clearStreamingText ? null : (streamingText ?? this.streamingText),
+      streamingText: clearStreamingText
+          ? null
+          : (streamingText ?? this.streamingText),
       isSending: isSending ?? this.isSending,
     );
   }
@@ -107,20 +113,42 @@ class ConversationNotifier extends AsyncNotifier<ConversationState> {
   /// Sends [content] on the active chat. Ignored for blank input or while a reply
   /// is streaming (the composer also disables itself; this keeps the notifier
   /// correct for any caller).
-  Future<void> send(String content) async {
+  Future<void> send(
+    String content, {
+    List<MessageAttachment> attachments = const [],
+  }) async {
     final chatId = _chatId;
     final current = state.value;
     final trimmed = content.trim();
-    if (chatId == null || current == null || current.isSending || trimmed.isEmpty) return;
+    if (chatId == null ||
+        current == null ||
+        current.isSending ||
+        trimmed.isEmpty) {
+      return;
+    }
 
     _debugLog('send: chatId=$chatId isSending->true');
-    final optimisticUser = ChatMessage.pending(role: MessageRole.user, content: trimmed);
+    final optimisticUser = ChatMessage.pending(
+      role: MessageRole.user,
+      content: trimmed,
+      attachments: attachments,
+    );
     state = AsyncValue.data(
-      current.copyWith(messages: [...current.messages, optimisticUser], isSending: true, streamingText: ''),
+      current.copyWith(
+        messages: [...current.messages, optimisticUser],
+        isSending: true,
+        streamingText: '',
+      ),
     );
 
     try {
-      await ref.read(chatWebSocketClientProvider).sendMessage(chatId: chatId, content: trimmed);
+      await ref
+          .read(chatWebSocketClientProvider)
+          .sendMessage(
+            chatId: chatId,
+            content: trimmed,
+            attachmentIds: [for (final a in attachments) a.fileId],
+          );
     } on ApiException catch (e) {
       _failStreaming(e);
     }
@@ -132,7 +160,9 @@ class ConversationNotifier extends AsyncNotifier<ConversationState> {
     // chats mid-stream); the reply is still persisted server-side and appears on
     // the next full fetch.
     if (current == null || !current.isSending) {
-      _debugLog('event ignored: chatId=$_chatId type=${event.runtimeType} (not currently sending)');
+      _debugLog(
+        'event ignored: chatId=$_chatId type=${event.runtimeType} (not currently sending)',
+      );
       return;
     }
 
@@ -140,7 +170,11 @@ class ConversationNotifier extends AsyncNotifier<ConversationState> {
       case StreamStarted():
         _debugLog('event: chatId=$_chatId type=StreamStarted');
       case StreamDelta(:final content):
-        state = AsyncValue.data(current.copyWith(streamingText: (current.streamingText ?? '') + content));
+        state = AsyncValue.data(
+          current.copyWith(
+            streamingText: (current.streamingText ?? '') + content,
+          ),
+        );
       case StreamCompleted(:final message):
         final messages = [...current.messages];
         if (message != null) messages.add(message);
@@ -150,10 +184,14 @@ class ConversationNotifier extends AsyncNotifier<ConversationState> {
         );
         state = AsyncValue.data(ConversationState(messages: messages));
       case StreamError(:final code, :final message):
-        _debugLog('event: chatId=$_chatId type=StreamError code=$code isSending->false');
+        _debugLog(
+          'event: chatId=$_chatId type=StreamError code=$code isSending->false',
+        );
         _failStreaming(ApiException(code: code, message: message));
       case StreamDisconnected():
-        _debugLog('event: chatId=$_chatId type=StreamDisconnected isSending->false');
+        _debugLog(
+          'event: chatId=$_chatId type=StreamDisconnected isSending->false',
+        );
         _failStreaming(ApiException.disconnected());
     }
   }
@@ -161,15 +199,18 @@ class ConversationNotifier extends AsyncNotifier<ConversationState> {
   void _failStreaming(ApiException error) {
     final current = state.value;
     if (current != null) {
-      state = AsyncValue.data(current.copyWith(isSending: false, clearStreamingText: true));
+      state = AsyncValue.data(
+        current.copyWith(isSending: false, clearStreamingText: true),
+      );
     }
     ref.read(conversationErrorProvider.notifier).set(error);
   }
 }
 
-final conversationProvider = AsyncNotifierProvider<ConversationNotifier, ConversationState>(
-  ConversationNotifier.new,
-);
+final conversationProvider =
+    AsyncNotifierProvider<ConversationNotifier, ConversationState>(
+      ConversationNotifier.new,
+    );
 
 /// A transient, one-shot error from the last send/stream attempt (e.g. a
 /// dropped connection or `MODEL_ERROR`). The UI shows it once and clears it via
@@ -181,6 +222,7 @@ class ConversationErrorNotifier extends Notifier<ApiException?> {
   void set(ApiException? error) => state = error;
 }
 
-final conversationErrorProvider = NotifierProvider<ConversationErrorNotifier, ApiException?>(
-  ConversationErrorNotifier.new,
-);
+final conversationErrorProvider =
+    NotifierProvider<ConversationErrorNotifier, ApiException?>(
+      ConversationErrorNotifier.new,
+    );

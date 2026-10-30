@@ -19,8 +19,15 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from studybot.api.auth import extract_bearer_token, token_matches
 from studybot.api.converters import message_record_to_out
 from studybot.api.engine import Engine
-from studybot.api.errors import CHAT_BUSY, CHAT_NOT_FOUND, MODEL_ERROR, VALIDATION_ERROR
-from studybot.core.exceptions import ChatBusyError, ChatNotFoundError, ModelError
+from studybot.api.errors import ATTACHMENT_NOT_FOUND, CHAT_BUSY, CHAT_NOT_FOUND, MODEL_ERROR, VALIDATION_ERROR
+from studybot.core.exceptions import (
+    ChatBusyError,
+    ChatNotFoundError,
+    LibraryFileNotFoundError,
+    LibraryStateError,
+    ModelError,
+    SessionError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +92,25 @@ async def _handle_message(websocket: WebSocket, engine: Engine, payload: Any) ->
         await _send_error(websocket, CHAT_NOT_FOUND, f"No chat found with id '{chat_id}'.", chat_id)
         return
 
+    attachment_ids = payload.get("attachment_ids", [])
+    if not isinstance(attachment_ids, list) or not all(isinstance(i, str) for i in attachment_ids):
+        await _send_error(websocket, VALIDATION_ERROR, "'attachment_ids' must be a list of ids.", chat_id)
+        return
+    attached: list[str] = []
+    if attachment_ids:
+        try:
+            files = await engine.call(engine.app.library.resolve_chat_attachments, attachment_ids)
+        except (LibraryFileNotFoundError, LibraryStateError) as exc:
+            await _send_error(websocket, ATTACHMENT_NOT_FOUND, str(exc), chat_id)
+            return
+        except SessionError as exc:
+            await _send_error(websocket, VALIDATION_ERROR, str(exc), chat_id)
+            return
+        attached = [f.id for f in files]
+
     await websocket.send_json({"type": "message_started", "chatId": chat_id})
 
-    generator = await engine.call(engine.app.sessions.send_streaming_to_chat, chat_id, content)
+    generator = await engine.call(engine.app.sessions.send_streaming_to_chat, chat_id, content, attached)
     try:
         async for chunk in _iterate_in_thread(engine, generator):
             if chunk:  # "" is a progress signal (see ModelProvider.stream): never sent

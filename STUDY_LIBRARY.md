@@ -209,6 +209,20 @@ Upload File → native picker (PDF only) → private staged copy → staging id
   transaction and the `ready` rules are shared with the folder import; only how the file is
   acquired differs. Extraction runs off the SQLite thread.
 
+## Chat attachments
+
+A PDF attached in a chat uses the direct-upload pipeline above (staging, private copy, hashing,
+`PdfExtractor`, pages); the only difference is `library_files.in_library = 0`, so it is not shown
+in the Study Library and is assigned to no course. A message links to its files through
+`message_attachments`; the row is written in the same transaction as the message.
+
+- **Limits.** At most 5 distinct, ready PDFs per message.
+- **Ownership.** A chat-only file is deleted when the user removes it before sending, and when the
+  last chat that references it is cleared or deleted. Chat-only files never sent are removed at
+  engine start after 24 hours. A file attached to a message cannot be deleted from under it: removing
+  it from the Study Library only sets `in_library = 0`. Uploading the same bytes to the library promotes a chat-only copy.
+- **Not used in answers.** The text is not added to prompts. Using attachments in answers is a later retrieval stage.
+
 ## Extraction engine and licensing
 
 Extraction uses `pypdfium2` (PDFium), which is BSD-3-Clause / Apache-2.0 licensed, so it places no

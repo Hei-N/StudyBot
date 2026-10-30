@@ -13,14 +13,18 @@ class FakeChatWebSocketClient extends ChatWebSocketClient {
   FakeChatWebSocketClient() : super(_testConfig);
 
   final _controller = StreamController<ChatStreamEvent>.broadcast();
-  final List<({String chatId, String content})> sentMessages = [];
+  final List<({String chatId, String content, List<String> attachmentIds})> sentMessages = [];
 
   @override
   Stream<ChatStreamEvent> get events => _controller.stream;
 
   @override
-  Future<void> sendMessage({required String chatId, required String content}) async {
-    sentMessages.add((chatId: chatId, content: content));
+  Future<void> sendMessage({
+    required String chatId,
+    required String content,
+    List<String> attachmentIds = const [],
+  }) async {
+    sentMessages.add((chatId: chatId, content: content, attachmentIds: attachmentIds));
   }
 
   void emit(ChatStreamEvent event) => _controller.add(event);

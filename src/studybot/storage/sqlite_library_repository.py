@@ -48,6 +48,7 @@ def _row_to_file(row: sqlite3.Row) -> LibraryFile:
         page_count=row["page_count"],
         text_page_count=row["text_page_count"],
         processing_version=row["processing_version"],
+        in_library=bool(row["in_library"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -129,16 +130,17 @@ class SQLiteLibraryRepository:
         size_bytes: int | None,
         modified_at: str | None,
         content_hash: str | None,
+        in_library: bool = True,
     ) -> LibraryFile:
         now = _now()
         with self._conn:
             self._conn.execute(
                 "INSERT INTO library_files (id, source_id, relative_path, display_name, extension, size_bytes, "
-                "modified_at, content_hash, processing_state, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "modified_at, content_hash, processing_state, in_library, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     file_id, source_id, relative_path, display_name, extension, size_bytes,
-                    modified_at, content_hash, LibraryFileState.PENDING.value, now, now,
+                    modified_at, content_hash, LibraryFileState.PENDING.value, int(in_library), now, now,
                 ),
             )
         return self.get_file(file_id)
@@ -191,13 +193,19 @@ class SQLiteLibraryRepository:
         self._conn.execute(
             "UPDATE library_files SET display_name = ?, extension = ?, size_bytes = ?, modified_at = ?, "
             "content_hash = ?, processing_state = ?, failure_code = ?, indexed_at = ?, page_count = ?, "
-            "text_page_count = ?, processing_version = ?, updated_at = ? WHERE id = ?",
+            "text_page_count = ?, processing_version = ?, in_library = ?, updated_at = ? WHERE id = ?",
             (
                 file.display_name, file.extension, file.size_bytes, file.modified_at, file.content_hash,
                 file.processing_state.value, file.failure_code, file.indexed_at, file.page_count,
-                file.text_page_count, file.processing_version, _now(), file.id,
+                file.text_page_count, file.processing_version, int(file.in_library), _now(), file.id,
             ),
         )
+
+    def count_attachment_references(self, file_id: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM message_attachments WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        return row[0]
 
     def find_file_by_hash(self, source_id: str, content_hash: str) -> LibraryFile | None:
         row = self._conn.execute(

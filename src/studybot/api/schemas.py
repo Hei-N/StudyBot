@@ -107,11 +107,23 @@ class ChatCourseIn(ApiModel):
     course_id: str | None = None
 
 
+class AttachmentOut(ApiModel):
+    """A file attached to a message: metadata only, never text or paths."""
+
+    id: int
+    file_id: str
+    display_name: str
+    page_count: int | None
+    text_page_count: int | None
+    processing_state: str
+
+
 class MessageOut(ApiModel):
     id: int
     role: str
     content: str
     created_at: str
+    attachments: list[AttachmentOut] = []
 
 
 # --- learning memory --------------------------------------------------------------
@@ -232,6 +244,8 @@ class StagingDirectoryOut(ApiModel):
 class UploadPdfIn(ApiModel):
     staging_id: str
     display_name: str
+    #: False for a chat attachment that is not kept in the Study Library.
+    save_to_library: bool = True
 
 
 class UploadPdfOut(ApiModel):

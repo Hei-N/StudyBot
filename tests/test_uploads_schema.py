@@ -40,7 +40,7 @@ def test_v8_database_migrates_to_v9_preserving_everything(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == SCHEMA_VERSION == 9
+        assert get_schema_version(connection) == SCHEMA_VERSION == 10
         assert connection.execute("SELECT content FROM messages").fetchone()[0] == "hi"
         source = connection.execute("SELECT * FROM library_sources").fetchone()
         assert (source["id"], source["course_id"], source["kind"], source["locator"]) == ("s1", "c1", "local_folder", "/x")
@@ -78,7 +78,7 @@ def test_the_rebuilt_table_keeps_its_relationships_and_allows_uploads(tmp_path):
 def test_a_fresh_database_has_the_same_shape(tmp_path):
     connection = open_database(tmp_path / "fresh.db")
     try:
-        assert get_schema_version(connection) == 9
+        assert get_schema_version(connection) == 10
         connection.execute("INSERT INTO library_sources VALUES ('u1', NULL, 'uploads', 'n', 'studybot:uploads', 't', 't')")
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
@@ -95,7 +95,7 @@ def test_migration_runs_once(tmp_path):
     open_database(db_path).close()
 
     again = open_database(db_path)
-    assert get_schema_version(again) == 9
+    assert get_schema_version(again) == 10
     again.close()
 
 

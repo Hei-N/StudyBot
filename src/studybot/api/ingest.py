@@ -48,7 +48,9 @@ class PdfImporter:
         self._executor = executor
         self._uploads = uploads
 
-    async def upload_pdf(self, staging_id: str, display_name: str) -> tuple[str, LibraryFile | None, str | None]:
+    async def upload_pdf(
+        self, staging_id: str, display_name: str, in_library: bool = True
+    ) -> tuple[str, LibraryFile | None, str | None]:
         """Add a directly uploaded PDF to StudyBot's own storage and extract its pages.
 
         Returns ``(outcome, file, failure_code)``. A failed upload leaves no record and no
@@ -68,10 +70,11 @@ class PdfImporter:
                 size_bytes=size,
                 content_hash=digest,
                 processing_version=self._extractor.processing_version,
+                in_library=in_library,
             )
             if plan.duplicate:
                 logger.debug("Upload matched existing file %s", plan.file.id)
-                return DUPLICATE, plan.file, None
+                return (UPLOADED if plan.promoted else DUPLICATE), plan.file, None
             file = plan.file
             try:
                 private = await loop.run_in_executor(self._executor, self._uploads.store, path, plan.stored_name)

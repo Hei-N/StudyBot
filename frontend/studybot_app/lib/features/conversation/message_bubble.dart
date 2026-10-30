@@ -4,12 +4,18 @@ import '../../core/models/message.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_radii.dart';
 import '../../core/theme/app_spacing.dart';
+import 'attachment_widgets.dart';
 import 'studybot_markdown.dart';
 
 /// One message turn. User messages are right-aligned in a tinted surface;
 /// assistant messages are left-aligned, full-width, selectable Markdown.
 class MessageBubble extends StatelessWidget {
-  const MessageBubble({super.key, required this.message, this.isStreaming = false, this.onSaveToMemory});
+  const MessageBubble({
+    super.key,
+    required this.message,
+    this.isStreaming = false,
+    this.onSaveToMemory,
+  });
 
   final ChatMessage message;
 
@@ -38,14 +44,31 @@ class MessageBubble extends StatelessWidget {
             children: [
               Container(
                 margin: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
-                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.md,
+                  vertical: AppSpacing.sm,
+                ),
                 decoration: BoxDecoration(
-                  color: isDark ? AppColors.darkUserBubble : AppColors.lightUserBubble,
+                  color: isDark
+                      ? AppColors.darkUserBubble
+                      : AppColors.lightUserBubble,
                   borderRadius: AppRadii.lgRadius,
                 ),
-                child: SelectableText(message.content, style: theme.textTheme.bodyMedium),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (message.attachments.isNotEmpty)
+                      MessageAttachmentList(attachments: message.attachments),
+                    SelectableText(
+                      message.content,
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                  ],
+                ),
               ),
-              if (onSaveToMemory != null) _SaveToMemoryAction(onPressed: onSaveToMemory!),
+              if (onSaveToMemory != null)
+                _SaveToMemoryAction(onPressed: onSaveToMemory!),
             ],
           ),
         ),
@@ -63,9 +86,13 @@ class MessageBubble extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
               child: message.content.isEmpty && isStreaming
                   ? const _TypingIndicator()
-                  : StudyBotMarkdown(data: message.content, isStreaming: isStreaming),
+                  : StudyBotMarkdown(
+                      data: message.content,
+                      isStreaming: isStreaming,
+                    ),
             ),
-            if (onSaveToMemory != null) _SaveToMemoryAction(onPressed: onSaveToMemory!),
+            if (onSaveToMemory != null)
+              _SaveToMemoryAction(onPressed: onSaveToMemory!),
           ],
         ),
       ),
@@ -83,10 +110,16 @@ class _SaveToMemoryAction extends StatelessWidget {
     final theme = Theme.of(context);
     return TextButton.icon(
       onPressed: onPressed,
-      icon: Icon(Icons.bookmark_add_outlined, size: 16, color: theme.colorScheme.onSurfaceVariant),
+      icon: Icon(
+        Icons.bookmark_add_outlined,
+        size: 16,
+        color: theme.colorScheme.onSurfaceVariant,
+      ),
       label: Text(
         'Save to Learning Memory',
-        style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
       ),
       style: TextButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),

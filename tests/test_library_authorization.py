@@ -164,7 +164,7 @@ def _names(connection):
 
 
 def test_fresh_database_has_the_authorization_table(connection):
-    assert get_schema_version(connection) == SCHEMA_VERSION == 9
+    assert get_schema_version(connection) == SCHEMA_VERSION == 10
     assert {"courses", "chats", "messages", "learning_memories", "library_sources", "library_files",
             "library_source_authorizations"} <= _names(connection)
     [fk] = list(connection.execute("PRAGMA foreign_key_list(library_source_authorizations)"))
@@ -223,7 +223,7 @@ def test_v6_database_migrates_without_inventing_authorizations(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 9
+        assert get_schema_version(connection) == 10
         assert connection.execute("SELECT name FROM courses").fetchone()[0] == "Physics"
         assert connection.execute("SELECT content FROM messages").fetchone()[0] == "hi"
         assert connection.execute("SELECT summary FROM learning_memories").fetchone()[0] == "s"
@@ -234,7 +234,7 @@ def test_v6_database_migrates_without_inventing_authorizations(tmp_path):
     finally:
         connection.close()
     again = open_database(db_path)  # runs exactly once
-    assert get_schema_version(again) == 9
+    assert get_schema_version(again) == 10
     again.close()
 
 
@@ -265,7 +265,7 @@ def test_v5_database_migrates_through_the_whole_chain(tmp_path):
 
     connection = open_database(db_path)
     try:
-        assert get_schema_version(connection) == 9
+        assert get_schema_version(connection) == 10
         assert {"library_sources", "library_files", "library_source_authorizations"} <= _names(connection)
         assert connection.execute("SELECT summary FROM learning_memories").fetchone()[0] == "sum"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

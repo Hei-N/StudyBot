@@ -510,6 +510,39 @@ class FakeStudyBotApi extends StudyBotApi {
   final List<String> uploadedStagingIds = [];
   String nextUploadOutcome = 'uploaded';
   String? nextUploadFailure;
+  final List<bool> uploadSaveFlags = [];
+
+  /// Chat-only uploads (not kept in the library), and the ids discarded before sending.
+  final List<LibraryFile> chatUploads = [];
+  final List<String> discardedAttachments = [];
+
+  UploadPdfResult _chatUpload(String displayName) {
+    if (nextUploadOutcome == 'failed') {
+      return UploadPdfResult(outcome: 'failed', file: null, failureCode: nextUploadFailure ?? 'invalid_pdf');
+    }
+    final existing = chatUploads.where((f) => f.displayName == displayName).firstOrNull;
+    if (existing != null) return UploadPdfResult(outcome: 'duplicate', file: existing, failureCode: null);
+    final file = LibraryFile(
+      id: 'chat-file-${chatUploads.length + 1}',
+      sourceId: 'uploads',
+      relativePath: displayName,
+      displayName: displayName,
+      processingState: 'ready',
+      failureCode: null,
+      pageCount: 3,
+      textPageCount: 3,
+    );
+    chatUploads.add(file);
+    return UploadPdfResult(outcome: 'uploaded', file: file, failureCode: null);
+  }
+
+  @override
+  Future<void> discardAttachment(String fileId) async {
+    calls.add('discardAttachment:$fileId');
+    _maybeThrow();
+    discardedAttachments.add(fileId);
+    chatUploads.removeWhere((f) => f.id == fileId);
+  }
 
   @override
   Future<List<LibraryFile>> listUploads() async {
@@ -519,10 +552,16 @@ class FakeStudyBotApi extends StudyBotApi {
   }
 
   @override
-  Future<UploadPdfResult> uploadPdf({required String stagingId, required String displayName}) async {
+  Future<UploadPdfResult> uploadPdf({
+    required String stagingId,
+    required String displayName,
+    bool saveToLibrary = true,
+  }) async {
     calls.add('uploadPdf');
     _maybeThrow();
     uploadedStagingIds.add(stagingId);
+    uploadSaveFlags.add(saveToLibrary);
+    if (!saveToLibrary) return _chatUpload(displayName);
     if (nextUploadOutcome == 'failed') {
       return UploadPdfResult(outcome: 'failed', file: null, failureCode: nextUploadFailure ?? 'invalid_pdf');
     }

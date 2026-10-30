@@ -239,7 +239,9 @@ PUT    /api/v1/chats/{id}/reasoning-mode  <- {"reasoningMode": "deep"}  -> ModeI
   "createdAt": "...", "updatedAt": "..."
 }
 // MessageOut
-{ "id": 1, "role": "user", "content": "...", "createdAt": "..." }
+{ "id": 1, "role": "user", "content": "...", "createdAt": "...",
+  "attachments": [ { "id": 1, "fileId": "...", "displayName": "hw.pdf", "pageCount": 3,
+                     "textPageCount": 3, "processingState": "ready" } ] }   // always present, usually []
 ```
 
 - `GET /chats` with no query parameter lists every chat. `?course_id=<id>`
@@ -419,6 +421,13 @@ PUT    /api/v1/library/sources/{id}/authorization       <- AuthorizationIn -> Li
   `password_required`, `file_too_large`); `DELETE /library/uploads/{fileId}` removes the
   record, its pages and StudyBot's private copy (204). Uploaded files report their original
   filename as `relativePath`; private names and paths are never returned.
+- Chat attachments: `POST /library/uploads/pdf` accepts `saveToLibrary` (default `true`). With
+  `false` the PDF goes through the same pipeline but is a chat-only upload: it is not listed
+  by `GET /library/uploads` and does not appear in the Study Library. Uploading the same bytes
+  later with `saveToLibrary: true` promotes the existing copy. `DELETE
+  /library/attachments/{fileId}` discards a chat-only upload that no message references (204;
+  anything referenced, or kept in the library, is left alone; unknown ids return `404
+  ATTACHMENT_NOT_FOUND`).
 - Invalid payloads (empty, not Base64, too large, unsupported platform or kind) return
   `422 VALIDATION_ERROR`. For library routes, request-validation errors use a generic
   message and never echo the request body. Payloads are never logged.
@@ -437,6 +446,8 @@ sequence.
 ```json
 {"type": "send_message", "chat_id": "...", "content": "Explain acceleration"}
 ```
+An optional `"attachment_ids": ["<fileId>", ...]` attaches up to 5 uploaded PDFs to the message
+(see **Chat attachments** below). Omitting it is exactly the previous behaviour.
 
 **Server to client**, in order, for each `send_message`:
 ```json
@@ -486,6 +497,17 @@ show that gap.
 in-flight generator is closed, so no more output is requested or persisted.
 Detection happens the next time the server tries to send a chunk, so it is not
 instantaneous.
+
+#### Chat attachments
+
+`attachment_ids` must be 1 to 5 distinct ids of `ready`, uploaded PDFs; anything else is
+rejected with an `error` event before generation starts and nothing is stored. The user
+message and its attachment rows are written in one transaction, and the attachments are returned
+on that message from `GET /chats/{id}/messages` after a restart or reload. Deleting or clearing
+a chat releases its chat-only files.
+
+Attachments are stored and displayed only. The model is **not** given the PDF text or told a file
+was attached; reading attached files in answers is a later retrieval stage.
 
 #### Generation limits
 

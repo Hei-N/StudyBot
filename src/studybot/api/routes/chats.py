@@ -7,7 +7,7 @@ CLI's active-chat cursor. Calls are dispatched via ``Engine.call`` (see
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from studybot.api.converters import chat_to_out, message_record_to_out, mode_info_to_out, reasoning_mode_info_to_out
 from studybot.api.dependencies import require_token
@@ -36,6 +36,14 @@ from studybot.core.reasoning_mode import parse_reasoning_mode
 from studybot.core.teaching_mode import get_mode_info, parse_teaching_mode
 
 router = APIRouter(dependencies=[Depends(require_token)])
+
+
+async def _release_files(request: Request, engine: Engine, file_ids: list[str]) -> None:
+    """Chat-only uploads that lost their last message are removed; kept library files are not."""
+    if not file_ids:
+        return
+    for stored_name in await engine.call(engine.app.library.release_chat_files, file_ids):
+        request.app.state.uploads.discard(stored_name)
 
 
 @router.get("/chats", response_model=list[ChatOut])
@@ -91,20 +99,24 @@ async def rename_chat(chat_id: str, body: ChatRenameIn, engine: Engine = Depends
 
 
 @router.post("/chats/{chat_id}/clear", response_model=ChatOut)
-async def clear_chat(chat_id: str, engine: Engine = Depends(get_engine)) -> ChatOut:
+async def clear_chat(chat_id: str, request: Request, engine: Engine = Depends(get_engine)) -> ChatOut:
+    attached = await engine.call(engine.app.sessions.attachment_file_ids, chat_id)
     try:
         chat = await engine.call(engine.app.sessions.clear_chat, chat_id)
     except ChatNotFoundError as exc:
         raise ApiError(404, CHAT_NOT_FOUND, str(exc)) from exc
+    await _release_files(request, engine, attached)
     return chat_to_out(chat)
 
 
 @router.delete("/chats/{chat_id}", status_code=204, response_model=None)
-async def delete_chat(chat_id: str, engine: Engine = Depends(get_engine)) -> None:
+async def delete_chat(chat_id: str, request: Request, engine: Engine = Depends(get_engine)) -> None:
+    attached = await engine.call(engine.app.sessions.attachment_file_ids, chat_id)
     try:
         await engine.call(engine.app.sessions.delete_chat, chat_id)
     except ChatNotFoundError as exc:
         raise ApiError(404, CHAT_NOT_FOUND, str(exc)) from exc
+    await _release_files(request, engine, attached)
 
 
 @router.put("/chats/{chat_id}/course", response_model=ChatOut)

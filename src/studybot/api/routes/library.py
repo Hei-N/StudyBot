@@ -175,7 +175,9 @@ async def upload_pdf(body: UploadPdfIn, request: Request) -> UploadPdfOut:
     """Add a PDF the native layer staged to StudyBot's own storage. Takes a staging id, never a path."""
     importer: PdfImporter = request.app.state.pdf_importer
     try:
-        outcome, file, failure_code = await importer.upload_pdf(body.staging_id, body.display_name)
+        outcome, file, failure_code = await importer.upload_pdf(
+            body.staging_id, body.display_name, in_library=body.save_to_library
+        )
     except SessionError as exc:
         raise _translate(exc) from exc
     return UploadPdfOut(
@@ -189,7 +191,17 @@ async def upload_pdf(body: UploadPdfIn, request: Request) -> UploadPdfOut:
 async def delete_upload(file_id: str, request: Request, engine: Engine = Depends(get_engine)) -> None:
     """Remove an uploaded file and its private copy from StudyBot. The original file is never touched."""
     try:
-        file = await engine.call(engine.app.library.delete_uploaded_file, file_id)
+        file, deleted = await engine.call(engine.app.library.delete_uploaded_file, file_id)
     except SessionError as exc:
         raise _translate(exc) from exc
-    request.app.state.uploads.discard(file.relative_path)
+    if deleted:  # a file still attached to a chat message is only taken out of the library
+        request.app.state.uploads.discard(file.relative_path)
+
+
+@router.delete("/attachments/{file_id}", status_code=204, response_model=None)
+async def discard_attachment(file_id: str, request: Request, engine: Engine = Depends(get_engine)) -> None:
+    """Drop a chat upload that was removed before sending. Does nothing for a file that is kept in
+    the Study Library or already attached to a message."""
+    stored_name = await engine.call(engine.app.library.discard_chat_attachment, file_id)
+    if stored_name is not None:
+        request.app.state.uploads.discard(stored_name)

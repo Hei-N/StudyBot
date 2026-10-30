@@ -34,18 +34,20 @@ Future<ProviderContainer> _pumpComposer(WidgetTester tester, FakeStudyBotApi api
   return container;
 }
 
+final _sendButton = find.widgetWithIcon(IconButton, Icons.arrow_upward);
+
 void main() {
   testWidgets('the send button is disabled for blank input and enabled once text is entered', (tester) async {
     final api = FakeStudyBotApi(chats: [_chat()]);
     await _pumpComposer(tester, api, FakeChatWebSocketClient());
 
-    final sendButton = tester.widget<IconButton>(find.byType(IconButton));
+    final sendButton = tester.widget<IconButton>(_sendButton);
     expect(sendButton.onPressed, isNull);
 
     await tester.enterText(find.byType(TextField), 'Hello');
     await tester.pumpAndSettle();
 
-    final enabledButton = tester.widget<IconButton>(find.byType(IconButton));
+    final enabledButton = tester.widget<IconButton>(_sendButton);
     expect(enabledButton.onPressed, isNotNull);
   });
 
@@ -57,7 +59,7 @@ void main() {
     await tester.enterText(find.byType(TextField), '   ');
     await tester.pumpAndSettle();
 
-    final button = tester.widget<IconButton>(find.byType(IconButton));
+    final button = tester.widget<IconButton>(_sendButton);
     expect(button.onPressed, isNull);
     expect(ws.sentMessages, isEmpty);
   });
